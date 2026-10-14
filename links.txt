@@ -1,0 +1,122 @@
+==============================================================
+ IA TRADER - ACESSO AO DASHBOARD / FRONTEND
+==============================================================
+
+--------------------------------------------------------------
+ 1. COMO INICIAR O DASHBOARD
+--------------------------------------------------------------
+
+Pasta do projeto:
+  /home/eudespatricio/ia_trader
+
+Opcao A - Porta padrao (5000):
+  cd /home/eudespatricio/ia_trader
+  .venv/bin/python flask_interface.py
+
+Opcao B - Escolhendo a porta via argumento (ex.: 5050):
+  .venv/bin/python flask_interface.py 5050
+
+Opcao C - Escolhendo a porta via variavel de ambiente:
+  PORT=5050 .venv/bin/python flask_interface.py
+
+Opcao D - Rodar em segundo plano (Linux/WSL):
+  nohup .venv/bin/python flask_interface.py 5000 > logs/dashboard.log 2>&1 &
+
+Para parar o servidor em segundo plano:
+  pkill -f flask_interface.py
+
+Observacao: o dashboard opera em modo READ-ONLY estrito (nao envia
+ordens). Ele apenas le o cache SQLite e exibe telemetria.
+
+--------------------------------------------------------------
+ 2. LINKS DE ACESSO (PORTA PADRAO 5000)
+--------------------------------------------------------------
+
+Dashboard principal (graficos, agentes, telemetria):
+  http://localhost:5000/
+
+Configuracoes e chaves de API (botao no canto superior direito
+do dashboard, abre um modal):
+  http://localhost:5000/   -> "Configuracoes & Chaves"
+
+Health check (status do banco, versao, modo read-only):
+  http://localhost:5000/health
+
+Telemetria e status do projeto (JSON):
+  http://localhost:5000/api/status
+
+Dados de candles para o grafico (JSON):
+  http://localhost:5000/api/chart/BTCUSDT/1h
+  http://localhost:5000/api/chart/BTCUSDT/15m
+  http://localhost:5000/api/chart/BTCUSDT/4h
+  http://localhost:5000/api/chart/ETHUSDT/1h
+  http://localhost:5000/api/chart/SOLUSDT/1h
+
+Configuracoes (JSON, chaves sempre mascaradas):
+  http://localhost:5000/api/config
+
+Se usar outra porta (ex.: 5050), troque 5000 por 5050 em todos os
+links acima.
+
+--------------------------------------------------------------
+ 3. ACESSO A PARTIR DE OUTRO DISPOSITIVO (CELULAR / OUTRO PC)
+--------------------------------------------------------------
+
+O servidor escuta em todas as interfaces (host 0.0.0.0), entao
+outros aparelhos na mesma rede Wi-Fi/LAN podem abrir o painel.
+
+1) Descubra o IP da maquina:
+   - Linux/WSL:  hostname -I
+   - Windows:    ipconfig   (procure "Endereco IPv4")
+
+2) No outro dispositivo, abra no navegador:
+   http://<IP_DA_MAQUINA>:5000/
+   Exemplo: http://192.168.0.15:5000/
+
+Atencao (WSL2): o WSL2 usa uma rede virtual. Se o link pelo IP do
+Windows nao abrir em outro aparelho, e necessario encaminhar a
+porta no Windows (PowerShell como Administrador):
+
+  netsh interface portproxy add v4tov4 listenport=5000 listenaddress=0.0.0.0 connectport=5000 connectaddress=<IP_DO_WSL>
+
+  (o <IP_DO_WSL> aparece em: hostname -I, dentro do WSL)
+
+E liberar a porta no firewall do Windows:
+
+  netsh advfirewall firewall add rule name="IA Trader 5000" dir=in action=allow protocol=TCP localport=5000
+
+--------------------------------------------------------------
+ 4. SEGURANCA
+--------------------------------------------------------------
+
+- Nao exponha a porta 5000 diretamente na internet. O painel ainda
+  nao possui autenticacao (JWT/login previsto para a Fase 7).
+- Use apenas em rede local confiavel.
+- O arquivo .env guarda suas chaves de API. Nunca compartilhe nem
+  envie este arquivo para repositorios publicos.
+
+--------------------------------------------------------------
+ 5. SOLUCAO DE PROBLEMAS
+--------------------------------------------------------------
+
+Porta ja em uso (Address already in use):
+  Use outra porta:  .venv/bin/python flask_interface.py 5050
+  Ou libere a 5000: pkill -f flask_interface.py
+
+"No module named flask":
+  Use sempre o Python do ambiente virtual (.venv/bin/python) ou
+  instale as dependencias:
+  .venv/bin/pip install -r requirements.txt
+
+Grafico vazio (sem candles):
+  O cache SQLite ainda nao tem dados desse par. Use o botao de
+  atualizar do dashboard ou a rota (metodo POST):
+  http://localhost:5000/api/refresh-symbol/BTCUSDT/1h
+
+Testar se o servidor responde:
+  curl http://localhost:5000/health
+
+Rodar os testes automatizados:
+  .venv/bin/pytest tests/ -v
+
+==============================================================

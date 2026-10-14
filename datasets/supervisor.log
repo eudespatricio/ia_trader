@@ -1,0 +1,18 @@
+[2026-10-14 17:25:11,323] [INFO] [supervisor] 🔗 [flask_dashboard] Adotou processo existente na porta 5000 (PID=188124).
+[2026-10-14 17:25:11,333] [INFO] [supervisor] 🔗 [paper_trading_daemon] Adotou processo existente (PID=186825).
+[2026-10-14 17:25:11,337] [INFO] [supervisor] 🔗 [cloudflare_tunnel] Adotou túnel existente (PID=167075).
+[2026-10-14 17:25:36,722] [INFO] [supervisor] 🔗 [flask_dashboard] Adotou processo existente na porta 5000 (PID=188124).
+[2026-10-14 17:25:36,726] [INFO] [supervisor] 🔗 [paper_trading_daemon] Adotou processo existente (PID=186825).
+[2026-10-14 17:25:36,730] [INFO] [supervisor] 🔗 [cloudflare_tunnel] Adotou túnel existente (PID=167075).
+[2026-10-14 17:29:41,751] [INFO] [supervisor] 🛡️ [SystemSupervisor] Iniciando Gestor de Sistema e Dependências (Piloto Resiliente)...
+[2026-10-14 17:29:41,786] [INFO] [supervisor] 🔗 [flask_dashboard] Adotou processo existente na porta 5000 (PID=202028).
+[2026-10-14 17:29:41,791] [INFO] [supervisor] 🔗 [paper_trading_daemon] Adotou processo existente (PID=186825).
+[2026-10-14 17:29:41,797] [INFO] [supervisor] 🔗 [cloudflare_tunnel] Adotou túnel existente (PID=167075).
+[2026-10-14 17:30:06,135] [WARNING] [supervisor] ⚠️ [flask_dashboard] Falha detectada (Contagem=1).
+[2026-10-14 17:30:14,243] [WARNING] [supervisor] ⚠️ [flask_dashboard] Falha detectada (Contagem=2).
+[2026-10-14 17:30:14,243] [WARNING] [supervisor] ⚠️ [flask_dashboard] Auto-Healing acionado! Reiniciando serviço (Reinício #1)...
+[2026-10-14 17:30:15,246] [INFO] [supervisor] 🟢 [flask_dashboard] Iniciado com sucesso (PID=202100).
+[2026-10-14 17:42:25,519] [WARNING] [supervisor] ⚠️ [flask_dashboard] Falha detectada (Contagem=1).
+[2026-10-14 17:42:33,627] [WARNING] [supervisor] ⚠️ [flask_dashboard] Falha detectada (Contagem=2).
+[2026-10-14 17:42:33,627] [WARNING] [supervisor] ⚠️ [flask_dashboard] Auto-Healing acionado! Reiniciando serviço (Reinício #2)...
+[2026-10-14 17:42:34,637] [INFO] [supervisor] 🟢 [flask_dashboard] Iniciado com sucesso (PID=204411).

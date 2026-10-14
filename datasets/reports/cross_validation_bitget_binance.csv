@@ -1,0 +1,7 @@
+symbol,timeframe,total_bitget,total_binance,common_count,missing_binance,missing_bitget,mean_close_diff_pct,max_close_diff_pct,returns_correlation,alert_triggered,status
+BTCUSDT,1h,500,500,500,0,0,0.0137,0.0897,0.9996,False,OK
+BTCUSDT,1d,500,500,494,6,6,1.2759,9.0776,0.277,True,ALERT
+ETHUSDT,1h,500,500,500,0,0,0.014,0.0727,0.9996,False,OK
+ETHUSDT,1d,500,500,494,6,6,1.8492,10.5901,0.3987,True,ALERT
+SOLUSDT,1h,500,500,500,0,0,0.0133,0.0901,0.9997,False,OK
+SOLUSDT,1d,500,500,494,6,6,2.0843,11.1692,0.3992,True,ALERT

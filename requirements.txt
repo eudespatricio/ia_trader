@@ -1,0 +1,42 @@
+
+# Núcleo de IA e Machine Learning
+scikit-learn
+lightgbm
+pandas
+numpy
+joblib
+
+# Indicadores técnicos e análise
+ta
+yfinance
+
+# Visualização
+matplotlib
+plotly
+
+# Web e API
+flask
+flask-cors
+flask-jwt-extended
+flask-limiter
+requests
+aiohttp
+beautifulsoup4
+python-dotenv
+
+# Criptografia e segurança
+bcrypt
+passlib
+
+# Reconhecimento de voz (módulo opcional)
+speechrecognition
+pyaudio
+
+# Empacotamento
+pyinstaller
+
+# Logs e monitoramento
+loguru
+
+# Agendamento
+apscheduler

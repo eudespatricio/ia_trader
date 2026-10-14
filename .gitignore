@@ -1,0 +1,33 @@
+# Segredos e ambiente
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Dados e artefatos grandes (reprodutíveis pelos scripts em /scripts)
+datasets/*.db
+datasets/*.db-wal
+datasets/*.db-shm
+datasets/raw/
+
+# Logs e capturas de teste
+logs/*.log
+tests/ui/screenshots/
+
+# Build
+build/
+dist/
+*.spec
+!ia_trader.spec
+
+
+# Estado de runtime
+datasets/supervisor_state.json
+datasets/*.json.tmp
+bin/
