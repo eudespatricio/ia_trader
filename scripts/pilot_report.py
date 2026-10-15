@@ -78,7 +78,7 @@ def boot_mean_ci(x, n=5000, seed=42):
 def load():
     c = sqlite3.connect(DB)
     d = {
-        "trades": pd.read_sql("select * from paper_trades order by timestamp", c),
+        "trades": pd.read_sql("select rowid as _rowid, * from paper_trades order by timestamp", c),
         "pos": pd.read_sql("select * from paper_positions", c),
         "pf": pd.read_sql("select * from paper_portfolio order by timestamp", c),
         "cb": pd.read_sql("select * from circuit_breaker_events order by timestamp", c),
@@ -132,10 +132,33 @@ def stress_equity(d, t):
     return s, float(-dd.min())
 
 
-def last_reset_and_setting_change(d, start_ms):
+EPOCH_KEYS = {"ledger_epoch_trade_rowid", "ledger_epoch_pos_rowid", "quota_epoch_trade_rowid", "MANUAL_RESET"}
+RESET_TOLERANCE_MS = 120_000  # o evento/flag do próprio reset que define o início não conta como "reset na janela"
+
+
+def reset_epoch(d):
+    """Marco do último reset intencional (gravado por PaperTradingEngine.manual_reset/restore_state).
+
+    Retorna (epoch_start_ms, epoch_trade_rowid) ou (None, 0) se nunca houve reset.
+    """
+    st = d["set"]
+    row = st[st.key == "ledger_epoch_trade_rowid"]
+    if row.empty:
+        return None, 0
+    ms = int((pd.to_datetime(row.updated_at.iloc[0], utc=True) - pd.Timestamp(0, tz="UTC"))
+             // pd.Timedelta(milliseconds=1))
+    try:
+        rid = int(float(row.value.iloc[0]))
+    except (TypeError, ValueError):
+        rid = 0
+    return ms, rid
+
+
+def last_reset_and_setting_change(d, start_ms, reset_tol_ms=0):
     ev = d["cb"]
-    resets = ev[(ev.event_type == "MANUAL_RESET") & (ev.timestamp >= start_ms)]
+    resets = ev[(ev.event_type == "MANUAL_RESET") & (ev.timestamp >= start_ms + reset_tol_ms)]
     sets = d["set"].copy()
+    sets = sets[~sets.key.isin(EPOCH_KEYS)] if reset_tol_ms else sets
     sets["ms"] = ((pd.to_datetime(sets.updated_at, utc=True) - pd.Timestamp(0, tz="UTC"))
                   // pd.Timedelta(milliseconds=1))
     changed = sets[sets.ms >= start_ms]
@@ -193,17 +216,35 @@ def main():
     if d["trades"].empty:
         print("INCONCLUSIVO: ledger vazio")
         return 2
-    start_ms = (int(pd.Timestamp(a.start, tz="UTC").timestamp() * 1000) if a.start
-                else int(d["trades"].timestamp.min()))
-    t, P = build_positions(d)
-    P = P[P.t_open >= start_ms]
+    epoch_ms, epoch_rowid = reset_epoch(d)
+    if a.start:
+        start_ms = int(pd.Timestamp(a.start, tz="UTC").timestamp() * 1000)
+    elif epoch_ms is not None:
+        start_ms = epoch_ms          # janela do piloto começa no último reset intencional
+    else:
+        start_ms = int(d["trades"].timestamp.min())
+    t, P_all = build_positions(d)
+    # Só trades FECHADOS depois do marco contam; o resto é histórico pré-reset (viesado).
+    P = P_all[P_all.t_close >= start_ms] if len(P_all) else P_all
+    P_pre = P_all.drop(P.index) if len(P_all) else P_all
+    t = t[t.timestamp >= start_ms] if len(t) else t
     n = len(P)
-    resets, changed, clean_start = last_reset_and_setting_change(d, start_ms)
+    resets, changed, clean_start = last_reset_and_setting_change(
+        d, start_ms, RESET_TOLERANCE_MS if (epoch_ms is not None and not a.start) else 0)
     total_days = (now_ms - start_ms) / 86_400_000
     clean_days = (now_ms - clean_start) / 86_400_000
 
     R = {"start_utc": datetime.fromtimestamp(start_ms / 1000, timezone.utc).isoformat(),
-         "total_days": round(total_days, 3), "clean_days": round(clean_days, 3), "closed_trades": n}
+         "total_days": round(total_days, 3), "clean_days": round(clean_days, 3), "closed_trades": n,
+         "reset_epoch_utc": (datetime.fromtimestamp(epoch_ms / 1000, timezone.utc).isoformat()
+                             if epoch_ms is not None else None),
+         "ledger_epoch_trade_rowid": epoch_rowid,
+         "pre_reset_history": {
+             "label": "histórico pré-reset (viesado, não conta)",
+             "closed_trades": int(len(P_pre)),
+             "net_pnl_stress_usd": float(P_pre.net_stress.sum()) if len(P_pre) else 0.0,
+             "expectancy_net_stress_pct": (float((P_pre.net_stress / P_pre.entry_notional).mean() * 100)
+                                           if len(P_pre) else float("nan"))}}
     ref = json.load(open(a.ref)) if os.path.exists(a.ref) else None
 
     # ----- métricas de trade -----
@@ -334,6 +375,8 @@ def main():
         ("A14 Ledger reconcilia (|Δ| < $0,01)", ops["ledger_mismatch_usd"] < 0.01,
          f"Δ=${ops['ledger_mismatch_usd']:.4f}"),
     ]
+    if n < FUTILITY_N:
+        ref_hits = []  # N insuficiente: refutação precoce proibida (R1-R7)
     R["criteria"] = [{"id": k, "pass": bool(v), "detail": det} for k, v, det in A]
     R["refutations"] = ref_hits
 
@@ -357,6 +400,12 @@ def main():
                   f"(custo estresse {R['cost_stress_per_trade_pct']:.3f}%/trade)")
             print(f"P&L USD: booked {R['net_pnl_booked_usd']:+.2f} | estresse {R['net_pnl_stress_usd']:+.2f} | "
                   f"MaxDD estresse {mdd:.2f}%")
+        pre = R["pre_reset_history"]
+        print(f"Reset intencional (início da janela): {R['reset_epoch_utc']} | rowid {epoch_rowid}")
+        print(f"[{pre['label']}] trades fechados: {pre['closed_trades']} | "
+              f"P&L estresse {pre['net_pnl_stress_usd']:+.2f} USD")
+        if n < FUTILITY_N:
+            print(f"N pós-reset={n} < {FUTILITY_N}: refutações R1-R7 desativadas (INCONCLUSIVO)")
         print("\nCRITÉRIOS DE APROVAÇÃO (todos obrigatórios):")
         for k, v, det in A:
             print(f"  [{'OK' if v else 'XX'}] {k}: {det}")

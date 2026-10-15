@@ -4,8 +4,21 @@ import os
 import sys
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import system_supervisor as ss  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_supervisor_log():
+    """Impede que o teste escreva no datasets/supervisor.log real (remove o FileHandler durante o teste)."""
+    removed = [h for h in ss.logger.handlers if isinstance(h, logging.FileHandler)]
+    for h in removed:
+        ss.logger.removeHandler(h)
+    yield
+    for h in removed:
+        ss.logger.addHandler(h)
 
 
 def _svc(**kw):

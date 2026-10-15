@@ -16,30 +16,6 @@
 [2026-10-14 17:42:33,627] [WARNING] [supervisor] ⚠️ [flask_dashboard] Falha detectada (Contagem=2).
 [2026-10-14 17:42:33,627] [WARNING] [supervisor] ⚠️ [flask_dashboard] Auto-Healing acionado! Reiniciando serviço (Reinício #2)...
 [2026-10-14 17:42:34,637] [INFO] [supervisor] 🟢 [flask_dashboard] Iniciado com sucesso (PID=204411).
-[2026-10-14 21:30:15,166] [WARNING] [supervisor] ⚠️ [t] Processo não está em execução (PID=123).
-[2026-10-14 21:30:15,168] [WARNING] [supervisor] ⚠️ [t] Falha no socket porta 5999 (PID=77): ConnectionRefusedError: x
-[2026-10-14 21:30:15,169] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=1).
-[2026-10-14 21:30:15,169] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=2).
-[2026-10-14 21:30:15,169] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=3).
-[2026-10-14 21:30:15,170] [INFO] [supervisor] 🔗 [t] Porta 5999 atendida por PID=4242; re-adotado sem reiniciar.
-[2026-10-14 21:30:15,171] [WARNING] [supervisor] ⚠️ [t] Auto-Healing acionado! Reiniciando serviço (Reinício #1)...
-[2026-10-14 21:30:15,173] [INFO] [supervisor] 🟢 [t] Iniciado com sucesso (PID=5).
-[2026-10-14 21:40:12,525] [WARNING] [supervisor] ⚠️ [t] Processo não está em execução (PID=123).
-[2026-10-14 21:40:12,527] [WARNING] [supervisor] ⚠️ [t] Falha no socket porta 5999 (PID=77): ConnectionRefusedError: x
-[2026-10-14 21:40:12,529] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=1).
-[2026-10-14 21:40:12,529] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=2).
-[2026-10-14 21:40:12,530] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=3).
-[2026-10-14 21:40:12,531] [INFO] [supervisor] 🔗 [t] Porta 5999 atendida por PID=4242; re-adotado sem reiniciar.
-[2026-10-14 21:40:12,533] [WARNING] [supervisor] ⚠️ [t] Auto-Healing acionado! Reiniciando serviço (Reinício #1)...
-[2026-10-14 21:40:12,536] [INFO] [supervisor] 🟢 [t] Iniciado com sucesso (PID=5).
-[2026-10-14 21:42:08,426] [WARNING] [supervisor] ⚠️ [t] Processo não está em execução (PID=123).
-[2026-10-14 21:42:08,434] [WARNING] [supervisor] ⚠️ [t] Falha no socket porta 5999 (PID=77): ConnectionRefusedError: x
-[2026-10-14 21:42:08,439] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=1).
-[2026-10-14 21:42:08,439] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=2).
-[2026-10-14 21:42:08,440] [WARNING] [supervisor] ⚠️ [x] Falha detectada (Contagem=3).
-[2026-10-14 21:42:08,441] [INFO] [supervisor] 🔗 [t] Porta 5999 atendida por PID=4242; re-adotado sem reiniciar.
-[2026-10-14 21:42:08,443] [WARNING] [supervisor] ⚠️ [t] Auto-Healing acionado! Reiniciando serviço (Reinício #1)...
-[2026-10-14 21:42:08,448] [INFO] [supervisor] 🟢 [t] Iniciado com sucesso (PID=5).
 [2026-10-14 21:47:33,912] [INFO] [supervisor] Encerrando SystemSupervisor...
 [2026-10-14 21:47:51,021] [INFO] [supervisor] 🛡️ [SystemSupervisor] Iniciando Gestor de Sistema e Dependências (Piloto Resiliente)...
 [2026-10-14 21:47:51,084] [INFO] [supervisor] 🔗 [cloudflare_tunnel] Adotou túnel existente (PID=167075).

@@ -1,34 +1,33 @@
 {
-  "start_utc": "2026-10-14T16:30:00+00:00",
-  "total_days": 0.347,
+  "start_utc": "2026-10-15T00:47:53+00:00",
+  "total_days": 0.004,
   "clean_days": 0.001,
-  "closed_trades": 35,
-  "expectancy_net_stress_pct": -1.1553956200899527,
-  "expectancy_gross_pct": -0.9951648891658522,
-  "expectancy_booked_pct": -1.0352185742651498,
-  "cost_stress_per_trade_pct": 0.1602307309241007,
-  "exp_ci95_one_sided_pct": [
-    -1.5504917987781526,
-    -0.7478679253588867
-  ],
-  "net_pnl_stress_usd": -485.2661604377802,
-  "net_pnl_booked_usd": -434.7918011913629,
-  "win_rate_gross": 0.2,
-  "breakeven_wr": 0.6141385571879414,
+  "closed_trades": 0,
+  "reset_epoch_utc": "2026-10-15T00:47:53+00:00",
+  "ledger_epoch_trade_rowid": 85,
+  "pre_reset_history": {
+    "label": "hist\u00f3rico pr\u00e9-reset (viesado, n\u00e3o conta)",
+    "closed_trades": 35,
+    "net_pnl_stress_usd": -485.2661604377802,
+    "expectancy_net_stress_pct": -1.1553956200899527
+  },
+  "breakeven_wr": NaN,
+  "win_rate_gross": NaN,
   "wr_wilson95": [
-    0.10042319445900802,
-    0.35891936609462516
+    NaN,
+    NaN
   ],
-  "daily_obs": 2,
+  "expectancy_net_stress_pct": NaN,
+  "net_pnl_stress_usd": 0.0,
   "sharpe_net_ann": NaN,
   "dsr": NaN,
   "weeks_positive_frac": NaN,
-  "max_dd_stress_pct": 4.4684272366055655,
-  "equity_stress_last": 9553.157276339443,
-  "manual_resets_in_window": 22,
-  "setting_changes_in_window": 14,
-  "cooldown_events": 15,
-  "rollback_events": 2,
+  "max_dd_stress_pct": 1.0278696647001984,
+  "equity_stress_last": 9994.466726780933,
+  "manual_resets_in_window": 1,
+  "setting_changes_in_window": 0,
+  "cooldown_events": 1,
+  "rollback_events": 0,
   "strategies_traded": [
     "GOLDEN_POT"
   ],
@@ -36,18 +35,18 @@
     "GOLDEN_POT"
   ],
   "ops": {
-    "snapshots": 21,
-    "coverage": 0.6128827765055507,
-    "max_gap_min": 122.53385,
-    "last_snapshot_age_min": 3.9645166666666665,
+    "snapshots": 0,
+    "coverage": 0.0,
+    "max_gap_min": 0.0,
+    "last_snapshot_age_min": Infinity,
     "supervisor_status": "HEALTHY",
     "daemon_status": "HEALTHY",
     "daemon_restarts": 0,
-    "daemon_uptime_h": 0.02,
+    "daemon_uptime_h": 0.09,
     "db_status": "HEALTHY",
-    "supervisor_failures": 13,
+    "supervisor_failures": 4,
     "supervisor_errors": 0,
-    "ledger_mismatch_usd": 0.0,
+    "ledger_mismatch_usd": 5.684341886080802e-14,
     "restarts_applicable": 0
   },
   "divergence": {
@@ -57,12 +56,12 @@
     {
       "id": "A1 Dura\u00e7\u00e3o limpa >= 56d",
       "pass": false,
-      "detail": "0.00d (total 0.35d)"
+      "detail": "0.00d (total 0.00d)"
     },
     {
       "id": "A2 Trades fechados >= 100",
       "pass": false,
-      "detail": "35"
+      "detail": "0"
     },
     {
       "id": "A3 Estrat\u00e9gia pr\u00e9-registrada",
@@ -72,7 +71,7 @@
     {
       "id": "A4 Expect\u00e2ncia l\u00edquida estresse > 0 e IC95 inf > 0",
       "pass": false,
-      "detail": "-1.155%/trade; IC inf -1.550%"
+      "detail": "+nan%/trade; IC inf +nan%"
     },
     {
       "id": "A5 Sharpe l\u00edquido anual >= 1,0",
@@ -87,12 +86,12 @@
     {
       "id": "A7 MaxDD estresse <= 15%",
       "pass": true,
-      "detail": "4.47%"
+      "detail": "1.03%"
     },
     {
       "id": "A8 Hit rate (Wilson inf) > breakeven",
       "pass": false,
-      "detail": "WR 20.0% [10.0%,35.9%] vs BE 61.4%"
+      "detail": "WR nan% [nan%,nan%] vs BE nan%"
     },
     {
       "id": "A9 Diverg\u00eancia paper vs backtest dentro da toler\u00e2ncia",
@@ -107,17 +106,17 @@
     {
       "id": "A11 Integridade: 0 resets/altera\u00e7\u00f5es de par\u00e2metro na janela",
       "pass": false,
-      "detail": "resets=22 settings=14"
+      "detail": "resets=1 settings=0"
     },
     {
       "id": "A12 Cobertura de snapshots >= 98% e gap m\u00e1x <= 60min",
       "pass": false,
-      "detail": "cov 61% gap 123min"
+      "detail": "cov 0% gap 0min"
     },
     {
       "id": "A13 Daemon saud\u00e1vel, rein\u00edcios <= 2, DB ok, snapshot fresco (<=30min)",
-      "pass": true,
-      "detail": "daemon=HEALTHY restarts=0 snap_age=4min"
+      "pass": false,
+      "detail": "daemon=HEALTHY restarts=0 snap_age=infmin"
     },
     {
       "id": "A14 Ledger reconcilia (|\u0394| < $0,01)",
@@ -125,11 +124,6 @@
       "detail": "\u0394=$0.0000"
     }
   ],
-  "refutations": [
-    "R2 N=35>=30 e limite superior IC95 unilateral da expect\u00e2ncia l\u00edquida (-0.748%/trade) < 0",
-    "R3 Wilson sup. do hit rate 35.9% < breakeven 61.4%",
-    "R4 15 disparos de cooldown por perdas consecutivas (>= 3)",
-    "R6 expect\u00e2ncia BRUTA -0.995% <= 0: sem alfa antes de custos"
-  ],
-  "verdict": "REPROVADO"
+  "refutations": [],
+  "verdict": "INCONCLUSIVO"
 }

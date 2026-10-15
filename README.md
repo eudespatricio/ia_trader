@@ -196,7 +196,7 @@ flowchart LR
 8. **Fase 7: Telemetria, Aprendizado & Guardião (🟢 Homologado - 15/15 testes):** Rastreio de PnL único, Circuit Breakers de Drawdown (10%) e Cooldown de perdas (4 stops), Memória Episódica, Calibração Dinâmica de Pesos por Regime e Re-treinamento Diário Champion-Challenger.
 9. **Fase 8: Painel Web, Autenticação & Legal (🟢 Homologado - 38/38 testes):** Interface Plotly desacoplada (read-only), JWT, telemetria em tempo real, monitoramento de regimes e termos de uso.
 10. **Fase 9: Módulos de Apoio & Governança (🟢 Homologado - 21/21 testes):** Scanner de volatilidade e delistagens (`pair_scanner.py`), controle de voz local (`voice_commands.py`), explicações didáticas de sinais (`educational_module.py`) e RBAC com planos de assinatura (`auth_module.py`).
-11. **Fase 10: Hardening 24h & Empacotamento Standalone (🟢 Homologado - 3/3 testes, 208/208 global):** Simulação ininterrupta multithread, recuperação supervisionada, launcher unificado (`launcher.py`) e executável standalone gerado via PyInstaller (`dist/ia_trader/ia_trader`).
+11. **Fase 10: Hardening 24h & Empacotamento Standalone (🟢 Homologado - 3/3 testes, 276/276 global):** Simulação ininterrupta multithread, recuperação supervisionada, launcher unificado (`launcher.py`) e executável standalone gerado via PyInstaller (`dist/ia_trader/ia_trader`).
 
 ---
 
@@ -222,7 +222,7 @@ flowchart LR
 ### 3. Execução da Suíte Completa de Testes
 ```bash
 .venv/bin/pytest -v
-# Resultado: 208 passed in 72s (100% Green)
+# Resultado: 276 passed in ~97s (100% Green)
 ```
 
 ---
