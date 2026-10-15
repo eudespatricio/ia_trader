@@ -4,6 +4,26 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [Não lançado] - 2026-10-14/15 - Auditoria e Correções
+
+### Corrigido
+- **Lookahead V1-V8:** CPI no dia 20 do mês seguinte; FEDFUNDS no fim do mês+1; removido `bfill`; snapshots macro/order book só na última barra; `as_of_date` em VIX/DXY/SP500; candle em formação descartado. V9 (trailing intrabarra, backtesting.py) segue pendente.
+- **Execução:** taxa de saída em dobro (`smart_trade.py`); cota diária reaberta na virada UTC; teto de margem no carry; race em `update_market_tick`; TP1 parcial duplicado; `entry_fees` em `funding_carry`.
+- **Paper trading:** `restore_state()` (ledger, `MANUAL_RESET`); swing com 400 candles + warmup `sma_200` (viés comprador); A3 (sem SL/TP com dados pré-entrada); A1 (SL/BE/MANUAL como taker 0,06% + 0,03% slippage); win_rate por `position_id`; `position_size` em USD no swing.
+- **Decisão:** NaN→confiança, peso de fallback, validação de LLM, divisão por zero em `signal_generator`.
+
+### Adicionado
+- `data/db_maintenance.py` (checkpoint WAL; purge de símbolos esparsos em dry-run).
+- Supervisor: healthcheck 5s, 3 falhas, re-adoção de PID; `logs/flask.log`.
+- `docs/CRITERIOS_APROVACAO_PILOTO.md` e `scripts/pilot_report.py`.
+- Suíte: 273 testes passando.
+
+### Pendente / Propostas
+- V9; ajustes de consenso (agentes neutros, vetos inertes, double counting) aguardam backtest A/B.
+- Piloto pré-reset REPROVADO (35 trades, expectância bruta -0,995%, viesado); piloto limpo desde o reset de 2026-10-14/15, parâmetros congelados >= 56 dias. Alfa NÃO demonstrado.
+
+---
+
 ## [1.0.0] - 2026-10-14 - Release Oficial (10 Fases Homologadas)
 
 ### Adicionado

@@ -829,6 +829,36 @@ A sensibilidade teórica a taxas no modelo Maker passivo (taxa de 0.02% e 0% sli
 
 
 
+## 🔍 Rodada de Auditoria e Correções - 2026-10-14/15
+
+- **Responsável:** golden_rule_guardian (registro) / quant_developer (correções)
+- **Escopo:** auditoria de lookahead, execução, paper trading, decisão e infra. Registro fiel; sem declaração de alfa.
+
+**1. Lookahead (V1-V8 corrigidos):** CPI disponível só no dia 20 do mês seguinte; FEDFUNDS no fim do mês+1; sem `bfill`; snapshots macro/order book aplicados só na última barra; `as_of_date` para VIX/DXY/SP500; candle em formação descartado. **V9 (trailing intrabarra no backtesting.py) permanece PENDENTE.**
+
+**2. Bugs de execução:** taxa de saída cobrada em dobro (`smart_trade.py`); cota diária reaberta na virada UTC; teto de margem no carry; race em `update_market_tick`; TP1 parcial duplicado; `entry_fees` em `funding_carry`.
+
+**3. Paper trading:** `restore_state()` (saldo/posições/cotas a partir do ledger, `MANUAL_RESET`); swing com 400 candles e warmup `sma_200` (corrigido viés comprador estrutural); A3 (sem SL/TP com dados pré-entrada); A1 (SL/BE/MANUAL como taker 0,06% + 0,03% slippage); win_rate por `position_id`; `position_size` unidades→USD no swing.
+
+**4. Decisão:** corrigidos NaN→confiança, peso de fallback, validação de saída do LLM, divisão por zero em `signal_generator`. Ajustes de consenso (agentes neutros, vetos inertes, double counting) são **PROPOSTAS pendentes de backtest A/B** - não aplicadas.
+
+**5. Infra:** `data/db_maintenance.py` (checkpoint WAL; purge de símbolos esparsos apenas em dry-run); supervisor com healthcheck 5s, 3 falhas, re-adoção de PID; `logs/flask.log`.
+
+**6. Piloto:** criados `docs/CRITERIOS_APROVACAO_PILOTO.md` e `scripts/pilot_report.py`. Veredito do período pré-reset: **REPROVADO** (35 trades, expectância bruta -0,995%, amostra viesada). O piloto limpo começa no reset de 2026-10-14/15, com parâmetros congelados por >= 56 dias. A estratégia em paper (GOLDEN_POT/scalp/swing) **não é** S1/S2/S3 do Parecer; **alfa continua NÃO demonstrado**.
+
+**7. Testes:** 273 passando.
+
+- **Checklist da Regra de Ouro (estado factual):**
+  - [x] Custo zero de dados / fallback: sem mudança nesta rodada.
+  - [~] Lookahead: V1-V8 corrigidos; V9 pendente.
+  - [~] Concorrência: race em `update_market_tick` corrigida; demais cobertos pela suíte.
+  - [ ] Assertividade > 70%: **NÃO comprovada** (pré-reset reprovado; piloto limpo em andamento).
+  - [x] EVOLUTION_LOG atualizado.
+- **Status:** 🟡 **Correções registradas; homologação da Fase 2 NÃO concedida** (V9 aberto e assertividade/alfa não demonstrados).
+- **Próximo Passo:** fechar V9; backtest A/B das propostas de consenso; rodar piloto limpo >= 56 dias com parâmetros congelados e avaliar via `scripts/pilot_report.py`.
+
+---
+
 ## 📋 Template Padrão para Novos Registros (Obrigatório)
 
 Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:

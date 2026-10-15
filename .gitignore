@@ -31,3 +31,4 @@ dist/
 datasets/supervisor_state.json
 datasets/*.json.tmp
 bin/
+datasets/backups/
