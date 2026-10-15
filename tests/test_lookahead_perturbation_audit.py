@@ -192,8 +192,55 @@ def test_backtest_trailing_stop_intrabar_ordering():
                          slippage=0.0)
     res = eng.run(df, sig)
     tr = res.trades[0]
-    # SL inicial = 29700; trailing recalculado com a máxima da PRÓPRIA barra (30400-150=30250) e
-    # imediatamente testado contra a mínima da mesma barra => TRAILING_SL na barra de entrada.
-    assert tr.exit_idx == 5 and tr.exit_reason == "TRAILING_SL"
-    # documenta: o SL de 30250 só existe porque a máxima da barra é conhecida (ordem H->L assumida)
-    assert tr.exit_reason == "TRAILING_SL"
+    # V9: a máxima da barra 5 (30400) NÃO pode elevar o SL e ser testada contra a mínima da mesma
+    # barra (29960). SL inicial = 29700 => sem saída na barra 5; trailing (30250) só vale a partir da 6.
+    assert not (tr.exit_idx == 5 and tr.exit_reason == "TRAILING_SL")
+    assert tr.exit_idx > 5
+
+
+def test_backtest_trailing_applies_from_next_bar():
+    df = make_candles(60)
+    df["atr_14"] = 100.0
+    df.loc[4, ["open", "high", "low", "close"]] = [30000, 30010, 29990, 30000]
+    df.loc[5, ["open", "high", "low", "close"]] = [30000, 30400, 29960, 30300]
+    df.loc[6, ["open", "high", "low", "close"]] = [30300, 30310, 30200, 30250]
+    sig = np.zeros(60, dtype=int)
+    sig[4] = 1
+    eng = BacktestEngine(trailing_stop=True, trailing_atr_multiple=1.5, tp_atr_multiple=50,
+                         sl_atr_multiple=3.0, slippage=0.0)
+    tr = eng.run(df, sig).trades[0]
+    assert tr.exit_idx == 6 and tr.exit_reason == "TRAILING_SL"
+    assert abs(tr.exit_price - 30250.0) < 1e-6
+
+
+def test_no_reentry_at_open_before_intrabar_exit():
+    df = make_candles(60)
+    df["atr_14"] = 100.0
+    for k in (4, 5, 6):
+        df.loc[k, ["open", "high", "low", "close"]] = [30000, 30010, 29990, 30000]
+    df.loc[6, ["open", "high", "low", "close"]] = [30000, 30010, 29000, 29100]  # SL na barra 6
+    sig = np.zeros(60, dtype=int)
+    sig[4] = 1
+    sig[5] = 1
+    eng = BacktestEngine(tp_atr_multiple=50, sl_atr_multiple=1.5, slippage=0.0)
+    res = eng.run(df, sig)
+    assert res.trades[0].entry_idx == 5 and res.trades[0].exit_idx == 6
+    assert all(t.entry_idx != 6 for t in res.trades)
+
+
+def test_funding_sign_and_timeframe():
+    eng = BacktestEngine(timeframe="4h", funding_rate_8h=0.001)
+    assert eng.bars_per_funding == 2
+    assert BacktestEngine(timeframe="15m").bars_per_funding == 32
+    assert abs(BacktestEngine(timeframe="4h").periods_per_year - 2190.0) < 1e-9
+    df = make_candles(60)
+    df["atr_14"] = 100.0
+    sig = np.zeros(60, dtype=int)
+    sig[4] = 2
+    tr = BacktestEngine(timeframe="4h", funding_rate_8h=0.001, tp_atr_multiple=500,
+                        sl_atr_multiple=500, max_holding_bars=4).run(df, sig).trades[0]
+    assert tr.funding_total < 0  # short recebe com funding>0
+    sig[4] = 1
+    tr = BacktestEngine(timeframe="4h", funding_rate_8h=0.001, tp_atr_multiple=500,
+                        sl_atr_multiple=500, max_holding_bars=4).run(df, sig).trades[0]
+    assert tr.funding_total > 0  # long paga

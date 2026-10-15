@@ -108,3 +108,107 @@ Conforme demonstrado por Marcos López de Prado (2018) e Joubert (2022), o meta-
 4. **Ganho de Sharpe Marginal:** Incremento de Sharpe ratio OOS frente à regra pura for inferior a 0,20 ($\Delta SR < 0.20$).
 5. **AUC Fraca:** Área sob a curva ROC OOS média $< 0.53$.
 6. **Desaparecimento sob Embargo:** Ganho evapora ao expandir o embargo temporal para 15 barras.
+
+
+---
+
+# ADDENDUM E4 — Pré-Registro das Estratégias em Paper Trading (GOLDEN_POT, SCALP, DIRECTIONAL/SWING)
+
+> **Data do registro:** 2026-10-15 (UTC). **Natureza:** registro retroativo-ao-código, prospectivo-ao-dado. As regras abaixo descrevem o código **como ele já estava** (commit `c600ea052aa87146b85bbd7f7784c8fde5b81f75` + working tree de 2026-10-15; SHA-256 de `smart_trade.py` = `dca527e60028eaf0acc8162ff9d4b4b92c70dbef582d8839b8bfc99363cbe3d1`, `scripts/run_paper_simulation.py` = `8bea852a08a69337d06b1010810406522bfc14226c8a2dff9f12a4a7af87d60b`, `core.py` = `5a55fb7c61aabe9369ad7d0c4f8fb00270e81c22a5955e23904e9035afc6da7e`, `signal_generator.py` = `88ff42d1842cbea8cf2fe242fdd823502a7cfe34f0ad77efa7f1a3d8dd46d68f`, `agents/golden_pot_agent.py` = `df37976ecb8a463d572c6c946a60e13fab57d7087d194fe0c93fc4e5239df8ce`). Nenhuma regra foi inventada ou "melhorada" ao documentá-la.
+>
+> **Divulgação de integridade (obrigatória):** (i) este registro foi escrito **depois** do reset que abriu a janela limpa atual (`reset_epoch_utc = 2026-10-15T00:47:53Z`) — mas com **0 trades fechados** nessa janela (`pilot_report.json`: `closed_trades = 0`); nenhum resultado limpo foi observado antes de congelar. (ii) Existe histórico **pré-reset** (35 trades fechados, 11 `MANUAL_RESET`, ≈ 8 h de dados, parâmetros alterados) que **já foi visto** — ele motivou a escolha de limiares de refutação mais duros abaixo e **não conta como evidência a favor**. (iii) Este registro **não** foi feito antes de a estratégia existir; ele apenas impede reinterpretação a posteriori a partir de agora.
+
+## E4.0 Identificadores reconhecidos pelo `pilot_report.py` (não renomear)
+
+O critério A3 compara `strategy_type` (coluna de `paper_positions`) com este documento. Os valores reais gravados pelo motor são:
+
+| `strategy_type` no DB | Estratégia | Origem no código |
+|---|---|---|
+| `GOLDEN_POT` | Golden Pot (reversão de VWAP / sweep+POI sobre scanner de universo) | `evaluate_golden_pot_opportunities` → `execute_golden_pot_signal` |
+| `SCALP` | Scalp Padrão Core (reversão de VWAP+RSI+volume em BTC/ETH/SOL 15m) | `evaluate_scalp_opportunities` → `execute_scalp_signal` |
+| `DIRECTIONAL` | **"Swing"** (comitê de agentes 1h; o nome `SWING` nunca é gravado no DB) | `evaluate_swing_opportunities` → `execute_directional_signal` |
+
+Para que fique inequívoco: **GOLDEN_POT**, **SCALP**, **DIRECTIONAL** (a.k.a. SWING). (`DELTA_NEUTRAL_CARRY` permanece em STANDBY e fora deste registro.)
+
+## E4.1 Razão econômica (honesta) e declaração de ausência de alfa
+
+- **Tese nominal:** desvios intradiários do preço em relação ao VWAP, acompanhados de RSI extremo/volume, revertem (microestrutura: provisão de liquidez, exaustão de fluxo); varreduras de liquidez em zonas de POI sinalizam reversão (heurística "Smart Money Concepts"); o comitê direcional capta tendência/regime de 1h.
+- **Declaração honesta:** **não existe evidência prévia de alfa para nenhuma das três.** O pré-piloto teve **expectância bruta negativa** (antes de custos) e é **viesado** (resets, parâmetros alterados, janela de ~8 h, universo de tickers de baixa capitalização). Reversão de VWAP em cripto de 15m tem literatura fraca e é a classe de estratégia que o `PARECER_CHIEF_TRADING_SCIENTIST.md` §2.2 condenou. SMC/POI/"liquidity sweep" **não possui validação acadêmica** conhecida; nenhum backtest pré-registrado dessas regras existe em `datasets/reports/` (A9 inatingível). **A hipótese prior é que todas as três são nulas após custos.** A probabilidade a priori de alfa líquido real é baixa; o piloto existe para **refutar**, não para confirmar.
+- **Multiplicidade:** três hipóteses testadas simultaneamente, sobre um `trial_log.csv` com 83 tentativas anteriores (84 linhas incl. cabeçalho) → o DSR e a correção de Holm abaixo são obrigatórios.
+
+## E4.2 Especificação congelada (regras como no código)
+
+### Parâmetros globais do motor (`PaperTradingEngine`, defaults + `simulation_settings`)
+- Capital inicial $10.000; taker 0,06%; maker 0,02%; slippage spot 0,02%; slippage perp 0,03%; modo simulação obrigatório (live bloqueado por `PermissionError`).
+- `max_daily_golden_pots = 3`; `max_daily_scalps = 5` (cotas **independentes**, reset por dia UTC); `max_concurrent_positions = 5` (settings default); `max_margin_utilization_pct = 0,85`; mínimo de notional $10; `available_margin < $200` bloqueia novas entradas de GP e SCALP.
+- Um único `OPEN` por (símbolo, `strategy_type`). Ciclo do daemon: `poll_interval` padrão 20 s (`main`) / 15 s (`__init__`); ordem por ciclo: atualizar posições → GP → SCALP → DIRECTIONAL.
+- Circuit breaker `RollbackGuard` (`can_open_new_position`, `CONSECUTIVE_LOSS_COOLDOWN`, `DEGRADATION_ROLLBACK_ACTIVATED`) bloqueia aberturas para SCALP/GP; seus limiares (arquivo `rollback_guard.py`) fazem parte do congelamento **por referência ao hash do repositório** e não são alterados durante o piloto.
+- `operation_mode = INSTITUTIONAL` (limiares de GP abaixo). O modo `DEMO` (VWAP 1,2% / RSI 42/58) **não é** a especificação registrada; usá-lo na janela é violação (A11).
+- Entradas ocorrem no `close` da última vela retornada por `DataLoader.get_candles` (Binance; fallback Bitget). **Não verificado neste registro** se essa última vela já está fechada — risco conhecido de repainting/lookahead intra-barra, declarado como limitação.
+
+### E4.2.a GOLDEN_POT
+- **Universo:** `GoldenPotAgent(min_volume_usd=20_000_000)`; `scan_market` → `top_scalps[:4]` (ordem por `score`). Candidato exige `|dist_vwap_24h| ≥ 2,5%` **e** amplitude 24h ≥ 4,0% (setup `SCALP_REVERSION`; direção BUY se abaixo do VWAP, SELL se acima). Universo dinâmico (pode incluir micro-caps listados, ex. SOXSUSDT/WALUSDT/BTWUSDT) — **risco de seleção adversa e de slippage subestimado**.
+- **Entrada (15m, 100 velas, mín. 50, `compute_all_features(drop_na=True)`):** BUY se `(dist_vwap_pct ≤ −2,5 e rsi_14 ≤ 38)` **OU** `(liquidity_sweep_bull = 1 e at_bullish_poi = 1)`; SELL se `(dist_vwap_pct ≥ +2,5 e rsi_14 ≥ 62)` **OU** `(liquidity_sweep_bear = 1 e at_bearish_poi = 1)`. O ramo sweep+POI **não exige** desvio de VWAP nem RSI.
+- **Execução simulada:** fill **100% garantido** a `close·(1 ± 0,0001)` com taxa **maker 0,02%** (sem modelo de fill rate nem seleção adversa).
+- **Saídas:** SL = 1,0×ATR14(15m); TP1 = 1,2×ATR → vende 50% (maker); após TP1, SL → entrada ±0,04% (breakeven); TP2 = 2,5×ATR (maker) fecha os 50% restantes. SL e `BREAKEVEN_STOP` são **a mercado**: taker 0,06% + slippage perp 0,03%. Sem stop de tempo (posição pode ficar aberta indefinidamente).
+- **Tamanho:** `position_size = min(1200, available_margin·0,95, balance·0,20)`; no motor, `notional = min(position_size, free_margin, balance·0,20)`. `risk_dollars = 50` é **rótulo cosmético** (o risco real = notional × distância do SL ≈ 20%·1,0·ATR/preço do saldo).
+- **Alavancagem/risco:** sem alavancagem explícita além do teto de margem 85%; funding **não** é debitado/creditado (`funding_rate_period = 0`).
+
+### E4.2.b SCALP
+- **Universo:** `ETHUSDT`, `SOLUSDT`, `BTCUSDT` (nesta ordem de prioridade), 15m, 100 velas.
+- **Entrada:** BUY se `dist_vwap_pct ≤ −2,0` **e** `rsi_14 ≤ 35` **e** `volume_zscore_20 ≥ 0,2`; SELL se `dist_vwap_pct ≥ +2,0` **e** `rsi_14 ≥ 65` **e** `volume_zscore_20 ≥ 0,2` (valores de `simulation_settings`: `scalp_vwap_dev_pct`, `scalp_rsi_oversold/overbought`, `scalp_volume_z`). Máx. 5/dia (global). `dist_vwap_pct` aqui vem de `feature_engineering` (VWAP de sessão/janela das 100 velas, **não** o VWAP 24h do scanner).
+- **Execução simulada:** maker 0,02%, fill 100% a `close·(1 ± 0,0001)`.
+- **Saídas:** SL = 0,9×ATR14; TP1 = 1,0×ATR (50%, maker); breakeven ±0,04% após TP1; TP2 = 1,8×ATR (maker). SL/BE a mercado (taker + 0,03%).
+- **Tamanho:** `position_size = min(1500, available_margin·0,95, balance·0,20)`; no motor `notional = min(.., free_margin, balance·0,25)`. Sem funding.
+
+### E4.2.c DIRECTIONAL ("Swing", 1h)
+- **Universo:** BTCUSDT, ETHUSDT, SOLUSDT; 1h; 400 velas buscadas; mínimo bruto 250; exige `sma_200` finita > 0 (warmup, `_compute_swing_features`).
+- **Entrada:** `TradingCore.evaluate_multi_strategy` → `evaluate_market_deterministic`: `RiskSentinel` com poder de veto; demais agentes `is_backtestable` avaliados em `ConsensusJudge.judge_deterministic` (`min_consensus_threshold = 0,30`); abre se `direction ∈ {BUY, SELL}`, não vetado e `confidence ≥ 0,70`. Pesos/regras internas dos agentes: as de `agents/*.py` e `core.py` no hash congelado (não reproduzidas aqui para evitar divergência).
+- **Execução simulada:** **taker** 0,06% + slippage (spot 0,02% long / perp 0,03% short) na entrada e na saída.
+- **Saídas:** SL = 1,0×ATR14(1h); TP = 1,5×ATR (`SignalGenerator` defaults; `structure_context` não é passado → sem assimetria SMC); sem parciais, sem trailing, sem stop de tempo.
+- **Tamanho:** risco fixo 1% do capital do `SignalGenerator` (capital **fixo de construção = $10.000, não o saldo corrente**) → `size = 1%·capital / distância_do_SL`, teto por alavancagem 1,0×; convertido para notional (`size·close`); motor limita a `min(notional, free_margin, balance·0,5)`. Um único DIRECTIONAL por símbolo. Funding não aplicado.
+
+### Premissas de simulação que **favorecem** o resultado (declaradas ex ante, não corrigidas)
+1. Maker com fill 100% sem seleção adversa (GP/SCALP) — o fill real de ordens limite correlaciona-se negativamente com o resultado.
+2. Dentro da mesma vela, TP1 é avaliado **antes** do SL (otimista quando a vela toca ambos).
+3. Stops executam no preço do stop (sem gap-through); funding ignorado.
+4. Slippage de 0,01–0,03% é irrealista para micro-caps do universo GP.
+O relatório decisório (`pilot_report.py`) recalcula tudo com **estresse de 0,08% por perna (taker 0,06% + slippage 0,02%)**; é essa a métrica que vale, não o P&L contábil do motor.
+
+## E4.3 Hipóteses (uma por estratégia; testadas separadamente)
+
+Para cada `S ∈ {GOLDEN_POT, SCALP, DIRECTIONAL}`, sendo $\mu_S$ a expectância líquida por posição fechada (soma de todos os fills da `position_id`, incl. `TP1_PARTIAL`), em % do notional, **sob custo estresse**:
+
+- **$H_0$:** $\mu_S \le 0$.
+- **$H_1$:** $\mu_S > 0$ (e, para chamar de implementável, $\mu_S \ge 0{,}10\%$ do notional por posição — abaixo disso o resultado não sobrevive a erro de modelagem de custo).
+
+## E4.4 Métrica primária e regra de decisão
+
+- **Primária:** expectância líquida estresse por posição fechada (% do notional), por `strategy_type`. Secundárias (já em `pilot_report.py`): Sharpe diário anualizado ×√365, DSR (N = tentativas do `trial_log.csv` + 1), MaxDD estresse, fração de semanas positivas, hit-rate vs breakeven (Wilson).
+- **Aprovação de uma estratégia exige** o conjunto A1–A14 de `docs/CRITERIOS_APROVACAO_PILOTO.md` **e**: limite inferior bootstrap (5º pct, 5000 reamostras) de $\mu_S$ > 0 **com correção de Holm** para as 3 hipóteses (α = 0,05 família; limiar mais rígido 0,0167 para a menor p-valor). Pool de estratégias **não** pode ser usado para aprovar uma delas isoladamente.
+- A3 só valida o *registro*; **não** constitui evidência de alfa.
+
+## E4.5 Tamanho mínimo de amostra
+
+- **Mínimo operacional (necessário, não suficiente):** ≥ 100 posições fechadas **por estratégia** na janela limpa e ≥ 56 dias (≥ 84 alvo) sem `MANUAL_RESET` nem mudança de `simulation_settings` (A1/A2/A11); abaixo disso nenhuma conclusão afirmativa.
+- **Potência (aprox., one-sided, Holm: $z_\alpha \approx 2{,}13$, potência 80%: $z_\beta \approx 0{,}84$):** $n \ge \big((z_\alpha+z_\beta)\,\sigma/\mu\big)^2 \approx 8{,}8\,(\sigma/\mu)^2$. Com σ por posição **assumido** (não medido) ≈ 0,5% (SCALP/GP) e μ = 0,10% → **n ≈ 220**; com σ ≈ 1,0% (DIRECTIONAL 1h) e μ = 0,15% → **n ≈ 390**. Logo, 100 trades só detectam efeitos ≥ ~0,15% (σ=0,5%) ou ≥ ~0,30% (σ=1,0%).
+- **Consequência esperada:** DIRECTIONAL (≤ 3 símbolos, uma posição por vez, sinal conservador) provavelmente **não atingirá N=100 em 56 dias** → resultado **INCONCLUSIVO por construção**, não aprovação. SCALP/GP (cotas 5 e 3/dia) podem atingir N em semanas, mas com risco de trades correlacionados (mesma barra, mesmos ativos, mesmo regime) → N efetivo < N nominal.
+
+## E4.6 Critérios mecânicos de refutação (qualquer um ⇒ a estratégia é REFUTADA)
+
+Herdam R1–R7 de `docs/CRITERIOS_APROVACAO_PILOTO.md` e adicionam, por estratégia:
+
+1. **Futilidade (R2):** N ≥ 30 posições fechadas e limite **superior** do IC95 unilateral de $\mu_S$ (estresse) < 0.
+2. **Sem alfa bruto (R6):** N ≥ 30 e expectância **bruta** (antes dos custos) ≤ 0. Dado o pré-piloto com bruta negativa, este é o desfecho **mais provável**; se ocorrer, nenhuma otimização de execução (maker, filtros, horário) é admissível.
+3. **Custos dominam:** custos totais (taxa + slippage) > 30% do retorno bruto positivo agregado, ou breakeven WR (A8) > WR observado no limite Wilson.
+4. **Drawdown:** MaxDD estresse ≥ 20% (R1) do portfólio, ou ≥ 10% atribuível a uma única estratégia.
+5. **Cauda/ruína:** uma única posição com perda > 3× a perda planejada (risco de gap/stop não executado), ou perda diária > 5% do capital.
+6. **Concentração:** > 50% do P&L líquido positivo vindo de um único símbolo ou de ≤ 3 trades (indica sorte/outlier, não processo).
+7. **Prazo (R7):** 56 dias com Sharpe < 1,0 ou DSR < 0,95.
+8. **Integridade:** qualquer `MANUAL_RESET` ou alteração em `simulation_settings` **reinicia o relógio de aprovação**, mas **nunca** o de refutação (o ledger inteiro conta).
+
+**Efeito da refutação:** a estratégia é **abandonada**; é proibido "ajustar e reiniciar" sem nova hipótese pré-registrada, +1 no `trial_log.csv` e novo holdout (Protocolo §1.1–1.2, 1.7). Refutar as três é um resultado válido e esperado (Protocolo §3).
+
+## E4.7 Lista de proibições durante a janela
+
+Não alterar: limiares de entrada/saída, múltiplos de ATR, cotas diárias, tamanho, `operation_mode`, universo, RollbackGuard, nem o código de `smart_trade.py`, `core.py`, `signal_generator.py`, `agents/*`, `scripts/run_paper_simulation.py`. Correções de bug exigem registro de nova versão e **reinício do relógio de aprovação** (A1) com nota neste documento. Qualquer *novo* `strategy_type` negociado sem registro aqui faz A3 falhar.

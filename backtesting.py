@@ -84,6 +84,16 @@ class BacktestResult:
         return res
 
 
+def _timeframe_hours(tf: str) -> float:
+    """Converte '15m', '1h', '4H', '1d' em horas."""
+    t = str(tf).strip().lower()
+    unit = t[-1]
+    mult = {"m": 1 / 60.0, "h": 1.0, "d": 24.0, "w": 168.0}
+    if unit not in mult or not t[:-1].isdigit() or int(t[:-1]) <= 0:
+        raise ValueError(f"Timeframe inválido: {tf!r}")
+    return int(t[:-1]) * mult[unit]
+
+
 class BacktestEngine:
     """
     Motor de backtest institucional com modelagem estrita de microestrutura.
@@ -102,6 +112,7 @@ class BacktestEngine:
         trailing_atr_multiple: float = 1.5,
         risk_per_trade: Optional[float] = 0.01,  # Risco fixo institucional (ex: 1% do capital arriscado no SL). Se None, usa 95% do capital
         allow_reversal: bool = False,            # Se False, não fecha por sinal contrário; sai apenas por TP, SL, Trailing ou timeout
+        timeframe: str = "1h",                  # Timeframe das barras (funding 8h e anualização do Sharpe)
         max_holding_bars: Optional[int] = None,  # Limite máximo de barras mantidas antes de saída forçada ("HORIZON_TIMEOUT")
     ):
         self.initial_capital = initial_capital
@@ -116,6 +127,23 @@ class BacktestEngine:
         self.risk_per_trade = risk_per_trade
         self.allow_reversal = allow_reversal
         self.max_holding_bars = max_holding_bars
+        self.timeframe = timeframe
+        tf_hours = _timeframe_hours(timeframe)
+        self.bars_per_funding = max(1, int(round(8.0 / tf_hours)))
+        self.periods_per_year = 8760.0 / tf_hours
+
+    def _update_trailing(self, active_trade: Dict[str, Any], high_p: float, low_p: float, atr: float) -> None:
+        """V9: atualiza peak/SL de trailing com dados de uma barra JÁ testada; vale a partir da próxima."""
+        if not self.trailing_stop:
+            return
+        if active_trade["direction"] == "LONG":
+            if high_p > active_trade["peak_price"]:
+                active_trade["peak_price"] = high_p
+                active_trade["sl"] = max(active_trade["sl"], high_p - self.trailing_atr_multiple * atr)
+        else:
+            if low_p < active_trade["peak_price"]:
+                active_trade["peak_price"] = low_p
+                active_trade["sl"] = min(active_trade["sl"], low_p + self.trailing_atr_multiple * atr)
 
     def _check_bar_exit(
         self,
@@ -134,21 +162,6 @@ class BacktestEngine:
         entry_price = active_trade["entry_price"]
         sl = active_trade["sl"]
         tp = active_trade["tp"]
-
-        # 1. Atualização de Trailing Stop antes de checar saída
-        if self.trailing_stop:
-            if direction == "LONG":
-                if high_p > active_trade["peak_price"]:
-                    active_trade["peak_price"] = high_p
-                    new_sl = high_p - (self.trailing_atr_multiple * next_atr)
-                    active_trade["sl"] = max(active_trade["sl"], new_sl)
-                    sl = active_trade["sl"]
-            elif direction == "SHORT":
-                if low_p < active_trade["peak_price"]:
-                    active_trade["peak_price"] = low_p
-                    new_sl = low_p + (self.trailing_atr_multiple * next_atr)
-                    active_trade["sl"] = min(active_trade["sl"], new_sl)
-                    sl = active_trade["sl"]
 
         # 2. Avaliação de Colisão Intra-Barra e Saídas
         if direction == "LONG":
@@ -183,6 +196,7 @@ class BacktestEngine:
                 exit_price = tp * (1.0 + self.slippage)
                 return True, exit_price, "TP"
 
+        self._update_trailing(active_trade, high_p, low_p, next_atr)
         return False, 0.0, ""
 
     def run(
@@ -236,12 +250,17 @@ class BacktestEngine:
             # -------------------------------------------------------------
             # 1. TRADE EXISTENTE: Verificação na vela i+1
             # -------------------------------------------------------------
+            closed_intrabar = False
             if active_trade is not None:
-                # Contabiliza funding rate a cada 8 barras
+                # Contabiliza funding rate a cada 8h (bars_per_funding barras)
                 active_trade["bars_held"] += 1
-                if active_trade["bars_held"] % 8 == 0:
+                if active_trade["bars_held"] % self.bars_per_funding == 0:
                     funding_fee = (active_trade["entry_price"] * active_trade["size"]) * self.funding_rate_8h
-                    active_trade["funding_total"] += funding_fee
+                    # funding>0: long paga (custo), short recebe (crédito); inverso se funding<0
+                    if active_trade["direction"] == "LONG":
+                        active_trade["funding_total"] += funding_fee
+                    else:
+                        active_trade["funding_total"] -= funding_fee
 
                 # Checa se há reversão de sinal explícita na abertura da vela (somente se allow_reversal=True)
                 trade_closed = False
@@ -307,12 +326,14 @@ class BacktestEngine:
                         return_pct=ret_pct,
                         exit_reason=exit_reason,
                     ))
+                    # A10a: saída intrabarra (SL/TP/trailing) ocorre APÓS o open; não reentrar no open de i+1
+                    closed_intrabar = exit_reason in ("SL", "TP", "TRAILING_SL")
                     active_trade = None
 
             # -------------------------------------------------------------
             # 2. ENTRADA EM NOVO TRADE (Executada estritamente na vela i+1)
             # -------------------------------------------------------------
-            if active_trade is None and capital > 10.0:
+            if active_trade is None and capital > 10.0 and not closed_intrabar:
                 if curr_signal in [1, 2, -1]:
                     direction = "LONG" if curr_signal == 1 else "SHORT"
 
@@ -456,7 +477,7 @@ class BacktestEngine:
         eq_series = pd.Series(equity_curve)
         pct_returns = eq_series.pct_change().dropna()
         if len(pct_returns) > 1 and pct_returns.std() > 0:
-            sharpe_ratio = float(np.sqrt(8760) * (pct_returns.mean() / pct_returns.std()))
+            sharpe_ratio = float(np.sqrt(self.periods_per_year) * (pct_returns.mean() / pct_returns.std()))
         else:
             sharpe_ratio = 0.0
 
@@ -464,12 +485,10 @@ class BacktestEngine:
         drawdowns = (eq_series - running_max) / (running_max + 1e-8)
         max_drawdown_pct = float(abs(drawdowns.min())) * 100.0 if not drawdowns.empty else 0.0
 
-        if trades_count > 0:
-            precision = win_rate
-            recall = winning_trades / max(1, (trades_count + losing_trades))
-            f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-        else:
-            f1 = 0.0
+        # A10c: a fórmula anterior era degenerada (recall = wins/(2*trades-wins) usava a própria
+        # contagem de trades). Sem classes verdadeiras no nível de trade, F1 não é definido aqui;
+        # o campo é mantido por compatibilidade e fixado em 0.0 (use model_trainer para F1 do classificador).
+        f1 = 0.0
 
         result = BacktestResult(
             initial_capital=self.initial_capital,

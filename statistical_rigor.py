@@ -13,6 +13,9 @@ import os
 import json
 import math
 import itertools
+import threading
+import fcntl
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any, Union
 
@@ -207,7 +210,9 @@ def probability_of_backtest_overfitting(
             "is_overfit": True,
         }
 
-    blocks = [arr[i * block_size : (i + 1) * block_size] for i in range(n_splits)]
+    # T não divisível: descarta as barras mais ANTIGAS (preserva as mais recentes)
+    offset = t_obs - block_size * n_splits
+    blocks = [arr[offset + i * block_size : offset + (i + 1) * block_size] for i in range(n_splits)]
 
     # Todas as combinações de n_splits escolhendo n_splits/2
     k_half = n_splits // 2
@@ -215,8 +220,8 @@ def probability_of_backtest_overfitting(
 
     # Limita o número de combinações para performance caso n_splits seja alto
     if len(comb_indices) > 500:
-        np.random.seed(42)
-        selected_idx = np.random.choice(len(comb_indices), size=500, replace=False)
+        rng = np.random.default_rng(42)
+        selected_idx = rng.choice(len(comb_indices), size=500, replace=False)
         comb_indices = [comb_indices[idx] for idx in selected_idx]
 
     all_ranks_oos = []
@@ -274,13 +279,17 @@ def bootstrap_performance_metrics(
     returns: np.ndarray,
     n_iterations: int = 1000,
     periods_per_year: float = 365.0,
-    seed: int = 42
+    seed: int = 42,
+    block_size: Optional[int] = None,
 ) -> Dict[str, Tuple[float, float]]:
     """
     Gera intervalos de confiança de 95% via bootstrap para:
     - Retorno anualizado
     - Sharpe ratio anualizado
     - Maximum Drawdown
+
+    block_size: se informado (>1), usa circular block bootstrap (preserva autocorrelação);
+    caso contrário, bootstrap iid. Usa Generator local (sem estado global).
     """
     clean_rets = returns[~np.isnan(returns)]
     if len(clean_rets) < 10:
@@ -290,14 +299,21 @@ def bootstrap_performance_metrics(
             "max_dd_ci": (0.0, 0.0),
         }
 
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     n = len(clean_rets)
     boot_sharpes = []
     boot_returns = []
     boot_drawdowns = []
 
     for _ in range(n_iterations):
-        sample = np.random.choice(clean_rets, size=n, replace=True)
+        if block_size is not None and block_size > 1:
+            bs = min(int(block_size), n)
+            n_blocks = int(math.ceil(n / bs))
+            starts = rng.integers(0, n, size=n_blocks)
+            idx = (starts[:, None] + np.arange(bs)[None, :]) % n
+            sample = clean_rets[idx.ravel()[:n]]
+        else:
+            sample = rng.choice(clean_rets, size=n, replace=True)
         # Sharpe
         sr = calculate_annualized_sharpe(sample, periods_per_year=periods_per_year)
         boot_sharpes.append(sr)
@@ -420,6 +436,22 @@ def initialize_trial_log(reset_if_missing: bool = True) -> int:
     return len(df)
 
 
+_TRIAL_LOG_THREAD_LOCK = threading.Lock()
+
+
+@contextmanager
+def _trial_log_lock():
+    """Lock inter-thread + inter-processo (flock) para ids únicos e append atômico."""
+    with _TRIAL_LOG_THREAD_LOCK:
+        os.makedirs(os.path.dirname(TRIAL_LOG_PATH), exist_ok=True)
+        with open(TRIAL_LOG_PATH + ".lock", "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def log_trial(
     phase: str,
     experiment: str,
@@ -439,14 +471,29 @@ def log_trial(
     notes: str = "",
 ) -> str:
     """Registra uma tentativa de backtest atômica em trial_log.csv e retorna o trial_id."""
-    os.makedirs(os.path.dirname(TRIAL_LOG_PATH), exist_ok=True)
+    with _trial_log_lock():
+        return _log_trial_locked(
+            phase, experiment, strategy_name, symbol, timeframe, params, sample_period,
+            is_oos, trades_count, net_pnl, net_pnl_pct, sharpe_ratio, max_drawdown_pct,
+            win_rate_pct, status_label, notes,
+        )
+
+
+def _log_trial_locked(
+    phase, experiment, strategy_name, symbol, timeframe, params, sample_period,
+    is_oos, trades_count, net_pnl, net_pnl_pct, sharpe_ratio, max_drawdown_pct,
+    win_rate_pct, status_label, notes,
+) -> str:
     if not os.path.exists(TRIAL_LOG_PATH):
         initialize_trial_log()
 
     df = pd.read_csv(TRIAL_LOG_PATH)
-    next_id_num = len(df) + 1
+    nums = pd.to_numeric(
+        df["trial_id"].astype(str).str.extract(r"^TRIAL_(\d+)$")[0], errors="coerce"
+    ).dropna()
+    next_id_num = max(len(df), int(nums.max()) if len(nums) else 0) + 1
     trial_id = f"TRIAL_{next_id_num:04d}"
-    
+
     new_row = {
         "trial_id": trial_id,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

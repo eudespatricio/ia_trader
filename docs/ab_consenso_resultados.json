@@ -1,0 +1,1694 @@
+{
+ "BASE": {
+  "world": "PROD",
+  "desc": "R\u00e9plica do piloto congelado",
+  "identical_to_baseline": true,
+  "dsr": 7.554454581401306e-28,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 7.404527244323751e-34,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 10902,
+   "hit_rate": 0.3984589983489268,
+   "hit_rate_gross": 0.39855072463768115,
+   "expectancy_net": -0.0016079031312293288,
+   "expectancy_gross": -0.00036543123143895426,
+   "exp_net_ci": [
+    -0.001958847514733495,
+    -0.0012579545280543725
+   ],
+   "sharpe": -4.359730424843156,
+   "max_dd": -14.758196558911608,
+   "total_return": -14.601684325539365,
+   "by_reason": {
+    "SL": 6550,
+    "TP": 4335,
+    "TIMEOUT": 17
+   }
+  },
+  "TRAIN": {
+   "n_trades": 6461,
+   "hit_rate": 0.39823556724965176,
+   "hit_rate_gross": 0.3983903420523139,
+   "expectancy_net": -0.0015178044291352375,
+   "expectancy_gross": -0.00025706999396688066,
+   "exp_net_ci": [
+    -0.0020105595505645487,
+    -0.0010139906569993351
+   ],
+   "sharpe": -3.9754346896637722,
+   "max_dd": -8.076527169336014,
+   "total_return": -7.988673693093229,
+   "by_reason": {
+    "SL": 3882,
+    "TP": 2567,
+    "TIMEOUT": 12
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 4389,
+   "hit_rate": 0.39826839826839827,
+   "hit_rate_gross": 0.39826839826839827,
+   "expectancy_net": -0.0017527503272460523,
+   "expectancy_gross": -0.0005371312041299242,
+   "exp_net_ci": [
+    -0.0021712788097090333,
+    -0.001353716250876959
+   ],
+   "sharpe": -4.972437499022216,
+   "max_dd": -6.750478502659697,
+   "total_return": -6.598454480125939,
+   "by_reason": {
+    "SL": 2639,
+    "TP": 1745,
+    "TIMEOUT": 5
+   }
+  },
+  "n_raw_decisions": 18270,
+  "net_alpha": false,
+  "n_vetoed_bars": 52
+ },
+ "P1a": {
+  "world": "PROD",
+  "desc": "Juiz exclui agentes sem dados do denominador",
+  "identical_to_baseline": false,
+  "dsr": 3.886442344438635e-44,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 1.279320672087045e-51,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 22635,
+   "hit_rate": 0.3997791031588248,
+   "hit_rate_gross": 0.40004417936823505,
+   "expectancy_net": -0.0017453845603340892,
+   "expectancy_gross": -0.0005172697397733959,
+   "exp_net_ci": [
+    -0.001982928639778189,
+    -0.0015123228120922573
+   ],
+   "sharpe": -6.204031738234873,
+   "max_dd": -30.719330331742135,
+   "total_return": -30.60508940038853,
+   "by_reason": {
+    "SL": 13568,
+    "TP": 9036,
+    "TIMEOUT": 31
+   }
+  },
+  "TRAIN": {
+   "n_trades": 13155,
+   "hit_rate": 0.4026605853287723,
+   "hit_rate_gross": 0.4030406689471684,
+   "expectancy_net": -0.0017398250368582816,
+   "expectancy_gross": -0.0005002790916263551,
+   "exp_net_ci": [
+    -0.0021007589359340233,
+    -0.001389976797125401
+   ],
+   "sharpe": -5.646537694557535,
+   "max_dd": -16.25098529164133,
+   "total_return": -16.109467919473225,
+   "by_reason": {
+    "SL": 7846,
+    "TP": 5293,
+    "TIMEOUT": 16
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 9377,
+   "hit_rate": 0.39543564039671536,
+   "hit_rate_gross": 0.39554228431267996,
+   "expectancy_net": -0.0017557999816717436,
+   "expectancy_gross": -0.000543623700130419,
+   "exp_net_ci": [
+    -0.002038292449227118,
+    -0.001483922494474222
+   ],
+   "sharpe": -6.994203912545838,
+   "max_dd": -14.416702621333355,
+   "total_return": -14.386097268253788,
+   "by_reason": {
+    "SL": 5663,
+    "TP": 3699,
+    "TIMEOUT": 15
+   }
+  },
+  "n_raw_decisions": 109413,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": -0.007954691305544279,
+   "lo": -0.009981554509624674,
+   "hi": -0.005850313733890574,
+   "p_le0": 1.0,
+   "lo_adj": -0.01099756938481741
+  },
+  "train_diff_mean_daily": -0.005479618236423749,
+  "exp_diff_per_trade": {
+   "mean": -3.049654425691349e-06,
+   "lo": -0.0005014462051400131,
+   "hi": 0.0004719622953419271,
+   "lo_adj": -0.00074439753304656
+  },
+  "delta_total_return": -7.787642788127849,
+  "delta_from_fewer_trades": -7.4989954310476605,
+  "delta_from_better_trades": -0.2886473570801882,
+  "block_diff_means": [
+   -0.003687838466657918,
+   -0.007097258175300652,
+   -0.007162636059372663,
+   -0.006238802631062722,
+   -0.008114764650576116,
+   -0.006559142572914552
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora",
+   "s\u00f3 0/6 blocos melhoram"
+  ]
+ },
+ "P1b": {
+  "world": "PROD",
+  "desc": "min_consensus_threshold 0.30\u21920.22",
+  "identical_to_baseline": false,
+  "dsr": 5.674101003078494e-31,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 2.4871281349083762e-37,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 17131,
+   "hit_rate": 0.40009339793357074,
+   "hit_rate_gross": 0.4003268927674975,
+   "expectancy_net": -0.0016003618817388657,
+   "expectancy_gross": -0.0003581707011100251,
+   "exp_net_ci": [
+    -0.0018773926332700335,
+    -0.0013290386962219508
+   ],
+   "sharpe": -5.064189548786684,
+   "max_dd": -23.00135269782252,
+   "total_return": -22.79760434547207,
+   "by_reason": {
+    "SL": 10268,
+    "TP": 6839,
+    "TIMEOUT": 24
+   }
+  },
+  "TRAIN": {
+   "n_trades": 10158,
+   "hit_rate": 0.3984051978735972,
+   "hit_rate_gross": 0.39860208702500494,
+   "expectancy_net": -0.0015512967029010286,
+   "expectancy_gross": -0.0002912777407292317,
+   "exp_net_ci": [
+    -0.0019593206020248055,
+    -0.0011469758751717646
+   ],
+   "sharpe": -4.875734040603934,
+   "max_dd": -13.185093594821632,
+   "total_return": -13.001961202384113,
+   "by_reason": {
+    "SL": 6106,
+    "TP": 4039,
+    "TIMEOUT": 13
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 6903,
+   "hit_rate": 0.40243372446762277,
+   "hit_rate_gross": 0.4027234535709112,
+   "expectancy_net": -0.0016734513841082797,
+   "expectancy_gross": -0.0004574176165633116,
+   "exp_net_ci": [
+    -0.0019914613052927506,
+    -0.0013490012636211348
+   ],
+   "sharpe": -5.358481009182891,
+   "max_dd": -9.831669827234974,
+   "total_return": -9.757040750444878,
+   "by_reason": {
+    "SL": 4121,
+    "TP": 2771,
+    "TIMEOUT": 11
+   }
+  },
+  "n_raw_decisions": 53788,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": -0.0032263393976700097,
+   "lo": -0.004634148091181499,
+   "hi": -0.0018121955528080317,
+   "p_le0": 1.0,
+   "lo_adj": -0.005324021867689079
+  },
+  "train_diff_mean_daily": -0.0033827850939884504,
+  "exp_diff_per_trade": {
+   "mean": 7.929894313777252e-05,
+   "lo": -0.00043532629322575025,
+   "hi": 0.0005938921941515149,
+   "lo_adj": -0.0006781847437027555
+  },
+  "delta_total_return": -3.1585862703189385,
+  "delta_from_fewer_trades": -3.779565860796676,
+  "delta_from_better_trades": 0.6209795904777368,
+  "block_diff_means": [
+   -0.002484710570801997,
+   -0.003738119561391049,
+   -0.0036778112323082456,
+   -0.004025160178988022,
+   -0.0033544172260243595,
+   -0.0026218640933360765
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora",
+   "s\u00f3 0/6 blocos melhoram"
+  ]
+ },
+ "P2": {
+  "world": "PROD",
+  "desc": "volume_sma/atr_median mapeados (vetos + vol_ratio reais)",
+  "identical_to_baseline": false,
+  "dsr": 3.5833041633856062e-28,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 3.1539256772939783e-34,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 11044,
+   "hit_rate": 0.3994929373415429,
+   "hit_rate_gross": 0.3995834842448388,
+   "expectancy_net": -0.0016083067632864292,
+   "expectancy_gross": -0.0003682362760863575,
+   "exp_net_ci": [
+    -0.0019450022521143703,
+    -0.0012691999524084845
+   ],
+   "sharpe": -4.389627141719567,
+   "max_dd": -14.88011438647377,
+   "total_return": -14.725609004828915,
+   "by_reason": {
+    "SL": 6625,
+    "TP": 4405,
+    "TIMEOUT": 14
+   }
+  },
+  "TRAIN": {
+   "n_trades": 6522,
+   "hit_rate": 0.3995706838393131,
+   "hit_rate_gross": 0.3997240110395584,
+   "expectancy_net": -0.001511179921512549,
+   "expectancy_gross": -0.0002531562549008468,
+   "exp_net_ci": [
+    -0.0020132719375483056,
+    -0.0010113913866462959
+   ],
+   "sharpe": -3.9909983525145103,
+   "max_dd": -8.050056469835441,
+   "total_return": -7.962202993592665,
+   "by_reason": {
+    "SL": 3911,
+    "TP": 2602,
+    "TIMEOUT": 9
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 4470,
+   "hit_rate": 0.3988814317673378,
+   "hit_rate_gross": 0.3988814317673378,
+   "expectancy_net": -0.0017620179221239437,
+   "expectancy_gross": -0.0005481394047948957,
+   "exp_net_ci": [
+    -0.0021596299393153687,
+    -0.001382127141482375
+   ],
+   "sharpe": -5.002955683348119,
+   "max_dd": -6.8715047992547085,
+   "total_return": -6.737730581287737,
+   "by_reason": {
+    "SL": 2685,
+    "TP": 1780,
+    "TIMEOUT": 5
+   }
+  },
+  "n_raw_decisions": 18517,
+  "net_alpha": false,
+  "n_vetoed_bars": 1614,
+  "paired_holdout": {
+   "mean": -0.0001422636375503555,
+   "lo": -0.00044754378109774216,
+   "hi": 0.000163623197171467,
+   "p_le0": 0.8306,
+   "lo_adj": -0.0006111675082781855
+  },
+  "train_diff_mean_daily": 1.786147064815397e-05,
+  "exp_diff_per_trade": {
+   "mean": -9.26759487789139e-06,
+   "lo": -0.0005692251697966734,
+   "hi": 0.0005670260035186827,
+   "lo_adj": -0.0009142672466089932
+  },
+  "delta_total_return": -0.13927610116179778,
+  "delta_from_fewer_trades": -0.12177598835502416,
+  "delta_from_better_trades": -0.017500112806774427,
+  "block_diff_means": [
+   0.00010092741103217147,
+   0.00013357935622619212,
+   -0.00019561757833250188,
+   -0.0002490751035540647,
+   -0.0001712722674743362,
+   8.099434731291843e-05
+  ],
+  "blocks_positive": 3,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "s\u00f3 3/6 blocos melhoram"
+  ]
+ },
+ "P3": {
+  "world": "PROD",
+  "desc": "OnChain TVL 1x + DXY \u00b11.0 (inerte em PROD)",
+  "identical_to_baseline": true,
+  "dsr": 7.554454581401306e-28,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 7.404527244323751e-34,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 10902,
+   "hit_rate": 0.3984589983489268,
+   "hit_rate_gross": 0.39855072463768115,
+   "expectancy_net": -0.0016079031312293288,
+   "expectancy_gross": -0.00036543123143895426,
+   "exp_net_ci": [
+    -0.001958847514733495,
+    -0.0012579545280543725
+   ],
+   "sharpe": -4.359730424843156,
+   "max_dd": -14.758196558911608,
+   "total_return": -14.601684325539365,
+   "by_reason": {
+    "SL": 6550,
+    "TP": 4335,
+    "TIMEOUT": 17
+   }
+  },
+  "TRAIN": {
+   "n_trades": 6461,
+   "hit_rate": 0.39823556724965176,
+   "hit_rate_gross": 0.3983903420523139,
+   "expectancy_net": -0.0015178044291352375,
+   "expectancy_gross": -0.00025706999396688066,
+   "exp_net_ci": [
+    -0.0020105595505645487,
+    -0.0010139906569993351
+   ],
+   "sharpe": -3.9754346896637722,
+   "max_dd": -8.076527169336014,
+   "total_return": -7.988673693093229,
+   "by_reason": {
+    "SL": 3882,
+    "TP": 2567,
+    "TIMEOUT": 12
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 4389,
+   "hit_rate": 0.39826839826839827,
+   "hit_rate_gross": 0.39826839826839827,
+   "expectancy_net": -0.0017527503272460523,
+   "expectancy_gross": -0.0005371312041299242,
+   "exp_net_ci": [
+    -0.0021712788097090333,
+    -0.001353716250876959
+   ],
+   "sharpe": -4.972437499022216,
+   "max_dd": -6.750478502659697,
+   "total_return": -6.598454480125939,
+   "by_reason": {
+    "SL": 2639,
+    "TP": 1745,
+    "TIMEOUT": 5
+   }
+  },
+  "n_raw_decisions": 18270,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": 0.0,
+   "lo": 0.0,
+   "hi": 0.0,
+   "p_le0": 1.0,
+   "lo_adj": 0.0
+  },
+  "train_diff_mean_daily": 0.0,
+  "exp_diff_per_trade": {
+   "mean": 0.0,
+   "lo": -0.0005525438498727196,
+   "hi": 0.0005600215743782591,
+   "lo_adj": -0.0008423441515417697
+  },
+  "delta_total_return": 0.0,
+  "delta_from_fewer_trades": -0.0,
+  "delta_from_better_trades": 0.0,
+  "block_diff_means": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "inerte (decis\u00f5es id\u00eanticas ao baseline)"
+  ]
+ },
+ "P4": {
+  "world": "PROD",
+  "desc": "OrderFlow prio 5: |pos|>=0.5 ou volume",
+  "identical_to_baseline": false,
+  "dsr": 7.922518585688456e-26,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 1.103863139661663e-31,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 9968,
+   "hit_rate": 0.39646869983948635,
+   "hit_rate_gross": 0.3965690208667737,
+   "expectancy_net": -0.0016600901687277626,
+   "expectancy_gross": -0.00041765811581357185,
+   "exp_net_ci": [
+    -0.002017223298799995,
+    -0.0012998617559144094
+   ],
+   "sharpe": -4.238902563292969,
+   "max_dd": -13.801844021442882,
+   "total_return": -13.62872155591511,
+   "by_reason": {
+    "SL": 6007,
+    "TP": 3942,
+    "TIMEOUT": 19
+   }
+  },
+  "TRAIN": {
+   "n_trades": 5933,
+   "hit_rate": 0.39457272880498906,
+   "hit_rate_gross": 0.39474127759986516,
+   "expectancy_net": -0.0016384295437043093,
+   "expectancy_gross": -0.0003783871555333366,
+   "exp_net_ci": [
+    -0.0021856398931563797,
+    -0.0010928256056096561
+   ],
+   "sharpe": -3.9990571671131305,
+   "max_dd": -7.850745679310965,
+   "total_return": -7.757274320489824,
+   "by_reason": {
+    "SL": 3585,
+    "TP": 2335,
+    "TIMEOUT": 13
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 3988,
+   "hit_rate": 0.399197592778335,
+   "hit_rate_gross": 0.399197592778335,
+   "expectancy_net": -0.0016962034629997675,
+   "expectancy_gross": -0.0004799107995067642,
+   "exp_net_ci": [
+    -0.002119001855523202,
+    -0.0012895880722156691
+   ],
+   "sharpe": -4.618698171332789,
+   "max_dd": -6.015597766514347,
+   "total_return": -5.8251839039170505,
+   "by_reason": {
+    "SL": 2394,
+    "TP": 1588,
+    "TIMEOUT": 6
+   }
+  },
+  "n_raw_decisions": 15387,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": 0.0007898575855044837,
+   "lo": 0.0002708171354077184,
+   "hi": 0.0012930510315010248,
+   "p_le0": 0.001,
+   "lo_adj": 7.612208697766522e-05
+  },
+  "train_diff_mean_daily": 0.000156139927532662,
+  "exp_diff_per_trade": {
+   "mean": 5.6546864246284764e-05,
+   "lo": -0.0005266354269039566,
+   "hi": 0.0006319064393212754,
+   "lo_adj": -0.0007977088564682456
+  },
+  "delta_total_return": 0.7732705762088887,
+  "delta_from_fewer_trades": 0.6028663127205517,
+  "delta_from_better_trades": 0.17040426348833676,
+  "block_diff_means": [
+   0.00010543590375988532,
+   -0.00042201603971283474,
+   0.00029919132632676225,
+   0.0007201837816395572,
+   0.00046447782843034253,
+   0.001193263009227506
+  ],
+  "blocks_positive": 5,
+  "defensible": false,
+  "verdict_reasons": [
+   "DSR 0.00<0.95"
+  ]
+ },
+ "P5": {
+  "world": "PROD",
+  "desc": "Technical momentum RSI 30..70",
+  "identical_to_baseline": false,
+  "dsr": 4.465186513669336e-34,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 5.819355114701867e-41,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 9401,
+   "hit_rate": 0.3914477183278375,
+   "hit_rate_gross": 0.39155408999042657,
+   "expectancy_net": -0.0018480350452253623,
+   "expectancy_gross": -0.0006064101879679088,
+   "exp_net_ci": [
+    -0.0022313168075331156,
+    -0.0014763742221242742
+   ],
+   "sharpe": -4.6132342741562935,
+   "max_dd": -14.302956918645084,
+   "total_return": -14.158167835102441,
+   "by_reason": {
+    "SL": 5712,
+    "TP": 3670,
+    "TIMEOUT": 19
+   }
+  },
+  "TRAIN": {
+   "n_trades": 5585,
+   "hit_rate": 0.39230080572963294,
+   "hit_rate_gross": 0.39247985675917635,
+   "expectancy_net": -0.0017343366995751983,
+   "expectancy_gross": -0.00047342941238289995,
+   "exp_net_ci": [
+    -0.0022844443976325264,
+    -0.0011930434808413947
+   ],
+   "sharpe": -4.068926663700654,
+   "max_dd": -7.660862985588084,
+   "total_return": -7.59609924236361,
+   "by_reason": {
+    "SL": 3387,
+    "TP": 2185,
+    "TIMEOUT": 13
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 3770,
+   "hit_rate": 0.3896551724137931,
+   "hit_rate_gross": 0.3896551724137931,
+   "expectancy_net": -0.002030694768084374,
+   "expectancy_gross": -0.0008175792099991845,
+   "exp_net_ci": [
+    -0.0024503753077957597,
+    -0.001598295282116059
+   ],
+   "sharpe": -5.510828851262509,
+   "max_dd": -6.75894534627474,
+   "total_return": -6.546749246038373,
+   "by_reason": {
+    "SL": 2299,
+    "TP": 1465,
+    "TIMEOUT": 6
+   }
+  },
+  "n_raw_decisions": 14953,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": 5.2814335125196344e-05,
+   "lo": -0.0006423571657756744,
+   "hi": 0.0006942948890676013,
+   "p_le0": 0.4342,
+   "lo_adj": -0.0010338514374042197
+  },
+  "train_diff_mean_daily": 0.00026489504097815085,
+  "exp_diff_per_trade": {
+   "mean": -0.0002779444408383216,
+   "lo": -0.0008614769151205983,
+   "hi": 0.0003110342725603289,
+   "lo_adj": -0.001098163664459618
+  },
+  "delta_total_return": 0.05170523408756633,
+  "delta_from_fewer_trades": 0.9306090961945673,
+  "delta_from_better_trades": -0.8789038621070017,
+  "block_diff_means": [
+   1.12723735151456e-06,
+   -0.0006341432303853615,
+   0.0010776513942880107,
+   0.000910798203820853,
+   -0.0003244963354191165,
+   4.401988375803175e-05
+  ],
+  "blocks_positive": 4,
+  "defensible": false,
+  "verdict_reasons": [
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95"
+  ]
+ },
+ "P6": {
+  "world": "PROD",
+  "desc": "Sentiment monot\u00f4nico F&G=25 (inerte em PROD)",
+  "identical_to_baseline": true,
+  "dsr": 7.554454581401306e-28,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 7.404527244323751e-34,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 10902,
+   "hit_rate": 0.3984589983489268,
+   "hit_rate_gross": 0.39855072463768115,
+   "expectancy_net": -0.0016079031312293288,
+   "expectancy_gross": -0.00036543123143895426,
+   "exp_net_ci": [
+    -0.001958847514733495,
+    -0.0012579545280543725
+   ],
+   "sharpe": -4.359730424843156,
+   "max_dd": -14.758196558911608,
+   "total_return": -14.601684325539365,
+   "by_reason": {
+    "SL": 6550,
+    "TP": 4335,
+    "TIMEOUT": 17
+   }
+  },
+  "TRAIN": {
+   "n_trades": 6461,
+   "hit_rate": 0.39823556724965176,
+   "hit_rate_gross": 0.3983903420523139,
+   "expectancy_net": -0.0015178044291352375,
+   "expectancy_gross": -0.00025706999396688066,
+   "exp_net_ci": [
+    -0.0020105595505645487,
+    -0.0010139906569993351
+   ],
+   "sharpe": -3.9754346896637722,
+   "max_dd": -8.076527169336014,
+   "total_return": -7.988673693093229,
+   "by_reason": {
+    "SL": 3882,
+    "TP": 2567,
+    "TIMEOUT": 12
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 4389,
+   "hit_rate": 0.39826839826839827,
+   "hit_rate_gross": 0.39826839826839827,
+   "expectancy_net": -0.0017527503272460523,
+   "expectancy_gross": -0.0005371312041299242,
+   "exp_net_ci": [
+    -0.0021712788097090333,
+    -0.001353716250876959
+   ],
+   "sharpe": -4.972437499022216,
+   "max_dd": -6.750478502659697,
+   "total_return": -6.598454480125939,
+   "by_reason": {
+    "SL": 2639,
+    "TP": 1745,
+    "TIMEOUT": 5
+   }
+  },
+  "n_raw_decisions": 18270,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": 0.0,
+   "lo": 0.0,
+   "hi": 0.0,
+   "p_le0": 1.0,
+   "lo_adj": 0.0
+  },
+  "train_diff_mean_daily": 0.0,
+  "exp_diff_per_trade": {
+   "mean": 0.0,
+   "lo": -0.0005525438498727196,
+   "hi": 0.0005600215743782591,
+   "lo_adj": -0.0008423441515417697
+  },
+  "delta_total_return": 0.0,
+  "delta_from_fewer_trades": -0.0,
+  "delta_from_better_trades": 0.0,
+  "block_diff_means": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "inerte (decis\u00f5es id\u00eanticas ao baseline)"
+  ]
+ },
+ "P2+P4": {
+  "world": "PROD",
+  "desc": "P4 com vol_ratio real (requer P2)",
+  "identical_to_baseline": false,
+  "dsr": 2.2390309339842306e-27,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 2.0226441423672748e-33,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 10471,
+   "hit_rate": 0.3976697545602139,
+   "hit_rate_gross": 0.3977652564225002,
+   "expectancy_net": -0.0016646336486976592,
+   "expectancy_gross": -0.00042429731417615267,
+   "exp_net_ci": [
+    -0.0020020988658345,
+    -0.0013242031279420822
+   ],
+   "sharpe": -4.382542912353847,
+   "max_dd": -14.478021841806639,
+   "total_return": -14.319229637743994,
+   "by_reason": {
+    "SL": 6300,
+    "TP": 4157,
+    "TIMEOUT": 14
+   }
+  },
+  "TRAIN": {
+   "n_trades": 6190,
+   "hit_rate": 0.39644588045234247,
+   "hit_rate_gross": 0.3966074313408724,
+   "expectancy_net": -0.0016235426015656848,
+   "expectancy_gross": -0.0003655253454922206,
+   "exp_net_ci": [
+    -0.002139714954346592,
+    -0.0011156231804051787
+   ],
+   "sharpe": -4.0970050185542375,
+   "max_dd": -8.093664827418552,
+   "total_return": -7.99991321937202,
+   "by_reason": {
+    "SL": 3731,
+    "TP": 2450,
+    "TIMEOUT": 9
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 4234,
+   "hit_rate": 0.39938592347661783,
+   "hit_rate_gross": 0.39938592347661783,
+   "expectancy_net": -0.0017286210946652705,
+   "expectancy_gross": -0.0005141009336073583,
+   "exp_net_ci": [
+    -0.002128760652863724,
+    -0.0013159910286171751
+   ],
+   "sharpe": -4.814412900306408,
+   "max_dd": -6.389125270048524,
+   "total_return": -6.261979531913607,
+   "by_reason": {
+    "SL": 2541,
+    "TP": 1688,
+    "TIMEOUT": 5
+   }
+  },
+  "n_raw_decisions": 16494,
+  "net_alpha": false,
+  "n_vetoed_bars": 1614,
+  "paired_holdout": {
+   "mean": 0.000343692490513108,
+   "lo": -9.314501181480157e-05,
+   "hi": 0.0008179324364071179,
+   "p_le0": 0.0756,
+   "lo_adj": -0.0003310314454958891
+  },
+  "train_diff_mean_daily": -7.584025829143999e-06,
+  "exp_diff_per_trade": {
+   "mean": 2.4129232580781795e-05,
+   "lo": -0.000553453756123362,
+   "hi": 0.0005750429272641044,
+   "lo_adj": -0.0008034157301584002
+  },
+  "delta_total_return": 0.3364749482123326,
+  "delta_from_fewer_trades": 0.2330281258645524,
+  "delta_from_better_trades": 0.10344682234777954,
+  "block_diff_means": [
+   0.00013404471377039882,
+   -0.0004373359768405644,
+   -7.485421651215513e-06,
+   2.0146737251071423e-06,
+   0.00023574574576741125,
+   0.0007575244007107263
+  ],
+  "blocks_positive": 4,
+  "defensible": false,
+  "verdict_reasons": [
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora"
+  ]
+ },
+ "ALL_a": {
+  "world": "PROD",
+  "desc": "Tudo, com P1a",
+  "identical_to_baseline": false,
+  "dsr": 7.715210804607551e-55,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 4.378872113861332e-63,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 23599,
+   "hit_rate": 0.39349124962922155,
+   "hit_rate_gross": 0.39370312301368704,
+   "expectancy_net": -0.0019596631768347026,
+   "expectancy_gross": -0.0007381581104676285,
+   "exp_net_ci": [
+    -0.002185209297923017,
+    -0.0017345538311841352
+   ],
+   "sharpe": -7.303363689525688,
+   "max_dd": -35.5593404246593,
+   "total_return": -35.48544872659862,
+   "by_reason": {
+    "SL": 14292,
+    "TP": 9269,
+    "TIMEOUT": 38
+   }
+  },
+  "TRAIN": {
+   "n_trades": 13727,
+   "hit_rate": 0.3945508851169229,
+   "hit_rate_gross": 0.3949151307641874,
+   "expectancy_net": -0.0020243535072540096,
+   "expectancy_gross": -0.0007951603906425397,
+   "exp_net_ci": [
+    -0.0023694179165309696,
+    -0.0016847586912006305
+   ],
+   "sharpe": -6.690853186308132,
+   "max_dd": -19.427774321946274,
+   "total_return": -19.341168856826066,
+   "by_reason": {
+    "SL": 8296,
+    "TP": 5411,
+    "TIMEOUT": 20
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 9764,
+   "hit_rate": 0.39205243752560426,
+   "hit_rate_gross": 0.39205243752560426,
+   "expectancy_net": -0.0018658298518951847,
+   "expectancy_gross": -0.0006550907671126605,
+   "exp_net_ci": [
+    -0.0021301347813708522,
+    -0.001599907621906854
+   ],
+   "sharpe": -8.179633934155142,
+   "max_dd": -15.963743364493409,
+   "total_return": -15.950081036601237,
+   "by_reason": {
+    "SL": 5930,
+    "TP": 3816,
+    "TIMEOUT": 18
+   }
+  },
+  "n_raw_decisions": 116591,
+  "net_alpha": false,
+  "n_vetoed_bars": 1614,
+  "paired_holdout": {
+   "mean": -0.00955222324461215,
+   "lo": -0.011671974304303832,
+   "hi": -0.007416953089307816,
+   "p_le0": 1.0,
+   "lo_adj": -0.01262997382561111
+  },
+  "train_diff_mean_daily": -0.007660253146918245,
+  "exp_diff_per_trade": {
+   "mean": -0.00011307952464913239,
+   "lo": -0.0005939895207642652,
+   "hi": 0.00037578372231022355,
+   "lo_adj": -0.0008296338575716713
+  },
+  "delta_total_return": -9.351626556475297,
+  "delta_from_fewer_trades": -8.08081404207722,
+  "delta_from_better_trades": -1.2708125143980775,
+  "block_diff_means": [
+   -0.005401232829791769,
+   -0.01056497758969499,
+   -0.008210272667626752,
+   -0.008502372235098464,
+   -0.010848273475849027,
+   -0.007187262897688868
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora",
+   "s\u00f3 0/6 blocos melhoram"
+  ]
+ },
+ "ALL_b": {
+  "world": "PROD",
+  "desc": "Tudo, com P1b",
+  "identical_to_baseline": false,
+  "dsr": 1.30232900240825e-38,
+  "dsr_expected_max_sr": 1.9955323438030717,
+  "dsr_with_log": 5.4501906148891994e-46,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 14467,
+   "hit_rate": 0.39351627842676434,
+   "hit_rate_gross": 0.393792769751849,
+   "expectancy_net": -0.0018285779134224992,
+   "expectancy_gross": -0.0005899503727711691,
+   "exp_net_ci": [
+    -0.002131277482816508,
+    -0.0015233933936277643
+   ],
+   "sharpe": -5.362229074792373,
+   "max_dd": -21.79786937428769,
+   "total_return": -21.62229866356339,
+   "by_reason": {
+    "SL": 8765,
+    "TP": 5680,
+    "TIMEOUT": 22
+   }
+  },
+  "TRAIN": {
+   "n_trades": 8571,
+   "hit_rate": 0.39353634348384087,
+   "hit_rate_gross": 0.39376968848442423,
+   "expectancy_net": -0.001752754729530818,
+   "expectancy_gross": -0.000497258780168273,
+   "exp_net_ci": [
+    -0.0021807971833815764,
+    -0.0013215668812503422
+   ],
+   "sharpe": -4.944229569760316,
+   "max_dd": -12.07918354843122,
+   "total_return": -11.937010635159144,
+   "by_reason": {
+    "SL": 5193,
+    "TP": 3367,
+    "TIMEOUT": 11
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 5835,
+   "hit_rate": 0.3936589545844045,
+   "hit_rate_gross": 0.39400171379605825,
+   "expectancy_net": -0.0019326919259058362,
+   "expectancy_gross": -0.0007187840718033483,
+   "exp_net_ci": [
+    -0.0022868959773508497,
+    -0.0015883109656769031
+   ],
+   "sharpe": -5.97142801477246,
+   "max_dd": -9.697337559959024,
+   "total_return": -9.577141512690286,
+   "by_reason": {
+    "SL": 3534,
+    "TP": 2290,
+    "TIMEOUT": 11
+   }
+  },
+  "n_raw_decisions": 33108,
+  "net_alpha": false,
+  "n_vetoed_bars": 1614,
+  "paired_holdout": {
+   "mean": -0.0030425812385744076,
+   "lo": -0.004424776321369489,
+   "hi": -0.0017070096928646188,
+   "p_le0": 1.0,
+   "lo_adj": -0.005039617442156133
+  },
+  "train_diff_mean_daily": -0.0026641949676558126,
+  "exp_diff_per_trade": {
+   "mean": -0.00017994159865978394,
+   "lo": -0.0007260040662332262,
+   "hi": 0.00034302876530487497,
+   "lo_adj": -0.000952929716683453
+  },
+  "delta_total_return": -2.9786870325643466,
+  "delta_from_fewer_trades": -2.1739269032267274,
+  "delta_from_better_trades": -0.8047601293376192,
+  "block_diff_means": [
+   -0.0017962187514256802,
+   -0.0034811257577351978,
+   -0.002785989980797013,
+   -0.003415493583368138,
+   -0.0029764526217813158,
+   -0.002593494702421198
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora",
+   "s\u00f3 0/6 blocos melhoram"
+  ]
+ },
+ "_meta": {
+  "PROD": {
+   "start": 1578553200000,
+   "split": 1706634720000,
+   "holdout_start": 1707498720000,
+   "end": 1792022400000,
+   "var_sharpe_holdout": 1.1915728844577447,
+   "alpha_bonferroni": 0.0033333333333333335
+  },
+  "FULL": {
+   "start": 1638316800000,
+   "split": 1730540160000,
+   "holdout_start": 1731404160000,
+   "end": 1792022400000,
+   "var_sharpe_holdout": 0.10496392923589389,
+   "alpha_bonferroni": 0.0033333333333333335
+  }
+ },
+ "BASE_F": {
+  "world": "FULL",
+  "desc": "Baseline com contexto enriquecido (F&G/macro/stable)",
+  "identical_to_baseline": true,
+  "dsr": 1.2890151257089237e-11,
+  "dsr_expected_max_sr": 0.5922683228467345,
+  "dsr_with_log": 1.532232206199674e-12,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 6683,
+   "hit_rate": 0.40041897351488853,
+   "hit_rate_gross": 0.400568606913063,
+   "expectancy_net": -0.001531288067058793,
+   "expectancy_gross": -0.0003011574805482397,
+   "exp_net_ci": [
+    -0.0018999607555450545,
+    -0.0011678745780276123
+   ],
+   "sharpe": -4.126838020038802,
+   "max_dd": -9.389684730380173,
+   "total_return": -9.134932732237608,
+   "by_reason": {
+    "SL": 4002,
+    "TP": 2672,
+    "TIMEOUT": 9
+   }
+  },
+  "TRAIN": {
+   "n_trades": 4008,
+   "hit_rate": 0.3967065868263473,
+   "hit_rate_gross": 0.3969560878243513,
+   "expectancy_net": -0.0015750338418836951,
+   "expectancy_gross": -0.0003345715574925178,
+   "exp_net_ci": [
+    -0.002058734592327278,
+    -0.0010544048843311234
+   ],
+   "sharpe": -4.161519257191324,
+   "max_dd": -5.699934835416751,
+   "total_return": -5.533205012393996,
+   "by_reason": {
+    "SL": 2413,
+    "TP": 1588,
+    "TIMEOUT": 7
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 2638,
+   "hit_rate": 0.4029567854435178,
+   "hit_rate_gross": 0.4029567854435178,
+   "expectancy_net": -0.001561040866479239,
+   "expectancy_gross": -0.000346867168061197,
+   "exp_net_ci": [
+    -0.0020847266514998123,
+    -0.0010532838526340965
+   ],
+   "sharpe": -4.3699338530504495,
+   "max_dd": -3.8789968342589622,
+   "total_return": -3.750380598309142,
+   "by_reason": {
+    "SL": 1575,
+    "TP": 1061,
+    "TIMEOUT": 2
+   }
+  },
+  "n_raw_decisions": 13326,
+  "net_alpha": false,
+  "n_vetoed_bars": 52
+ },
+ "P1a_F": {
+  "world": "FULL",
+  "desc": "P1a com contexto enriquecido",
+  "identical_to_baseline": false,
+  "dsr": 8.671970264977814e-14,
+  "dsr_expected_max_sr": 0.5922683228467345,
+  "dsr_with_log": 8.093333169727399e-15,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 7660,
+   "hit_rate": 0.3993472584856397,
+   "hit_rate_gross": 0.39947780678851175,
+   "expectancy_net": -0.001575636842337229,
+   "expectancy_gross": -0.00034309547309864405,
+   "exp_net_ci": [
+    -0.0019183009276983241,
+    -0.00123653502306452
+   ],
+   "sharpe": -4.498983610935627,
+   "max_dd": -11.119974773731727,
+   "total_return": -10.87488779616795,
+   "by_reason": {
+    "SL": 4596,
+    "TP": 3055,
+    "TIMEOUT": 9
+   }
+  },
+  "TRAIN": {
+   "n_trades": 4586,
+   "hit_rate": 0.39598778892280856,
+   "hit_rate_gross": 0.3962058438726559,
+   "expectancy_net": -0.0015980578630938507,
+   "expectancy_gross": -0.00035504735356057106,
+   "exp_net_ci": [
+    -0.0020855335005916026,
+    -0.0011147189216807163
+   ],
+   "sharpe": -4.521460568981012,
+   "max_dd": -6.6680159131748615,
+   "total_return": -6.523710437097408,
+   "by_reason": {
+    "SL": 2765,
+    "TP": 1814,
+    "TIMEOUT": 7
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 3028,
+   "hit_rate": 0.4009247027741083,
+   "hit_rate_gross": 0.4009247027741083,
+   "expectancy_net": -0.0016507010958336874,
+   "expectancy_gross": -0.00043445226569693266,
+   "exp_net_ci": [
+    -0.002110254404530485,
+    -0.0012107615455377967
+   ],
+   "sharpe": -4.817816831617977,
+   "max_dd": -4.678376948491376,
+   "total_return": -4.551713780159719,
+   "by_reason": {
+    "SL": 1814,
+    "TP": 1212,
+    "TIMEOUT": 2
+   }
+  },
+  "n_raw_decisions": 38995,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": -0.001141500259046407,
+   "lo": -0.001843035767034232,
+   "hi": -0.0004079627126609165,
+   "p_le0": 0.999,
+   "lo_adj": -0.00219250846950406
+  },
+  "train_diff_mean_daily": -0.0009283087391784556,
+  "exp_diff_per_trade": {
+   "mean": -8.96602293544485e-05,
+   "lo": -0.0007578683690286208,
+   "hi": 0.0006019649053820781,
+   "lo_adj": -0.001174760113570936
+  },
+  "delta_total_return": -0.8013331818505773,
+  "delta_from_fewer_trades": -0.5544535380366055,
+  "delta_from_better_trades": -0.24687964381397182,
+  "block_diff_means": [
+   -0.0014712322932318007,
+   -0.0009362944119010534,
+   -0.00046797777858546493,
+   -0.0014012744144799865,
+   -0.0004597853923761038,
+   -0.001129947693918975
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora",
+   "s\u00f3 0/6 blocos melhoram"
+  ]
+ },
+ "P1b_F": {
+  "world": "FULL",
+  "desc": "P1b com contexto enriquecido",
+  "identical_to_baseline": false,
+  "dsr": 8.671970264977814e-14,
+  "dsr_expected_max_sr": 0.5922683228467345,
+  "dsr_with_log": 8.093333169727399e-15,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 7660,
+   "hit_rate": 0.3993472584856397,
+   "hit_rate_gross": 0.39947780678851175,
+   "expectancy_net": -0.001575636842337229,
+   "expectancy_gross": -0.00034309547309864405,
+   "exp_net_ci": [
+    -0.0019183009276983241,
+    -0.00123653502306452
+   ],
+   "sharpe": -4.498983610935627,
+   "max_dd": -11.119974773731727,
+   "total_return": -10.87488779616795,
+   "by_reason": {
+    "SL": 4596,
+    "TP": 3055,
+    "TIMEOUT": 9
+   }
+  },
+  "TRAIN": {
+   "n_trades": 4586,
+   "hit_rate": 0.39598778892280856,
+   "hit_rate_gross": 0.3962058438726559,
+   "expectancy_net": -0.0015980578630938507,
+   "expectancy_gross": -0.00035504735356057106,
+   "exp_net_ci": [
+    -0.0020855335005916026,
+    -0.0011147189216807163
+   ],
+   "sharpe": -4.521460568981012,
+   "max_dd": -6.6680159131748615,
+   "total_return": -6.523710437097408,
+   "by_reason": {
+    "SL": 2765,
+    "TP": 1814,
+    "TIMEOUT": 7
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 3028,
+   "hit_rate": 0.4009247027741083,
+   "hit_rate_gross": 0.4009247027741083,
+   "expectancy_net": -0.0016507010958336874,
+   "expectancy_gross": -0.00043445226569693266,
+   "exp_net_ci": [
+    -0.002110254404530485,
+    -0.0012107615455377967
+   ],
+   "sharpe": -4.817816831617977,
+   "max_dd": -4.678376948491376,
+   "total_return": -4.551713780159719,
+   "by_reason": {
+    "SL": 1814,
+    "TP": 1212,
+    "TIMEOUT": 2
+   }
+  },
+  "n_raw_decisions": 38995,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": -0.001141500259046407,
+   "lo": -0.001843035767034232,
+   "hi": -0.0004079627126609165,
+   "p_le0": 0.999,
+   "lo_adj": -0.00219250846950406
+  },
+  "train_diff_mean_daily": -0.0009283087391784556,
+  "exp_diff_per_trade": {
+   "mean": -8.96602293544485e-05,
+   "lo": -0.0007578683690286208,
+   "hi": 0.0006019649053820781,
+   "lo_adj": -0.001174760113570936
+  },
+  "delta_total_return": -0.8013331818505773,
+  "delta_from_fewer_trades": -0.5544535380366055,
+  "delta_from_better_trades": -0.24687964381397182,
+  "block_diff_means": [
+   -0.0014712322932318007,
+   -0.0009362944119010534,
+   -0.00046797777858546493,
+   -0.0014012744144799865,
+   -0.0004597853923761038,
+   -0.001129947693918975
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora",
+   "s\u00f3 0/6 blocos melhoram"
+  ]
+ },
+ "P3_F": {
+  "world": "FULL",
+  "desc": "DXY \u00b11.0 (TVL inobserv\u00e1vel)",
+  "identical_to_baseline": true,
+  "dsr": 1.2890151257089237e-11,
+  "dsr_expected_max_sr": 0.5922683228467345,
+  "dsr_with_log": 1.532232206199674e-12,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 6683,
+   "hit_rate": 0.40041897351488853,
+   "hit_rate_gross": 0.400568606913063,
+   "expectancy_net": -0.001531288067058793,
+   "expectancy_gross": -0.0003011574805482397,
+   "exp_net_ci": [
+    -0.0018999607555450545,
+    -0.0011678745780276123
+   ],
+   "sharpe": -4.126838020038802,
+   "max_dd": -9.389684730380173,
+   "total_return": -9.134932732237608,
+   "by_reason": {
+    "SL": 4002,
+    "TP": 2672,
+    "TIMEOUT": 9
+   }
+  },
+  "TRAIN": {
+   "n_trades": 4008,
+   "hit_rate": 0.3967065868263473,
+   "hit_rate_gross": 0.3969560878243513,
+   "expectancy_net": -0.0015750338418836951,
+   "expectancy_gross": -0.0003345715574925178,
+   "exp_net_ci": [
+    -0.002058734592327278,
+    -0.0010544048843311234
+   ],
+   "sharpe": -4.161519257191324,
+   "max_dd": -5.699934835416751,
+   "total_return": -5.533205012393996,
+   "by_reason": {
+    "SL": 2413,
+    "TP": 1588,
+    "TIMEOUT": 7
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 2638,
+   "hit_rate": 0.4029567854435178,
+   "hit_rate_gross": 0.4029567854435178,
+   "expectancy_net": -0.001561040866479239,
+   "expectancy_gross": -0.000346867168061197,
+   "exp_net_ci": [
+    -0.0020847266514998123,
+    -0.0010532838526340965
+   ],
+   "sharpe": -4.3699338530504495,
+   "max_dd": -3.8789968342589622,
+   "total_return": -3.750380598309142,
+   "by_reason": {
+    "SL": 1575,
+    "TP": 1061,
+    "TIMEOUT": 2
+   }
+  },
+  "n_raw_decisions": 13326,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": 0.0,
+   "lo": 0.0,
+   "hi": 0.0,
+   "p_le0": 1.0,
+   "lo_adj": 0.0
+  },
+  "train_diff_mean_daily": 0.0,
+  "exp_diff_per_trade": {
+   "mean": 0.0,
+   "lo": -0.0007037031547399126,
+   "hi": 0.0006969936774420973,
+   "lo_adj": -0.0009958413571735294
+  },
+  "delta_total_return": 0.0,
+  "delta_from_fewer_trades": -0.0,
+  "delta_from_better_trades": 0.0,
+  "block_diff_means": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "inerte (decis\u00f5es id\u00eanticas ao baseline)"
+  ]
+ },
+ "P6_F": {
+  "world": "FULL",
+  "desc": "Sentiment monot\u00f4nico",
+  "identical_to_baseline": true,
+  "dsr": 1.2890151257089237e-11,
+  "dsr_expected_max_sr": 0.5922683228467345,
+  "dsr_with_log": 1.532232206199674e-12,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 6683,
+   "hit_rate": 0.40041897351488853,
+   "hit_rate_gross": 0.400568606913063,
+   "expectancy_net": -0.001531288067058793,
+   "expectancy_gross": -0.0003011574805482397,
+   "exp_net_ci": [
+    -0.0018999607555450545,
+    -0.0011678745780276123
+   ],
+   "sharpe": -4.126838020038802,
+   "max_dd": -9.389684730380173,
+   "total_return": -9.134932732237608,
+   "by_reason": {
+    "SL": 4002,
+    "TP": 2672,
+    "TIMEOUT": 9
+   }
+  },
+  "TRAIN": {
+   "n_trades": 4008,
+   "hit_rate": 0.3967065868263473,
+   "hit_rate_gross": 0.3969560878243513,
+   "expectancy_net": -0.0015750338418836951,
+   "expectancy_gross": -0.0003345715574925178,
+   "exp_net_ci": [
+    -0.002058734592327278,
+    -0.0010544048843311234
+   ],
+   "sharpe": -4.161519257191324,
+   "max_dd": -5.699934835416751,
+   "total_return": -5.533205012393996,
+   "by_reason": {
+    "SL": 2413,
+    "TP": 1588,
+    "TIMEOUT": 7
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 2638,
+   "hit_rate": 0.4029567854435178,
+   "hit_rate_gross": 0.4029567854435178,
+   "expectancy_net": -0.001561040866479239,
+   "expectancy_gross": -0.000346867168061197,
+   "exp_net_ci": [
+    -0.0020847266514998123,
+    -0.0010532838526340965
+   ],
+   "sharpe": -4.3699338530504495,
+   "max_dd": -3.8789968342589622,
+   "total_return": -3.750380598309142,
+   "by_reason": {
+    "SL": 1575,
+    "TP": 1061,
+    "TIMEOUT": 2
+   }
+  },
+  "n_raw_decisions": 13326,
+  "net_alpha": false,
+  "n_vetoed_bars": 52,
+  "paired_holdout": {
+   "mean": 0.0,
+   "lo": 0.0,
+   "hi": 0.0,
+   "p_le0": 1.0,
+   "lo_adj": 0.0
+  },
+  "train_diff_mean_daily": 0.0,
+  "exp_diff_per_trade": {
+   "mean": 0.0,
+   "lo": -0.0007037031547399126,
+   "hi": 0.0006969936774420973,
+   "lo_adj": -0.0009958413571735294
+  },
+  "delta_total_return": 0.0,
+  "delta_from_fewer_trades": -0.0,
+  "delta_from_better_trades": 0.0,
+  "block_diff_means": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "blocks_positive": 0,
+  "defensible": false,
+  "verdict_reasons": [
+   "inerte (decis\u00f5es id\u00eanticas ao baseline)"
+  ]
+ },
+ "ALL_a_F": {
+  "world": "FULL",
+  "desc": "Tudo, com P1a",
+  "identical_to_baseline": false,
+  "dsr": 3.445622135124642e-16,
+  "dsr_expected_max_sr": 0.5922683228467345,
+  "dsr_with_log": 2.362613044009507e-17,
+  "n_trials_dsr": 17,
+  "n_trial_log": 83,
+  "ALL": {
+   "n_trades": 6429,
+   "hit_rate": 0.3929071395240317,
+   "hit_rate_gross": 0.39306268470990824,
+   "expectancy_net": -0.001880826537692626,
+   "expectancy_gross": -0.0006455377207163606,
+   "exp_net_ci": [
+    -0.00223481074675077,
+    -0.001515622650516
+   ],
+   "sharpe": -4.802145911133436,
+   "max_dd": -10.379465123005323,
+   "total_return": -10.209982584349504,
+   "by_reason": {
+    "SL": 3898,
+    "TP": 2522,
+    "TIMEOUT": 9
+   }
+  },
+  "TRAIN": {
+   "n_trades": 3883,
+   "hit_rate": 0.3886170486737059,
+   "hit_rate_gross": 0.3888745815091424,
+   "expectancy_net": -0.001979195330438451,
+   "expectancy_gross": -0.0007300746366086184,
+   "exp_net_ci": [
+    -0.0024611212106484836,
+    -0.0014841894219091744
+   ],
+   "sharpe": -4.751557622888549,
+   "max_dd": -6.311423600309565,
+   "total_return": -6.208017457678518,
+   "by_reason": {
+    "SL": 2369,
+    "TP": 1507,
+    "TIMEOUT": 7
+   }
+  },
+  "HOLDOUT": {
+   "n_trades": 2508,
+   "hit_rate": 0.3967304625199362,
+   "hit_rate_gross": 0.3967304625199362,
+   "expectancy_net": -0.0018177828457949547,
+   "expectancy_gross": -0.0006043704985313897,
+   "exp_net_ci": [
+    -0.002306145018106539,
+    -0.0013174991638533085
+   ],
+   "sharpe": -5.132971263675937,
+   "max_dd": -4.221682502581817,
+   "total_return": -4.118462706312522,
+   "by_reason": {
+    "SL": 1513,
+    "TP": 993,
+    "TIMEOUT": 2
+   }
+  },
+  "n_raw_decisions": 23961,
+  "net_alpha": false,
+  "n_vetoed_bars": 1614,
+  "paired_holdout": {
+   "mean": -0.0005243334871843025,
+   "lo": -0.0015786947549522364,
+   "hi": 0.0006197161053236469,
+   "p_le0": 0.8406,
+   "lo_adj": -0.002149365525588505
+  },
+  "train_diff_mean_daily": -0.0006324390302572839,
+  "exp_diff_per_trade": {
+   "mean": -0.00025674197931571576,
+   "lo": -0.0009503163429983745,
+   "hi": 0.00042981048029558464,
+   "lo_adj": -0.0013134666738133668
+  },
+  "delta_total_return": -0.36808210800338026,
+  "delta_from_fewer_trades": 0.18481784601220183,
+  "delta_from_better_trades": -0.5528999540155822,
+  "block_diff_means": [
+   -0.0020094161208216122,
+   -2.5976674633100357e-05,
+   8.888930399959542e-05,
+   -0.0013030273364766022,
+   0.00022449164510627558,
+   -0.000600367845065503
+  ],
+  "blocks_positive": 2,
+  "defensible": false,
+  "verdict_reasons": [
+   "holdout n\u00e3o melhora",
+   "IC Bonferroni inclui 0",
+   "DSR 0.00<0.95",
+   "treino n\u00e3o melhora",
+   "s\u00f3 2/6 blocos melhoram"
+  ]
+ }
+}
