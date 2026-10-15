@@ -254,3 +254,31 @@ Por ciclo, só se `can_execute_golden_pot` (cota **3/dia**, inalterada; posiçõ
 ## E5.7 Reinício do piloto
 Mudanças de regra (GP v2), de universo (E5.4) e de tamanho/alavancagem (E5.6) reiniciam o relógio de aprovação; o ledger anterior (incluindo GP v1) permanece contado para **refutação** (E4.6 item 8). `trial_log.csv` +1 (nova versão de GOLDEN_POT).
 
+
+
+---
+
+# ADDENDUM E6 — Parâmetros efetivos do SCALP no piloto limpo (2026-10-15, reset_20261015T024946Z)
+
+**Contexto.** O piloto limpo iniciou em 2026-10-15 02:49:47 UTC (reset total). Os parâmetros do SCALP gravados em `simulation_settings` (modo `CUSTOM`, salvo pela UI em 2026-10-15 02:15 UTC) divergem dos valores do E4 (que eram os defaults do código no modo INSTITUTIONAL). Em vez de sobrescrever as configurações, este addendum registra os valores EFETIVOS, que passam a ser os valores congelados do piloto. Este addendum prevalece sobre o E4.2 para o SCALP.
+
+| Parâmetro | E4 (default INSTITUTIONAL) | Efetivo no piloto (E6) |
+|---|---|---|
+| `scalp_vwap_dev_pct` | 2.0 | **0.8** |
+| `scalp_rsi_oversold` / `scalp_rsi_overbought` | 35 / 65 | **30 / 70** |
+| `scalp_volume_z` | 0.2 | **-0.5** (filtro de volume praticamente inativo) |
+| `max_daily_scalps` | 5 | **15** (teto; o limitador real é o gatilho: 1 posição por símbolo, 3 símbolos core, máx. 6 posições simultâneas) |
+| `max_daily_golden_pots` | 3 | 3 (inalterado) |
+| `max_concurrent_positions` | 6 | 6 |
+| `max_margin_utilization_pct` | 0.85 | 0.85 |
+| `paper_lot_usd` | — | 100 (margem; ver E5.6) |
+
+**Por que o valor efetivo foi preferido a reverter ao E4.** (1) Evidência observacional: em todo o piloto anterior ao reset (46 posições), houve **zero** scalps; só GOLDEN_POT operou. Com VWAP >= 2,0% em 15m de BTC/ETH/SOL (aprox. 4–6 ATR), o gatilho do E4 é raríssimo, e o SCALP seria, na prática, uma estratégia sem amostra. (2) Os valores do E6 foram ajustados pelo usuário em testes anteriores para evitar overtrading; a cota 15/dia não é o limitador real.
+
+**Ressalvas honestas (obrigatórias).**
+- Esses valores NÃO são pré-registrados no sentido forte: foram escolhidos com observação de dados anteriores (in-sample), e o registro foi escrito após o início da janela, com 0 trades fechados. Qualquer evidência do SCALP deve ser lida com esse desconto (ver o N de tentativas no `trial_log.csv` para o DSR).
+- O SCALP **não passa pelo comitê**: `confidence=0.85` e `consensus_score=±0.80` são constantes no código (`evaluate_scalp_opportunities`). É uma limitação conhecida, igual à da v1 do GOLDEN_POT, e NÃO foi alterada neste piloto.
+- Com `scalp_volume_z = -0.5` o filtro de volume só barra volume muito abaixo da média.
+- Amostra esperada: baixa. O A/B de consenso e o prior (alfa nulo após custos) permanecem; a hipótese nula do E4.3 e os critérios de refutação do E4.6 valem sem alteração.
+
+**Congelamento.** Commit de referência do código: `b65c0a1`. Proibido alterar esses parâmetros durante a janela (E4.7); qualquer alteração reinicia a contagem de dias limpos (critério A11 do `pilot_report.py`).
