@@ -98,6 +98,18 @@ FUNDING_MAX_SETTLEMENTS_PER_TICK = 12
 NON_CLOSING_TRADE_ACTIONS = PARTIAL_TRADE_ACTIONS | frozenset({"FUNDING"})   # linhas de ledger que NÃO fecham a posição
 
 
+# --- Funil de sinais (instrumentação pura; NÃO altera decisões de trading) ---
+FUNNEL_SUCCESS_STAGES: List[str] = [
+    "evaluated", "candidate", "committee_agree", "confidence_ok", "risk_ok", "gate_passed", "executed",
+]
+FUNNEL_REJECT_REASONS: List[str] = [
+    "no_data", "no_trigger", "committee_disagree", "low_confidence", "veto", "cooldown", "bar_limit",
+    "quota", "margin", "breaker", "gate_blocked", "excluded_symbol", "other",
+]
+FUNNEL_FLUSH_INTERVAL_S: float = 30.0
+FUNNEL_DEDUPE_MAX_AGE_S: float = 6 * 3600.0
+
+
 @dataclass(frozen=True)
 class StrategyProfile:
     """Multiplicadores de ATR (sobre o preço de entrada) de uma estratégia. Mesma mecânica para todas."""
@@ -308,6 +320,14 @@ class PaperTradingEngine:
 
         self._lock = threading.RLock()
 
+        # Funil de sinais: buffer em memória + dedupe por (strategy, symbol, bar_ts, stage)
+        self._funnel_lock = threading.Lock()
+        self._funnel_buffer: Dict[Tuple[int, str, str], int] = {}
+        self._funnel_seen: Dict[Tuple[str, str, int, str], float] = {}
+        self._funnel_last_flush: float = time.time()
+        self._funnel_clock = time.time
+        self.last_open_reject: str = "other"
+
         # Otimização: Compressão inteligente de snapshots de portfólio no SQLite
         self._last_snapshot_time: float = 0.0
         self._last_snapshot_equity: float = -1.0
@@ -403,6 +423,15 @@ class PaperTradingEngine:
                     taker_imb_5m REAL, book_imb_10 REAL, microprice_dev REAL, spread_bps REAL,
                     entry_price REAL, stop_loss REAL, tp1 REAL, tp2 REAL, tp3 REAL, atr REAL,
                     confidence REAL, consensus_score REAL, leverage REAL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS signal_funnel (
+                    hour_ms INTEGER NOT NULL,
+                    strategy TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    count INTEGER NOT NULL,
+                    PRIMARY KEY (hour_ms, strategy, stage)
                 )
             """)
             con.execute("""
@@ -914,6 +943,62 @@ class PaperTradingEngine:
             pass
         return out
 
+    # ------------------------------------------------------------------ Funil de sinais
+    def funnel_inc(self, strategy: str, symbol: str, bar_ts: Union[int, float], stage: str) -> bool:
+        """Conta `stage` no máximo UMA vez por (strategy, symbol, bar_ts). Retorna True se contou.
+
+        Buffer em memória, flush (UPSERT somando) a cada ~30 s. Nunca levanta exceção (telemetria não
+        pode interromper o trading). Thread-safe.
+        """
+        try:
+            now = float(self._funnel_clock())
+            key = (str(strategy), str(symbol), int(bar_ts), str(stage))
+            with self._funnel_lock:
+                if key in self._funnel_seen:
+                    return False
+                self._funnel_seen[key] = now
+                hour_ms = int(now // 3600) * 3600 * 1000
+                bkey = (hour_ms, key[0], key[3])
+                self._funnel_buffer[bkey] = self._funnel_buffer.get(bkey, 0) + 1
+                due = (now - self._funnel_last_flush) >= FUNNEL_FLUSH_INTERVAL_S
+            if due:
+                self.funnel_flush()
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"signal_funnel: falha em funnel_inc: {e}")
+            return False
+
+    def funnel_reject(self, strategy: str, symbol: str, bar_ts: Union[int, float], reason: str) -> bool:
+        """Grava `reject:<motivo>` (motivo fora de FUNNEL_REJECT_REASONS vira 'other')."""
+        if reason not in FUNNEL_REJECT_REASONS:
+            reason = "other"
+        return self.funnel_inc(strategy, symbol, bar_ts, f"reject:{reason}")
+
+    def funnel_flush(self) -> None:
+        """UPSERT somando o buffer em signal_funnel. Falha de DB => warning e mantém o buffer (retry no próximo flush)."""
+        now = float(self._funnel_clock())
+        with self._funnel_lock:
+            self._funnel_last_flush = now
+            cutoff = now - FUNNEL_DEDUPE_MAX_AGE_S
+            if self._funnel_seen:
+                self._funnel_seen = {k: t for k, t in self._funnel_seen.items() if t >= cutoff}
+            pending = dict(self._funnel_buffer)
+            self._funnel_buffer.clear()
+        if not pending:
+            return
+        try:
+            with self._get_connection() as con:
+                con.executemany(
+                    "INSERT INTO signal_funnel (hour_ms, strategy, stage, count) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(hour_ms, strategy, stage) DO UPDATE SET count = count + excluded.count",
+                    [(h, st, sg, n) for (h, st, sg), n in pending.items()],
+                )
+        except Exception as e:  # noqa: BLE001 - telemetria nunca derruba o ciclo
+            logger.warning(f"signal_funnel: falha ao gravar ({len(pending)} contadores): {e}")
+            with self._funnel_lock:
+                for k, n in pending.items():
+                    self._funnel_buffer[k] = self._funnel_buffer.get(k, 0) + n
+
     def get_summary_metrics(self) -> Dict[str, Any]:
         """Calcula métricas agregadas de desempenho da carteira simulada."""
         with self._lock:
@@ -1025,18 +1110,22 @@ class PaperTradingEngine:
         meta = self._ENTRY_META[strategy_type]
         label = meta["label"]
         with self._lock:
+            self.last_open_reject = "other"
             if signal.direction not in ["BUY", "SELL"] or signal.is_vetoed:
+                self.last_open_reject = "veto"
                 return None
 
             symbol = signal.symbol
             if any(p.symbol == symbol and p.strategy_type == strategy_type and p.status == "OPEN"
                    for p in self.positions.values()):
+                self.last_open_reject = "margin"  # posição já aberta no par/estratégia
                 return None
 
             if self.max_concurrent_positions is not None and self.max_concurrent_positions > 0:
                 open_count = len([p for p in self.positions.values() if p.status == "OPEN"])
                 if open_count >= self.max_concurrent_positions:
                     logger.info(f"[{symbol}] {label} Rejeitado: Teto de posições simultâneas atingido ({open_count}/{self.max_concurrent_positions}).")
+                    self.last_open_reject = "margin"
                     return None
 
             # P2: `timestamp` = abertura da vela de decisão t (fechada). Entrada a mercado em close(t) == open(t+1);
@@ -1050,6 +1139,7 @@ class PaperTradingEngine:
             margin, free_margin = self._lot_margin(signal, lev_req, meta["cap"])
             if margin < 10.0:  # Mínimo de $10 USD de margem
                 logger.info(f"[{symbol}] {label} Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
+                self.last_open_reject = "margin"
                 return None
 
             if strategy_type == "SCALP":
@@ -1060,6 +1150,8 @@ class PaperTradingEngine:
                 can_exec, reason = self.can_execute_directional(timestamp, notional=margin)   # P6a
             if not can_exec:
                 logger.info(f"[{symbol}] {label} Rejeitado: {reason}")
+                self.last_open_reject = (
+                    "breaker" if "Circuit Breaker" in reason else "quota" if reason.startswith("Limite diário") else "margin")
                 return None
 
             side = "LONG" if signal.direction == "BUY" else "SHORT"
@@ -1091,6 +1183,7 @@ class PaperTradingEngine:
 
             if (self.margin_used + margin + fee) > max_margin:
                 logger.info(f"[{symbol}] {label} Rejeitado: Excede margem máxima permitida.")
+                self.last_open_reject = "margin"
                 return None
 
             pos_id = str(uuid.uuid4())[:8]

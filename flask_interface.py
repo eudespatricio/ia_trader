@@ -1710,6 +1710,130 @@ def api_golden_pots():
         "all_pots": pots[:20],
     })
 
+# ---------------------------------------------------------------------------
+# FUNIL DE SINAIS DO PILOTO (read-only; tabela signal_funnel escrita pelo piloto)
+# ---------------------------------------------------------------------------
+_FUNNEL_SUCCESS_FALLBACK = ["evaluated", "candidate", "committee_agree", "confidence_ok",
+                            "risk_ok", "gate_passed", "executed"]
+_FUNNEL_REJECT_FALLBACK = ["no_data", "no_trigger", "committee_disagree", "low_confidence", "veto",
+                           "cooldown", "bar_limit", "quota", "margin", "breaker", "gate_blocked",
+                           "excluded_symbol", "other"]
+FUNNEL_STRATEGIES = ("SCALP", "GOLDEN_POT", "DAY_TRADE")
+FUNNEL_HOURS_ALLOWED = (1, 6, 24, 72, 168)
+
+
+def _funnel_lists() -> tuple:
+    """Usa FUNNEL_* de smart_trade se já carregado (sem importá-lo aqui); senão, fallback do contrato."""
+    st = sys.modules.get("smart_trade")
+    stages = list(getattr(st, "FUNNEL_SUCCESS_STAGES", None) or _FUNNEL_SUCCESS_FALLBACK)
+    reasons = list(getattr(st, "FUNNEL_REJECT_REASONS", None) or _FUNNEL_REJECT_FALLBACK)
+    return stages, reasons
+
+
+def _funnel_block(stage_counts: Dict[str, int], reject_counts: Dict[str, int],
+                  hourly: Dict[int, Dict[str, int]], stages: List[str]) -> Dict[str, Any]:
+    counts = {s: int(stage_counts.get(s, 0)) for s in stages}
+    conversion = []
+    prev = None
+    first = counts[stages[0]] if stages else 0
+    for s in stages:
+        c = counts[s]
+        step = None if prev is None else (round(c / prev * 100, 2) if prev > 0 else 0.0)
+        cum = round(c / first * 100, 2) if first > 0 else 0.0
+        conversion.append({"stage": s, "count": c, "step_pct": step, "cum_pct": cum})
+        prev = c
+    # Gargalo: maior perda relativa entre etapas consecutivas, exceto evaluated->candidate
+    # (perda esperada = no_trigger, reportada à parte).
+    bottleneck = None
+    for i in range(2, len(stages)):
+        p, c = counts[stages[i - 1]], counts[stages[i]]
+        if p <= 0:
+            continue
+        loss = max(0.0, (p - c) / p * 100)
+        if bottleneck is None or loss > bottleneck["loss_pct"]:
+            bottleneck = {"from": stages[i - 1], "stage": stages[i], "lost": max(0, p - c),
+                          "loss_pct": round(loss, 2)}
+    if bottleneck is not None and bottleneck["lost"] <= 0:
+        bottleneck = None
+    no_trigger = {"count": int(reject_counts.get("no_trigger", 0))}
+    if len(stages) > 1 and counts[stages[0]] > 0:
+        no_trigger["loss_pct"] = round(max(0, counts[stages[0]] - counts[stages[1]]) / counts[stages[0]] * 100, 2)
+    else:
+        no_trigger["loss_pct"] = 0.0
+    total_rej = sum(reject_counts.values())
+    rejects = [{"reason": r, "count": int(n), "pct": round(n / total_rej * 100, 2) if total_rej else 0.0}
+               for r, n in sorted(reject_counts.items(), key=lambda kv: (-kv[1], kv[0])) if n > 0]
+    series = [{"hour_ms": h, **{s: int(d.get(s, 0)) for s in stages}} for h, d in sorted(hourly.items())]
+    return {"counts": counts, "conversion": conversion, "rejects": rejects, "rejects_total": int(total_rej),
+            "bottleneck": bottleneck, "no_trigger": no_trigger, "series": series}
+
+
+@app.route("/api/signal-funnel", methods=["GET"])
+def api_signal_funnel():
+    """Funil de sinais do piloto por estratégia e total (somente leitura, mode=ro)."""
+    raw = request.args.get("hours", "24")
+    try:
+        hours = int(raw)
+    except (TypeError, ValueError):
+        hours = -1
+    if hours not in FUNNEL_HOURS_ALLOWED:
+        return jsonify({"error": f"hours inválido; use um de {list(FUNNEL_HOURS_ALLOWED)}"}), 400
+
+    stages, _reasons = _funnel_lists()
+    now_ms = int(time.time() * 1000)
+    since_ms = now_ms - hours * 3_600_000
+    first_hour = since_ms // 3_600_000 * 3_600_000
+    stage_c: Dict[str, Dict[str, int]] = {k: {} for k in FUNNEL_STRATEGIES}
+    rej_c: Dict[str, Dict[str, int]] = {k: {} for k in FUNNEL_STRATEGIES}
+    hourly: Dict[str, Dict[int, Dict[str, int]]] = {k: {} for k in FUNNEL_STRATEGIES}
+    available = False
+    if os.path.exists(DB_PATH):
+        try:
+            uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
+            with _closing_connect(uri, uri=True, timeout=5.0) as con:
+                has = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='signal_funnel'").fetchone()
+                if has:
+                    rows = con.execute(
+                        "SELECT hour_ms, strategy, stage, count FROM signal_funnel WHERE hour_ms >= ? AND hour_ms <= ?",
+                        (first_hour, now_ms)).fetchall()
+                    available = True
+                    for hour_ms, strat, stage, cnt in rows:
+                        if strat not in stage_c:
+                            continue
+                        cnt = int(cnt or 0)
+                        if stage in stages:
+                            stage_c[strat][stage] = stage_c[strat].get(stage, 0) + cnt
+                            hd = hourly[strat].setdefault(int(hour_ms), {})
+                            hd[stage] = hd.get(stage, 0) + cnt
+                        elif isinstance(stage, str) and stage.startswith("reject:"):
+                            r = stage.split(":", 1)[1]
+                            rej_c[strat][r] = rej_c[strat].get(r, 0) + cnt
+        except Exception as e:
+            logger.warning(f"Erro ao ler signal_funnel: {e}")
+            available = False
+
+    strategies = {k: _funnel_block(stage_c[k], rej_c[k], hourly[k], stages) for k in FUNNEL_STRATEGIES}
+    t_stage: Dict[str, int] = {}
+    t_rej: Dict[str, int] = {}
+    t_hour: Dict[int, Dict[str, int]] = {}
+    for k in FUNNEL_STRATEGIES:
+        for s, n in stage_c[k].items():
+            t_stage[s] = t_stage.get(s, 0) + n
+        for r, n in rej_c[k].items():
+            t_rej[r] = t_rej.get(r, 0) + n
+        for h, d in hourly[k].items():
+            td = t_hour.setdefault(h, {})
+            for s, n in d.items():
+                td[s] = td.get(s, 0) + n
+    return jsonify({
+        "hours": hours,
+        "stages": stages,
+        "strategies": strategies,
+        "total": _funnel_block(t_stage, t_rej, t_hour, stages),
+        "meta": {"since": since_ms, "until": now_ms, "tabela_disponivel": available,
+                 "unique_note": "Contagens = (símbolo, barra) únicos por estágio"},
+    })
+
 
 @app.route("/api/regime", methods=["GET"])
 def api_regime():

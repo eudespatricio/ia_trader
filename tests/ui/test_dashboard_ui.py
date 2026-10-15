@@ -608,3 +608,130 @@ def test_tape_card_no_overflow(make_page, name):
     }""")
     assert info["sw"] <= info["cw"], info
     assert info["wide"] == [], info
+
+
+# ----------------------------------------------------------------- funil de sinais (aba Governança)
+def _funnel_payload(empty=False, hours=24):
+    stages = ["evaluated", "candidate", "committee_agree", "confidence_ok", "risk_ok", "gate_passed", "executed"]
+    vals = [0] * 7 if empty else [1000, 100, 50, 40, 10, 5, 5]
+    scale = {1: 1, 6: 2, 24: 3, 72: 4, 168: 5}.get(hours, 3) if not empty else 0
+
+    def blk(mult):
+        c = [v * mult * scale for v in vals]
+        conv = []
+        for i, (s, n) in enumerate(zip(stages, c)):
+            conv.append({"stage": s, "count": n, "step_pct": None if i == 0 else (round(n / c[i - 1] * 100, 2) if c[i - 1] else 0.0),
+                         "cum_pct": round(n / c[0] * 100, 2) if c[0] else 0.0})
+        rej = [] if empty else [{"reason": "no_trigger", "count": 900 * mult * scale, "pct": 90.0},
+                                {"reason": "committee_disagree", "count": 50 * mult * scale, "pct": 5.0},
+                                {"reason": "veto", "count": 30 * mult * scale, "pct": 3.0},
+                                {"reason": "gate_blocked", "count": 20 * mult * scale, "pct": 2.0}]
+        return {"counts": dict(zip(stages, c)), "conversion": conv, "rejects": rej,
+                "rejects_total": sum(r["count"] for r in rej),
+                "bottleneck": None if empty else {"from": "confidence_ok", "stage": "risk_ok", "lost": 30 * mult * scale, "loss_pct": 75.0},
+                "no_trigger": {"count": 0 if empty else 900 * mult * scale, "loss_pct": 0.0 if empty else 90.0},
+                "series": [] if empty else [{"hour_ms": 1 + i, "evaluated": 10 + i} for i in range(5)] and
+                          [dict({s: 1 for s in stages}, hour_ms=i * 3600000) for i in range(5)]}
+    return {"hours": hours, "stages": stages,
+            "strategies": {"SCALP": blk(2), "GOLDEN_POT": blk(1), "DAY_TRADE": blk(0 if False else 1)},
+            "total": blk(4),
+            "meta": {"since": 1_700_000_000_000, "until": 1_700_086_400_000, "tabela_disponivel": not empty}}
+
+
+def _funnel_route(requests_log, empty=False):
+    def handler(route):
+        from urllib.parse import urlparse, parse_qs
+        h = int(parse_qs(urlparse(route.request.url).query).get("hours", ["24"])[0])
+        requests_log.append(h)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(_funnel_payload(empty, h)))
+    return [("**/api/signal-funnel*", handler)]
+
+
+def _open_project(p):
+    p.page.click("#tabNavProject")
+    p.page.wait_for_selector("#signalFunnelSection", state="visible")
+
+
+def test_funnel_not_loaded_while_tab_hidden(make_page):
+    log = []
+    p = make_page(routes=_funnel_route(log))
+    p.page.wait_for_timeout(1500)
+    assert log == []
+    _open_project(p)
+    p.page.wait_for_selector("#funnelStages .funnel-row")
+    assert len(log) >= 1
+
+
+def test_funnel_renders_with_mock(make_page):
+    p = make_page(routes=_funnel_route([]))
+    _open_project(p)
+    p.page.wait_for_selector("#funnelStages .funnel-row")
+    assert p.page.locator("#funnelStages .funnel-row").count() == 7
+    assert p.page.locator("#funnelStages .funnel-bottleneck").count() == 1
+    assert p.page.get_attribute("#funnelStages .funnel-bottleneck", "data-stage") == "risk_ok"
+    txt = p.page.inner_text("#signalFunnelSection")
+    assert "funil de sinais do piloto" in txt.lower() and "principais motivos de rejeição" in txt.lower()
+    assert "Sem gatilho" in txt and "Comitê discordou" in txt and "Veto do Sentinela" in txt
+    assert "Bloqueado pelo fluxo (tape)" in txt and "Gargalo" in txt
+    assert "undefined" not in txt and "NaN" not in txt
+    tip = p.page.get_attribute("#funnelStages .funnel-row", "title")
+    assert "únicos" in tip
+    # barras decrescentes
+    widths = p.page.eval_on_selector_all("#funnelStages .funnel-row .h-full", "els => els.map(e => parseFloat(e.style.width))")
+    assert widths == sorted(widths, reverse=True) and widths[0] == 100
+    assert p.page_errors == [] and p.console_errors == []
+
+
+def test_funnel_empty_state(make_page):
+    p = make_page()  # endpoint real: tabela ausente no banco temporário
+    _open_project(p)
+    p.page.wait_for_selector("#funnelEmpty:not(.hidden)")
+    assert "Coletando... ainda sem dados desde o reinício do piloto" in p.page.inner_text("#funnelEmpty")
+    assert p.page.locator("#funnelBody").is_hidden()
+    assert p.page_errors == [] and p.console_errors == []
+
+
+def test_funnel_empty_with_mock_zeros(make_page):
+    p = make_page(routes=_funnel_route([], empty=True))
+    _open_project(p)
+    p.page.wait_for_selector("#funnelEmpty:not(.hidden)")
+    assert p.page.locator("#funnelBody").is_hidden()
+
+
+def test_funnel_window_and_strategy_switch(make_page):
+    log = []
+    p = make_page(routes=_funnel_route(log))
+    _open_project(p)
+    p.page.wait_for_selector("#funnelStages .funnel-row")
+    first_total = p.page.inner_text("#funnelStages .funnel-row .funnel-count")
+    p.page.click("#funnelHoursGroup [data-hours='168']")
+    p.page.wait_for_function("window.funnelHours === 168 || true")
+    p.page.wait_for_timeout(500)
+    assert 168 in log
+    new_total = p.page.inner_text("#funnelStages .funnel-row .funnel-count")
+    assert new_total != first_total
+    before = new_total
+    p.page.click("#funnelStrategyGroup [data-strategy='SCALP']")
+    assert p.page.inner_text("#funnelStages .funnel-row .funnel-count") != before
+    cls = p.page.get_attribute("#funnelStrategyGroup [data-strategy='SCALP']", "class")
+    assert "bg-cyan-600" in cls
+    assert "bg-cyan-600" not in p.page.get_attribute("#funnelStrategyGroup [data-strategy='ALL']", "class")
+    p.page.click("#funnelHoursGroup [data-hours='1']")
+    p.page.wait_for_timeout(500)
+    assert 1 in log
+    assert p.page_errors == [] and p.console_errors == []
+
+
+@pytest.mark.parametrize("vp", list(VIEWPORTS.values()), ids=list(VIEWPORTS.keys()))
+def test_funnel_no_overflow(make_page, vp):
+    p = make_page(viewport=vp, routes=_funnel_route([]))
+    _open_project(p)
+    p.page.wait_for_selector("#funnelStages .funnel-row")
+    over = p.page.evaluate("""() => {
+        const sec = document.getElementById('signalFunnelSection');
+        const r = sec.getBoundingClientRect();
+        return { doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                 sec: sec.scrollWidth - sec.clientWidth, right: r.right - window.innerWidth };
+    }""")
+    assert over["doc"] <= 0 and over["sec"] <= 0 and over["right"] <= 0, over
+    assert p.page_errors == [] and p.console_errors == []

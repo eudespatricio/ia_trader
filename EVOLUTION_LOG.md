@@ -888,3 +888,5 @@ Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:
 
 - **2026-10-15 — E7:** comitê obrigatório para SCALP/GOLDEN_POT/DAY TRADE; GOLDEN_POT v3 (momentum + volatilidade extraordinária); Smart Trade Exit Ladder comum (TP1 40%+BE, TP2 30%+trailing sem lookahead, TP3/trailing); colunas novas em `paper_positions` (migração segura); `tests/test_exit_ladder_e7.py`. Piloto reiniciado; sem evidência de alfa.
 - **2026-10-15 — E8:** gate de fluxo (Tape Reading) na entrada de SCALP/GOLDEN_POT/DAY TRADE (`agents/tape_reading_agent.py`, `_flow_gate`), auditoria contrafactual em `flow_gate_log` (limpa pelo `reset_pilot`), telemetria no `[STATUS DEMO]`; `tests/test_tape_reading_gate.py`. Piloto reiniciado; sem evidência prévia, não backtestável.
+
+> **Funil de sinais (2026-10-15):** tabela `signal_funnel` no banco do piloto (instrumentação; não altera a estratégia nem as decisões de trading).

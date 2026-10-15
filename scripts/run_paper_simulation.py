@@ -358,6 +358,28 @@ class PaperTradingDaemon:
     async def _gp_fetch_closed_candles(self, sym: str, now_ts: int) -> Optional[pd.DataFrame]:
         return await self._fetch_closed_candles_15m(sym, now_ts)
 
+    # ---- Funil de sinais (telemetria pura; falha nunca interrompe o trading) ----
+    def _fi(self, strategy: str, sym: str, bar_ts: int, stage: str) -> None:
+        try:
+            self.engine.funnel_inc(strategy, sym, bar_ts, stage)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"funil: falha ao contar {stage}: {e}")
+
+    def _fr(self, strategy: str, sym: str, bar_ts: int, reason: str) -> None:
+        try:
+            self.engine.funnel_reject(strategy, sym, bar_ts, reason)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"funil: falha ao contar reject:{reason}: {e}")
+
+    @staticmethod
+    def _nominal_bar(now_ts: int, bar_ms: int) -> int:
+        """Barra nominal (abertura da vela corrente) p/ rejeições anteriores ao fetch de candles."""
+        return (int(now_ts) // bar_ms) * bar_ms
+
+    def _fr_open(self, strategy: str, sym: str, bar_ts: int) -> None:
+        """Após execute_* retornar None: motivo real registrado pelo engine (quota/margin/breaker/veto/other)."""
+        self._fr(strategy, sym, bar_ts, str(getattr(self.engine, "last_open_reject", "other")))
+
     async def _committee_gate(
         self, label: str, sym: str, direction: str, latest: pd.Series, close: float, atr: float, ts: int,
         min_confidence: float,
@@ -365,17 +387,21 @@ class PaperTradingDaemon:
         """PORTA OBRIGATÓRIA (diretriz E7): SCALP e GOLDEN_POT só entram se o comitê completo
         (core.evaluate_market_async = agentes + consenso + veto do RiskSentinel + SignalGenerator) concordar
         na mesma direção, sem veto e com confiança >= mínimo do perfil. Retorna o TradeSignal REAL ou None."""
+        self._committee_reject = "other"  # funil: motivo da última recusa do comitê
         committee = await self.engine.core.evaluate_market_async(
             context=latest.to_dict(), symbol=sym, current_price=close, atr=atr, timestamp=ts,
         )
         if committee.is_vetoed:
             logger.info(f"[{sym}] {label} bloqueado: veto do RiskSentinel.")
+            self._committee_reject = "veto"
             return None
         if committee.direction != direction:
             logger.info(f"[{sym}] {label} bloqueado: comitê diverge (gatilho {direction} x comitê {committee.direction}).")
+            self._committee_reject = "committee_disagree"
             return None
         if committee.confidence < min_confidence:
             logger.info(f"[{sym}] {label} bloqueado: confiança do comitê {committee.confidence:.2f} < {min_confidence}.")
+            self._committee_reject = "low_confidence"
             return None
         return committee
 
@@ -460,72 +486,97 @@ class PaperTradingDaemon:
         do RiskSentinel e com confiança >= mínimo do perfil. confidence/consensus_score/risk_dollars vêm do
         TradeSignal real. Cota diária própria (máx 3/dia). Saídas: ladder comum (perfil GOLDEN_POT).
         """
+        GPN = "GOLDEN_POT"
         now_ts = int(time.time() * 1000)
+        nom = self._nominal_bar(now_ts, GP_BAR_MS)
         can_exec, reason = self.engine.can_execute_golden_pot(now_ts)
         if not can_exec:
+            self._fr(GPN, "*", nom, "breaker" if "Circuit Breaker" in reason else "quota")
             return  # Teto diário de Golden Pots atingido
 
         scan_res = await self.scanner.scan_market(force_refresh=False)
-        candidates = [
-            p for p in scan_res.get("top_scalps", [])
-            if not self.is_gp_excluded_symbol(str(p.get("symbol", "")))
-        ][:GP_MAX_CANDIDATES]
+        candidates = []
+        for p in scan_res.get("top_scalps", []):
+            if self.is_gp_excluded_symbol(str(p.get("symbol", ""))):
+                self._fr(GPN, str(p.get("symbol", "")), nom, "excluded_symbol")
+            else:
+                candidates.append(p)
+        candidates = candidates[:GP_MAX_CANDIDATES]
         if not candidates:
+            self._fr(GPN, "*", nom, "no_data")
             return
 
         open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
         if open_count >= self.engine.max_concurrent_positions:
+            self._fr(GPN, "*", nom, "margin")
             return  # Teto de posições simultâneas atingido
 
         if self.engine.available_margin < 200.0:
+            self._fr(GPN, "*", nom, "margin")
             return  # Margem livre insuficiente
 
         for pot in candidates:
+            sym = pot["symbol"]
             open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
             if open_count >= self.engine.max_concurrent_positions:
+                self._fr(GPN, sym, nom, "margin")
                 break
 
-            can_exec, _ = self.engine.can_execute_golden_pot(now_ts)
+            can_exec, _reason = self.engine.can_execute_golden_pot(now_ts)
             if not can_exec:
+                self._fr(GPN, sym, nom, "breaker" if "Circuit Breaker" in _reason else "quota")
                 break
 
-            sym = pot["symbol"]
             # Se já há posição aberta neste par, pula
             if any(p.symbol == sym and p.status == "OPEN" for p in self.engine.positions.values()):
+                self._fr(GPN, sym, nom, "margin")
                 continue
 
+            bar_ref = nom
             try:
                 df = await self._gp_fetch_closed_candles(sym, now_ts)
                 if df is None:
                     logger.debug(f"[{sym}] GP ignorado: < {GP_MIN_WARMUP_CANDLES} velas 15m (listagem nova/sem warmup).")
+                    self._fr(GPN, sym, nom, "no_data")
                     continue
 
                 df_feat = self._compute_swing_features(df)  # exige sma_200 válida
                 if df_feat.empty or not self._has_valid_swing_context(df_feat):
                     logger.debug(f"[{sym}] GP ignorado: sma_200 sem warmup válido.")
+                    self._fr(GPN, sym, nom, "no_data")
                     continue
 
                 latest = df_feat.iloc[-1]
                 ts = int(latest["timestamp"])
+                bar_ref = ts
                 bar_id = ts // GP_BAR_MS
+                self._fi(GPN, sym, ts, "evaluated")
                 # Limite de 1 entrada GP por vela de 15m (qualquer símbolo) e cooldown por símbolo
                 if self._gp_entered_bar(bar_id):
+                    self._fr(GPN, sym, ts, "bar_limit")
                     break
                 if self._gp_in_cooldown(sym, bar_id):
                     logger.debug(f"[{sym}] GP em cooldown ({GP_COOLDOWN_BARS} barras).")
+                    self._fr(GPN, sym, ts, "cooldown")
                     continue
 
                 trig = self.gp_momentum_trigger(df_feat)
                 if trig is None:
+                    self._fr(GPN, sym, ts, "no_trigger")
                     continue
                 direction, why = trig
+                self._fi(GPN, sym, ts, "candidate")
 
                 close = float(latest["close"])
                 atr = float(latest.get("atr_14", close * 0.008))
                 committee = await self._committee_gate(
                     "GP", sym, direction, latest, close, atr, ts, GP_MIN_COMMITTEE_CONFIDENCE)
                 if committee is None:
+                    self._fr(GPN, sym, ts, getattr(self, "_committee_reject", "other"))
                     continue
+                self._fi(GPN, sym, ts, "committee_agree")
+                self._fi(GPN, sym, ts, "confidence_ok")
+                self._fi(GPN, sym, ts, "risk_ok")
 
                 sig, lev = self._build_ladder_signal(
                     committee, "GOLDEN_POT", direction, close, atr, latest,
@@ -534,11 +585,16 @@ class PaperTradingDaemon:
                     low_liquidity=float(pot.get("volume_24h_usd", 0.0) or 0.0) < GP_LOW_LIQUIDITY_USD,
                 )
                 if not self._flow_gate("GOLDEN_POT", sym, direction, sig, lev, close, atr):
+                    self._fr(GPN, sym, ts, "gate_blocked")
                     continue
+                self._fi(GPN, sym, ts, "gate_passed")
                 pos = self.engine.execute_golden_pot_signal(
                     signal=sig, current_price=close, timestamp=ts, leverage=lev,
                 )
+                if not pos:
+                    self._fr_open(GPN, sym, ts)
                 if pos:
+                    self._fi(GPN, sym, ts, "executed")
                     logger.info(
                         f"[{sym}] 🌟 GOLDEN POT v3 DISPARADO: {direction} @ ${close:,.2f} | "
                         f"conf {sig.confidence:.2f} cons {sig.consensus_score:+.2f} | lev {pos.leverage:g}x | "
@@ -546,6 +602,7 @@ class PaperTradingDaemon:
                     )
                     break  # no máximo 1 entrada GP por vela
             except Exception as e:
+                self._fr(GPN, sym, bar_ref, "other")
                 logger.debug(f"Aviso ao avaliar golden pot para {sym}: {e}")
 
     async def evaluate_scalp_opportunities(self) -> None:
@@ -556,48 +613,67 @@ class PaperTradingDaemon:
         400 velas fechadas com sma_200 válida. confidence/consensus/risk_dollars/rationale são do sinal REAL
         (nenhuma constante); alavancagem via decide_leverage; cooldown e 1 entrada/vela. Cota: máx scalps/dia.
         """
+        SCN = "SCALP"
+        scalp_syms = ["ETHUSDT", "SOLUSDT", "BTCUSDT"]
         now_ts = int(time.time() * 1000)
+        nom = self._nominal_bar(now_ts, GP_BAR_MS)
         open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
         if open_count >= self.engine.max_concurrent_positions:
+            for _s in scalp_syms:
+                self._fr(SCN, _s, nom, "margin")
             return  # Teto de posições simultâneas atingido
 
         if self.engine.available_margin < 200.0:
+            for _s in scalp_syms:
+                self._fr(SCN, _s, nom, "margin")
             return  # Margem livre insuficiente
 
         can_exec, reason = self.engine.can_execute_scalp(now_ts)
         if not can_exec:
+            for _s in scalp_syms:
+                self._fr(SCN, _s, nom, "breaker" if "Circuit Breaker" in reason else "quota")
             return  # Teto diário de scalps atingido
 
-        for sym in ["ETHUSDT", "SOLUSDT", "BTCUSDT"]:
+        for sym in scalp_syms:
             open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
             if open_count >= self.engine.max_concurrent_positions:
+                self._fr(SCN, sym, nom, "margin")
                 break
 
-            can_exec, _ = self.engine.can_execute_scalp(now_ts)
+            can_exec, _reason = self.engine.can_execute_scalp(now_ts)
             if not can_exec:
+                self._fr(SCN, sym, nom, "breaker" if "Circuit Breaker" in _reason else "quota")
                 break
 
             # Se já há posição aberta no par, pula
             if any(p.symbol == sym and p.status == "OPEN" for p in self.engine.positions.values()):
+                self._fr(SCN, sym, nom, "margin")
                 continue
 
+            bar_ref = nom
             try:
                 df = await self._fetch_closed_candles_15m(sym, now_ts)
                 if df is None:
+                    self._fr(SCN, sym, nom, "no_data")
                     continue
 
                 df_feat = self._compute_swing_features(df)  # sma_200 válida (warmup)
                 if df_feat.empty or not self._has_valid_swing_context(df_feat):
                     logger.debug(f"[{sym}] Scalp ignorado: sma_200 sem warmup válido.")
+                    self._fr(SCN, sym, nom, "no_data")
                     continue
 
                 latest = df_feat.iloc[-1]
                 ts = int(latest["timestamp"])
+                bar_ref = ts
                 bar_id = ts // GP_BAR_MS
+                self._fi(SCN, sym, ts, "evaluated")
                 if self._entered_bar("OPEN_SCALP_", bar_id, SCALP_MAX_ENTRIES_PER_BAR):
+                    self._fr(SCN, sym, ts, "bar_limit")
                     break
                 if self._in_cooldown(sym, bar_id, SCALP_COOLDOWN_BARS):
                     logger.debug(f"[{sym}] Scalp em cooldown ({SCALP_COOLDOWN_BARS} barras).")
+                    self._fr(SCN, sym, ts, "cooldown")
                     continue
 
                 close = float(latest["close"])
@@ -618,12 +694,18 @@ class PaperTradingDaemon:
                 elif vwap_dist >= vwap_dev and rsi >= rsi_ob and vol_z >= vol_z_min:
                     direction = "SELL"
                 if not direction:
+                    self._fr(SCN, sym, ts, "no_trigger")
                     continue
+                self._fi(SCN, sym, ts, "candidate")
 
                 committee = await self._committee_gate(
                     "Scalp", sym, direction, latest, close, atr, ts, SCALP_MIN_COMMITTEE_CONFIDENCE)
                 if committee is None:
+                    self._fr(SCN, sym, ts, getattr(self, "_committee_reject", "other"))
                     continue
+                self._fi(SCN, sym, ts, "committee_agree")
+                self._fi(SCN, sym, ts, "confidence_ok")
+                self._fi(SCN, sym, ts, "risk_ok")
 
                 sig, lev = self._build_ladder_signal(
                     committee, "SCALP", direction, close, atr, latest,
@@ -631,11 +713,16 @@ class PaperTradingDaemon:
                     rationale=f"Scalp Padrão Core: VWAP {vwap_dist:+.2f}% | RSI {rsi:.1f} | Vol Z {vol_z:+.1f}",
                 )
                 if not self._flow_gate("SCALP", sym, direction, sig, lev, close, atr):
+                    self._fr(SCN, sym, ts, "gate_blocked")
                     continue
+                self._fi(SCN, sym, ts, "gate_passed")
                 pos = self.engine.execute_scalp_signal(
                     signal=sig, current_price=close, timestamp=ts, leverage=lev,
                 )
+                if not pos:
+                    self._fr_open(SCN, sym, ts)
                 if pos:
+                    self._fi(SCN, sym, ts, "executed")
                     logger.info(
                         f"[{sym}] ⚡ SCALP (comitê) DISPARADO: {direction} @ ${close:,.2f} | "
                         f"conf {sig.confidence:.2f} cons {sig.consensus_score:+.2f} | lev {pos.leverage:g}x | "
@@ -643,12 +730,17 @@ class PaperTradingDaemon:
                     )
                     break  # no máximo 1 entrada SCALP por vela
             except Exception as e:
+                self._fr(SCN, sym, bar_ref, "other")
                 logger.debug(f"Aviso ao avaliar scalp padrão para {sym}: {e}")
 
     async def evaluate_swing_opportunities(self) -> None:
         """Avalia oportunidades de Swing Trade (1h/4h) com o Comitê de Decisão."""
+        DTN = "DAY_TRADE"
         for sym in self.core_symbols:
+            nom = self._nominal_bar(int(time.time() * 1000), SWING_BAR_MS)
+            bar_ref = nom
             if any(p.symbol == sym and p.strategy_type == "DIRECTIONAL" and p.status == "OPEN" for p in self.engine.positions.values()):
+                self._fr(DTN, sym, nom, "margin")
                 continue
 
             try:
@@ -661,16 +753,21 @@ class PaperTradingDaemon:
                 df = self._drop_forming_candle(df, SWING_BAR_MS, int(time.time() * 1000))
                 if len(df) < SWING_MIN_WARMUP_CANDLES:
                     logger.debug(f"[{sym}] Swing ignorado: {len(df)} velas < warmup {SWING_MIN_WARMUP_CANDLES}.")
+                    self._fr(DTN, sym, nom, "no_data")
                     continue
 
                 df_feat = self._compute_swing_features(df)
                 if df_feat.empty or not self._has_valid_swing_context(df_feat):
                     logger.debug(f"[{sym}] Swing ignorado: features inválidas (sma_200 ausente/zero).")
+                    self._fr(DTN, sym, nom, "no_data")
                     continue
 
                 latest = df_feat.iloc[-1]
                 close = float(latest["close"])
                 ts = int(latest["timestamp"])
+                bar_ref = ts
+                self._fi(DTN, sym, ts, "evaluated")
+                self._fi(DTN, sym, ts, "candidate")  # day trade: símbolo/barra elegível ao comitê
 
                 eval_res = self.engine.core.evaluate_multi_strategy(
                     symbol=sym,
@@ -684,6 +781,8 @@ class PaperTradingDaemon:
                 if dir_sig.get("direction") in ["BUY", "SELL"] and not dir_sig.get("is_vetoed", False):
                     # Exige confiança institucional (>= SWING_MIN_COMMITTEE_CONFIDENCE, perfil DIRECTIONAL)
                     if dir_sig.get("confidence", 0.0) >= SWING_MIN_COMMITTEE_CONFIDENCE:
+                        self._fi(DTN, sym, ts, "committee_agree")
+                        self._fi(DTN, sym, ts, "confidence_ok")
                         # Contrato: TradeSignal.position_size vem do core em UNIDADES do ativo;
                         # o engine interpreta como NOTIONAL em USD -> converte aqui (senão
                         # BTC 0.55 virava $0.55 e a ordem era rejeitada por margem < $10).
@@ -698,13 +797,25 @@ class PaperTradingDaemon:
                         notional = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95) * lev
                         dir_sig = {**dir_sig, "position_size": notional, "risk_dollars": (notional / close) * sl_dist}
                         sig = TradeSignal(**dir_sig)
+                        self._fi(DTN, sym, ts, "risk_ok")
                         if not self._flow_gate("DIRECTIONAL", sym, sig.direction, sig, lev, close,
                                                float(latest.get("atr_14", 0.0) or 0.0)):
+                            self._fr(DTN, sym, ts, "gate_blocked")
                             continue
+                        self._fi(DTN, sym, ts, "gate_passed")
                         pos = self.engine.execute_directional_signal(sig, current_price=close, timestamp=ts, leverage=lev)
+                        if not pos:
+                            self._fr_open(DTN, sym, ts)
                         if pos:
+                            self._fi(DTN, sym, ts, "executed")
                             logger.info(f"[{sym}] SWING TRADE DISPARADO: {sig.direction} @ ${close:,.2f}")
+                    else:
+                        self._fr(DTN, sym, ts, "low_confidence")
+                else:
+                    self._fr(DTN, sym, ts,
+                             "veto" if dir_sig.get("direction") in ["BUY", "SELL"] else "committee_disagree")
             except Exception as e:
+                self._fr(DTN, sym, bar_ref, "other")
                 logger.debug(f"Aviso ao avaliar swing para {sym}: {e}")
 
     async def run_loop(self, max_cycles: int = 0) -> None:
@@ -758,6 +869,10 @@ class PaperTradingDaemon:
             logger.info("Daemon de Paper Trading recebendo sinal de interrupção...")
         finally:
             self.is_running = False
+            try:
+                self.engine.funnel_flush()  # funil de sinais: grava o buffer pendente no shutdown
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"signal_funnel: falha no flush final: {e}")
             await self.loader.close()
             await self.scanner.close()
             logger.info("Daemon de Paper Trading encerrado graciosamente.")

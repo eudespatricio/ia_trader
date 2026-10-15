@@ -58,6 +58,7 @@ def env(tmp_path, monkeypatch):
     con.execute("INSERT INTO circuit_breaker_state VALUES (1,'COOLDOWN',0,'perdas',9999999999999,1,1)")
     con.execute("INSERT INTO agent_learning_memory (decision_id,timestamp,symbol,regime,consensus_direction,"
                 "consensus_confidence,agent_signals_json,position_id) VALUES ('d1',1,'BTC','BULL','LONG',0.5,'{}','p0')")
+    con.execute("INSERT INTO signal_funnel VALUES (3600000, 'SCALP', 'evaluated', 9)")
     con.executemany("INSERT INTO flow_gate_log (ts_ms,symbol,decision) VALUES (?, 'BTCUSDT', 'BLOCKED')", [(i,) for i in range(4)])
     con.execute("INSERT INTO agent_regime_weights VALUES ('BULL','agentX',1.2,0.6,10,1)")
     for k, v in (("ledger_epoch_trade_rowid", "3"), ("ledger_epoch_pos_rowid", "3"),

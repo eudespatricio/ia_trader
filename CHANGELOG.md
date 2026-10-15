@@ -7,6 +7,7 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 ## [Não lançado] - 2026-10-14/15 - Auditoria e Correções
 
 ### Alterado
+- **Funil de sinais (2026-10-15):** instrumentação pura (NÃO muda estratégia/decisões): tabela `signal_funnel` (hora UTC x estratégia x estágio, `reject:<motivo>`) alimentada por `PaperTradingEngine.funnel_inc` (dedupe por barra, flush ~30 s e no shutdown); `reset_pilot` a limpa.
 - **E8 (2026-10-15):** gate de fluxo ativo (`TapeReadingAgent`, lê `microstructure.db` em modo RO) após a porta do comitê em SCALP/GOLDEN_POT/DAY TRADE: voto do tape deve confirmar a direção (oposto/HOLD bloqueia; dados ausentes = fail-open marcado); auditoria contrafactual em `flow_gate_log`. Piloto reiniciado. Ver ADDENDUM E8.
 - **E7 (2026-10-15):** SCALP, GOLDEN_POT e DAY TRADE passam obrigatoriamente pelo comitê (scalp deixa de usar confidence 0.85/±0.80); GOLDEN_POT v3 = momentum + volatilidade extraordinária; **Smart Trade Exit Ladder** comum (TP1 40% + BE, TP2 30% + trailing por ATR sem lookahead, TP3/trailing no runner; perfis em `STRATEGY_PROFILES`). Piloto reiniciado. Ver ADDENDUM E7.
 - **GOLDEN_POT v2 (E5, 2026-10-15):** entrada só com concordância do comitê completo (sem veto), `confidence`/`consensus`/`risk` reais, cooldown 16 barras, 1 GP/vela, filtro de faca-caindo, exclusão de ativos tokenizados, ≥400 candles com `sma_200` válida; lote = margem `paper_lot_usd` (padrão US$100) com alavancagem do Smart Trader (`leverage_policy.py`, teto 5x, liquidação). Piloto reiniciado; E4 invalidado para GOLDEN_POT.

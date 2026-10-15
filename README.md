@@ -250,3 +250,5 @@ git push -u origin <branch>
 ```
 - **E7 (2026-10-15):** SCALP, GOLDEN_POT (agora momentum + volatilidade extraordinária) e DAY TRADE passam obrigatoriamente pelo comitê e compartilham a Smart Trade Exit Ladder (perfis ATR em `smart_trade.STRATEGY_PROFILES`); piloto reiniciado; sem evidência de alfa (ADDENDUM E7 em `docs/HIPOTESES_PRE_REGISTRADAS.md`).
 - **E8 (2026-10-15):** gate de fluxo (Tape Reading, `agents/tape_reading_agent.py`) na entrada de SCALP/GOLDEN_POT/DAY TRADE com auditoria em `flow_gate_log`; sem evidência prévia, não backtestável; piloto reiniciado (ADDENDUM E8 em `docs/HIPOTESES_PRE_REGISTRADAS.md`).
+
+> **Funil de sinais (2026-10-15):** tabela `signal_funnel` no banco do piloto (instrumentação; não altera a estratégia nem as decisões de trading).

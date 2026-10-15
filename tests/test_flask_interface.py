@@ -554,3 +554,84 @@ class TestTapeGateStatus:
         ids = [a["id"] for a in d["agents"]]
         assert ids[-1] == "tape" and len(ids) == 7
         assert d["agents"][-1]["is_gate"] is True
+
+
+class TestSignalFunnelApi:
+    """GET /api/signal-funnel — leitura somente, banco temporário."""
+
+    @pytest.fixture
+    def fdb(self, tmp_path, monkeypatch):
+        import flask_interface
+        db = str(tmp_path / "funnel.db")
+        sqlite3.connect(db).close()
+        monkeypatch.setattr(flask_interface, "DB_PATH", db)
+        return db
+
+    @staticmethod
+    def _create(db, rows):
+        import time as _t
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE signal_funnel (hour_ms INTEGER, strategy TEXT, stage TEXT, count INTEGER, "
+                    "PRIMARY KEY(hour_ms,strategy,stage))")
+        h = int(_t.time() * 1000) // 3_600_000 * 3_600_000
+        con.executemany("INSERT INTO signal_funnel VALUES (?,?,?,?)",
+                        [(h - off * 3_600_000, s, st, n) for off, s, st, n in rows])
+        con.commit()
+        con.close()
+
+    def test_table_absent(self, client, fdb):
+        r = client.get("/api/signal-funnel?hours=24")
+        assert r.status_code == 200
+        j = r.get_json()
+        assert j["meta"]["tabela_disponivel"] is False
+        assert all(c["count"] == 0 for c in j["total"]["conversion"])
+        assert j["total"]["rejects"] == [] and j["total"]["bottleneck"] is None
+
+    def test_table_empty(self, client, fdb):
+        self._create(fdb, [])
+        j = client.get("/api/signal-funnel").get_json()
+        assert j["meta"]["tabela_disponivel"] is True
+        assert j["hours"] == 24 and j["total"]["counts"]["evaluated"] == 0
+
+    def test_with_data(self, client, fdb):
+        self._create(fdb, [
+            (0, "SCALP", "evaluated", 1000), (0, "SCALP", "candidate", 100),
+            (0, "SCALP", "committee_agree", 50), (0, "SCALP", "confidence_ok", 40),
+            (0, "SCALP", "risk_ok", 10), (0, "SCALP", "gate_passed", 5), (0, "SCALP", "executed", 5),
+            (0, "SCALP", "reject:no_trigger", 900), (0, "SCALP", "reject:veto", 30),
+            (0, "SCALP", "reject:committee_disagree", 50),
+            (2, "DAY_TRADE", "evaluated", 200), (2, "DAY_TRADE", "candidate", 20),
+            (2, "DAY_TRADE", "reject:veto", 5),
+            (30, "SCALP", "evaluated", 777),  # fora da janela de 24h
+        ])
+        j = client.get("/api/signal-funnel?hours=24").get_json()
+        s = j["strategies"]["SCALP"]
+        assert s["counts"]["evaluated"] == 1000
+        conv = {c["stage"]: c for c in s["conversion"]}
+        assert conv["candidate"]["step_pct"] == 10.0 and conv["candidate"]["cum_pct"] == 10.0
+        assert conv["committee_agree"]["step_pct"] == 50.0
+        assert conv["risk_ok"]["step_pct"] == 25.0 and conv["risk_ok"]["cum_pct"] == 1.0
+        assert conv["executed"]["step_pct"] == 100.0
+        # rejeições ordenadas desc
+        assert [r["reason"] for r in s["rejects"]] == ["no_trigger", "committee_disagree", "veto"]
+        # gargalo: confidence_ok->risk_ok perde 75% (evaluated->candidate ignorado)
+        assert s["bottleneck"]["stage"] == "risk_ok" and s["bottleneck"]["loss_pct"] == 75.0
+        assert s["no_trigger"]["loss_pct"] == 90.0
+        # total soma estratégias
+        assert j["total"]["counts"]["evaluated"] == 1200
+        assert {r["reason"]: r["count"] for r in j["total"]["rejects"]}["veto"] == 35
+        assert len(s["series"]) == 1
+        # janela maior inclui o ponto de 30h atrás
+        j72 = client.get("/api/signal-funnel?hours=72").get_json()
+        assert j72["strategies"]["SCALP"]["counts"]["evaluated"] == 1777
+
+    @pytest.mark.parametrize("bad", ["0", "2", "abc", "-1", "9999", ""])
+    def test_invalid_hours(self, client, fdb, bad):
+        assert client.get(f"/api/signal-funnel?hours={bad}").status_code == 400
+
+    def test_read_only_no_write(self, client, fdb):
+        self._create(fdb, [(0, "SCALP", "evaluated", 3)])
+        client.get("/api/signal-funnel?hours=1")
+        con = sqlite3.connect(fdb)
+        assert con.execute("SELECT count FROM signal_funnel").fetchone()[0] == 3
+        con.close()
