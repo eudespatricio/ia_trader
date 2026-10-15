@@ -262,7 +262,15 @@ class SystemSupervisor:
             check_type="process"
         )
 
-        self.services = [self.flask_service, self.paper_service, self.tunnel_service]
+        # 4. Coletor contínuo de microestrutura (dados públicos, sem chave de API)
+        self.collector_service = ServiceManager(
+            name="microstructure_collector",
+            cmd=[PYTHON_BIN, os.path.join(BASE_DIR, "scripts", "microstructure_collector.py")],
+            check_type="process",
+            log_file=os.path.join(BASE_DIR, "logs", "collector.log")
+        )
+
+        self.services = [self.flask_service, self.paper_service, self.tunnel_service, self.collector_service]
 
     def verify_database_integrity(self) -> Dict[str, Any]:
         """Verifica a integridade e modo de operação do SQLite."""
@@ -345,6 +353,17 @@ class SystemSupervisor:
                 self.tunnel_service.pid = pids[0]
                 self.tunnel_service.start_time = time.time()
                 logger.info(f"🔗 [cloudflare_tunnel] Adotou túnel existente (PID={pids[0]}).")
+        except Exception:
+            pass
+
+        try:
+            # Procura o coletor de microestrutura
+            out = subprocess.check_output(["pgrep", "-f", "microstructure_collector.py"], text=True, stderr=subprocess.DEVNULL)
+            pids = [int(p) for p in out.strip().split() if p.isdigit()]
+            if pids and not self.collector_service.is_running():
+                self.collector_service.pid = pids[0]
+                self.collector_service.start_time = time.time()
+                logger.info(f"🔗 [microstructure_collector] Adotou processo existente (PID={pids[0]}).")
         except Exception:
             pass
 
