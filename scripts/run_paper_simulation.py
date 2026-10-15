@@ -864,6 +864,11 @@ class PaperTradingDaemon:
                     logger.info(f"Limite de {max_cycles} ciclos atingido. Encerrando execução.")
                     break
 
+                try:
+                    self.engine.funnel_flush()
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"Aviso no funnel_flush de ciclo: {e}")
+
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             logger.info("Daemon de Paper Trading recebendo sinal de interrupção...")
