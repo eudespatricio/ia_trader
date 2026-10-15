@@ -32,3 +32,6 @@ datasets/supervisor_state.json
 datasets/*.json.tmp
 bin/
 datasets/backups/
+datasets/supervisor.log
+datasets/reports/pilot_report.json
+logs/
