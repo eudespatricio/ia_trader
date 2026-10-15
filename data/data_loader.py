@@ -19,6 +19,7 @@ import os
 import sys
 import json
 import sqlite3
+from db_conn import connect as _db_connect
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Union, Tuple
@@ -73,7 +74,7 @@ class DataLoader:
 
     def _get_connection(self) -> sqlite3.Connection:
         """Cria conexão SQLite otimizada com WAL mode para concorrência segura."""
-        conn = sqlite3.connect(self.db_path, timeout=15.0)
+        conn = _db_connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")

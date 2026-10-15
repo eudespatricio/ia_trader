@@ -37,3 +37,29 @@ LightGBM binário por lado, retreino **mensal** (janela expandida, embargo H+10)
 | H=24, TP1.5/SL1.0 | 96,6% | +0,007% | [-0,084; +0,101] | 0,000 | +0,08 |
 
 Leitura: a execução maker NÃO resgata o sinal. O custo médio cai pouco (média nula de -0,168% para -0,132%) porque ~60% das saídas são stops a mercado (taker + slippage). O H=48 deixa de ser distinguível de aleatório (p=0,46) por seleção adversa; o H=24 fica em +0,007%/trade com IC95 [-0,084; +0,101]. Nenhum candidato passa o critério (IC95 inferior > 0, DSR >= 0,95). Tentativas totais desta rodada: 13 (N do DSR = 97). Ressalva: só OHLC 1h; fill-rate é estimativa, não substitui ordens reais.
+
+## 4. Rodada de padrões de price action + trailing no TP1 (3 tentativas; N do DSR = 97 + 2 = 99, +1 = 100)
+Holdout (2025-10-14..2026-10-14) **continua trancado** (nada rodou com `--holdout`; o experimento de trailing foi truncado em 2025-10-13 23:00).
+
+### 4.1 `--patterns` (`data/pattern_features.py`, 13 features causais; mesmo walk-forward/regra de entrada/custo taker 0,16%)
+Pin bar de alta/baixa, engolfo, inside bar, divergência regular de RSI(14) (pivots confirmados com atraso n=3, janela ≤30 barras), distância % ao último swing high/low confirmado (`market_structure`) e flag "padrão a ≤0,5 ATR da zona". Testes de causalidade (truncar/alterar barras futuras não muda o valor em t) em `tests/test_pattern_features.py`.
+
+| Config | AUC OOS (L/S) | Trades | Expectância líq./trade | IC95 | p(perm.) | Sharpe | DSR (N=99) |
+|---|---|---|---|---|---|---|---|
+| H=24, TP1.5/SL1.0 + patterns | 0,5185/0,5208 | 1300 | −0,064% | [−0,184; +0,061] | 0,009 | −0,51 | 0,000 |
+| H=48, TP2.5/SL1.5 + patterns | 0,5131/0,5151 | 1566 | −0,099% | [−0,240; +0,055] | 0,126 | −0,73 | 0,000 |
+
+Comparação honesta com a seção 2 (sem patterns): H=24 AUC 0,517/0,518 → 0,5185/0,5208 (+0,002, dentro do ruído) e expectância −0,053% → −0,064%; H=48 AUC 0,511/0,516 → 0,5131/0,5151 e expectância +0,026% → −0,099% (p da permutação 0,001 → 0,126). **Padrões não agregam informação utilizável**: AUC praticamente igual, expectância líquida não melhora e permanece indistinguível de zero (IC95 inclui 0 em ambos; DSR 0). Instável por ano (H=48: 2024 +0,084%, 2025 −0,278%). Observação: as duas rodadas diferem em dezenas de bps apenas por ruído de seleção de trades; não há evidência de melhora.
+
+### 4.2 Trailing liga já no TP1 (`BacktestEngine(pilot_parity=True, trailing_activation='tp1')`, `scripts/trailing_tp1_experiment.py`)
+Baseline PROD (variante BASE do `ab_consensus_experiment`), 2020-09 .. 2025-10-13, portfólio $10k, execução idêntica ao piloto; trailing = 1,2×ATR de entrada, só barras fechadas, nunca afrouxa; restante (60%) sob trailing desde o TP1.
+
+| Modo | Trades | Hit | Expectância líq. (notional) | IC95 | Bruta | Sharpe | MDD | Motivos de saída |
+|---|---|---|---|---|---|---|---|---|
+| `tp2` (piloto) | 9260 | 39,5% | −0,291% | [−0,329; −0,251] | −0,176% | −5,54 | −86% | SL 5591, BE 2195, TRAIL 971, TP3 469 |
+| `tp1` | 9732 | 39,5% | −0,320% | [−0,356; −0,284] | −0,205% | −6,69 | −99% | SL 5881, TRAIL 3535, TP3 289, BE 1 |
+
+Diferença diária pareada (tp1 − tp2): −0,62 bps/dia do capital, IC95 por blocos [−0,80; −0,45], p(≤0)=1,000. **Conclusão: piorou** (−0,03 p.p./trade; negativo em todos os anos 2020–2025). O trailing de 1,2 ATR logo após o TP1 (1,5 ATR) é apertado demais: transforma o breakeven em saídas a mercado (taker) e reduz os TP3 (469 → 289) sem salvar ganho; o baseline PROD já é fortemente negativo (o gargalo é o sinal, não a saída). Proposta **não recomendada**.
+
+### N do DSR
+Anterior: 97 (84 históricas + 13 desta busca). Esta rodada: +2 (patterns H=24, H=48) = **99** (`PRIOR_TRIALS=97`, `NEW_TRIALS=2` em `online_ml_search.py`), +1 (trailing tp1) = **100** acumulado. O DSR do trailing não foi calculado (expectância já significativamente negativa). Nenhuma das 3 tentativas passa o critério de promoção; nada vai ao piloto. Ainda não estão no `trial_log.csv`.

@@ -40,7 +40,8 @@ DEV_END = pd.Timestamp("2025-10-13 23:00")
 HOLD_START, HOLD_END = pd.Timestamp("2025-10-14 00:00"), pd.Timestamp("2026-10-13 23:00")
 TP_M, SL_M, COST = 1.5, 1.0, 0.0016  # sobrescritos por --tp/--sl
 EV_MIN = 0.10
-PRIOR_TRIALS = 95
+PRIOR_TRIALS = 97     # tentativas anteriores à rodada de padrões (95 + 2 maker)
+NEW_TRIALS = 2        # rodada de padrões: H=24 e H=48 com --patterns (N do DSR = 99)
 WARMUP = 300
 FIRST_PRED = pd.Timestamp("2022-01-01")
 
@@ -58,6 +59,7 @@ def load_candles(sym):
 
 
 EXT = False
+PATTERNS = False
 LABEL_FN = None      # função de rótulo alternativa (ex.: execução maker); None = barreira com custo taker
 LABEL_COST = COST    # custo subtraído do rótulo (0 quando a função já devolve retorno líquido)
 EV_COST = COST       # custo usado na regra de entrada EV_R
@@ -149,6 +151,9 @@ def build(H):
         feat["atr_pct"] = atr / feat["close"].values
         if EXT:
             feat = add_ext_features(feat, s)
+        if PATTERNS:
+            from data.pattern_features import compute_pattern_features
+            feat = pd.concat([feat, compute_pattern_features(feat[["open", "high", "low", "close"]])], axis=1)
         feat = feat.iloc[WARMUP:].copy()
         frames.append(feat)
     df = pd.concat(frames, ignore_index=True).sort_values(["dt", "symbol"]).reset_index(drop=True)
@@ -158,7 +163,7 @@ def build(H):
     keep = []
     for c in cand:
         x = df[c].replace([np.inf, -np.inf], np.nan)
-        if x.isna().mean() > 0.2 or x.nunique() < 5:
+        if x.isna().mean() > 0.2 or x.nunique() < (2 if c.startswith("pat_") else 5):
             continue
         sub = pd.concat([x, df["close"]], axis=1).dropna()
         if len(sub) > 100 and abs(sub.corr().iloc[0, 1]) > 0.8:
@@ -268,12 +273,14 @@ def main():
     ap.add_argument("--H", type=int, default=24)
     ap.add_argument("--holdout", action="store_true")
     ap.add_argument("--ext", action="store_true")
+    ap.add_argument("--patterns", action="store_true", help="adiciona features de padrões (pin/engolfo/inside/div RSI/S-R)")
     ap.add_argument("--tp", type=float, default=1.5)
     ap.add_argument("--sl", type=float, default=1.0)
     a = ap.parse_args()
     H = a.H
-    global TP_M, SL_M, EXT
+    global TP_M, SL_M, EXT, PATTERNS
     EXT = a.ext
+    PATTERNS = a.patterns
     TP_M, SL_M = a.tp, a.sl
     df, X, keep = build(H)
     print(f"features usadas: {len(keep)}  | barras: {len(df)}  | H={H}  | custo ida/volta={COST*100:.2f}%")
@@ -292,10 +299,10 @@ def main():
         tr = tr[tr["dt"] >= HOLD_START]
     res = evaluate(df, tr, H, f"{'HOLDOUT' if a.holdout else 'DEV'} OOS H={H}")
     if res:
-        n_trials = PRIOR_TRIALS + 2
+        n_trials = PRIOR_TRIALS + NEW_TRIALS
         d = deflated_sharpe_ratio(res["sr"], res["daily"].values, n_trials, 0.5)
         print(f"DSR (N={n_trials}) = {d['dsr']:.3f}   E[max SR] sob nulo = {d['expected_max_sr']:.2f}")
-    out = os.path.join(ROOT, "datasets", "reports", f"online_ml_{'holdout' if a.holdout else 'dev'}_H{H}_tp{TP_M}_sl{SL_M}{'_ext' if EXT else ''}.json")
+    out = os.path.join(ROOT, "datasets", "reports", f"online_ml_{'holdout' if a.holdout else 'dev'}_H{H}_tp{TP_M}_sl{SL_M}{'_ext' if EXT else ''}{'_pat' if PATTERNS else ''}.json")
     if res:
         with open(out, "w") as fh:
             json.dump({k: (v if k != "daily" else None) for k, v in res.items()}, fh, indent=2, default=float)

@@ -11,6 +11,7 @@ import sys
 import re
 import time
 import sqlite3
+from db_conn import connect as _closing_connect
 import asyncio
 import logging
 import json
@@ -140,7 +141,7 @@ def get_db_connection(read_only: bool = True) -> sqlite3.Connection:
     if not os.path.exists(DB_PATH):
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    conn = _closing_connect(DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
     if read_only:
         try:
@@ -475,6 +476,136 @@ def health():
     }), status_code
 
 
+MICRO_DB_PATH = os.getenv("MICROSTRUCTURE_DB", os.path.join(BASE_DIR, "datasets", "microstructure.db"))
+TAPE_COVERED_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+TAPE_AGENT_ID = "tape"
+TAPE_AGENT_NAME = "Agente Tape Reading"
+TAPE_AGENT_ROLE = "Order Book, Times & Trades (tape) — gate de fluxo"
+GATE_DECISIONS = ("PASSED", "BLOCKED", "UNAVAILABLE_PASSED")
+
+
+def _make_tape_agent():
+    """Instancia o TapeReadingAgent apontando para o banco do coletor (leitura somente)."""
+    from agents.tape_reading_agent import TapeReadingAgent
+    return TapeReadingAgent(db_path=MICRO_DB_PATH)
+
+
+def _fmt_signed(v: Any, nd: int = 2) -> str:
+    try:
+        return f"{float(v):+.{nd}f}"
+    except (TypeError, ValueError):
+        return "n/d"
+
+
+def _tape_rationale(res: Dict[str, Any]) -> str:
+    """Rationale em português com as métricas do tape."""
+    vote = res.get("vote", "HOLD")
+    reason = str(res.get("reason") or "")
+    f = res.get("features") or {}
+    if res.get("status") != "OK":
+        if reason == "symbol_not_covered":
+            return "Símbolo fora da cobertura do coletor"
+        return f"Dados de microestrutura indisponíveis ({reason or 'sem detalhe'}) — gate libera a entrada (fail-open)."
+    metrics = (f"taker {_fmt_signed(f.get('taker_imb_5m'))}, book {_fmt_signed(f.get('book_imb_10'))}, "
+               f"microprice {_fmt_signed(f.get('microprice_dev'), 1)} bps, spread {float(f.get('spread_bps') or 0.0):.1f} bps")
+    if vote == "BUY":
+        return f"Fluxo comprador confirmado: {metrics}"
+    if vote == "SELL":
+        return f"Fluxo vendedor confirmado: {metrics}"
+    if reason == "spread_wide":
+        return f"Spread largo — sem confirmação de fluxo: {metrics}"
+    return f"Sem confluência de fluxo: {metrics}"
+
+
+def _ro_connect(path: str) -> sqlite3.Connection:
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return _closing_connect(f"file:{os.path.abspath(path)}?mode=ro", uri=True, timeout=3.0)
+
+
+def get_flow_gate_stats(limit: int = 10) -> Dict[str, Any]:
+    """Contagens e últimos registros do flow_gate_log (banco do piloto, mode=ro). Tolera tabela ausente/vazia."""
+    counts = {k: 0 for k in GATE_DECISIONS}
+    last: List[Dict[str, Any]] = []
+    available = False
+    try:
+        con = _ro_connect(DB_PATH)
+        try:
+            rows = con.execute("SELECT decision, COUNT(*) FROM flow_gate_log GROUP BY decision").fetchall()
+            available = True
+            for d, n in rows:
+                counts[str(d)] = counts.get(str(d), 0) + int(n)
+            if limit > 0:
+                for r in con.execute(
+                    "SELECT ts_ms, symbol, strategy_type, direction, decision, tape_vote, tape_reason "
+                    "FROM flow_gate_log ORDER BY ts_ms DESC, id DESC LIMIT ?", (int(limit),)):
+                    ts_ms = r[0]
+                    try:
+                        ts = datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=timezone.utc).isoformat()
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        ts = None
+                    last.append({"ts": ts, "ts_ms": ts_ms, "symbol": r[1], "strategy_type": r[2], "direction": r[3],
+                                 "decision": r[4], "tape_vote": r[5], "reason": r[6]})
+        finally:
+            con.close()
+    except Exception as e:  # tabela ausente, DB ausente, etc.
+        logger.debug(f"flow_gate_log indisponível: {e}")
+    total = sum(counts.values())
+    pct = {k: (round(v * 100.0 / total, 1) if total else 0.0) for k, v in counts.items()}
+    return {"available": available, "counts": counts, "pct": pct, "total": total, "last": last}
+
+
+def get_tape_data_ages(symbol: str) -> Dict[str, Optional[float]]:
+    """Idade (s) do último snapshot de book e do último minuto de ticks do coletor (mode=ro)."""
+    out: Dict[str, Optional[float]] = {"book_age_s": None, "tick_age_s": None}
+    try:
+        con = _ro_connect(MICRO_DB_PATH)
+        try:
+            now_ms = time.time() * 1000.0
+            b = con.execute("SELECT MAX(ts_ms) FROM book_features WHERE symbol=?", (symbol,)).fetchone()
+            t = con.execute("SELECT MAX(minute_ms) FROM tick_agg WHERE symbol=?", (symbol,)).fetchone()
+            if b and b[0] is not None:
+                out["book_age_s"] = round((now_ms - float(b[0])) / 1000.0, 1)
+            if t and t[0] is not None:
+                out["tick_age_s"] = round((now_ms - float(t[0])) / 1000.0, 1)
+        finally:
+            con.close()
+    except Exception as e:
+        logger.debug(f"microstructure.db indisponível: {e}")
+    return out
+
+
+def get_tape_agent_card(symbol: str, consensus_direction: str = "") -> Dict[str, Any]:
+    """Card do Agente Tape Reading (GATE pós-comitê; NÃO entra no consenso/score). Fail-safe."""
+    sym = (symbol or "BTCUSDT").upper()
+    try:
+        res = _make_tape_agent().evaluate(sym, consensus_direction or "")
+    except Exception as e:  # noqa: BLE001
+        res = {"vote": "HOLD", "status": "UNAVAILABLE", "confidence": 0.0, "features": {},
+               "reason": f"agent_error:{type(e).__name__}"}
+    ok = res.get("status") == "OK"
+    vote = res.get("vote", "HOLD")
+    bias = {"BUY": "BULLISH", "SELL": "BEARISH"}.get(vote, "NEUTRAL")
+    conf = float(res.get("confidence") or 0.0)
+    conf_pct = int(round(conf * 100)) if conf <= 1.0 else int(round(conf))
+    return {
+        "id": TAPE_AGENT_ID,
+        "name": TAPE_AGENT_NAME,
+        "icon": "activity",
+        "role": TAPE_AGENT_ROLE,
+        "bias": bias,
+        "confidence": conf_pct if ok else 0,
+        "status": "OPERACIONAL (DADOS REAIS)" if ok else "SEM DADOS",
+        "data_status": "OK" if ok else "UNAVAILABLE",
+        "is_simulation": False,
+        "is_gate": True,
+        "confirms_direction": bool(ok and vote in ("BUY", "SELL") and vote == (consensus_direction or "").upper()),
+        "features": res.get("features") or {},
+        "gate": get_flow_gate_stats(0),
+        "summary": _tape_rationale(res),
+    }
+
+
 def get_live_agents_deliberation(symbol: str = "BTCUSDT") -> Dict[str, Any]:
     """
     Executa a deliberação em tempo real do Comitê Multi-Agente com dados reais de mercado
@@ -494,7 +625,7 @@ def get_live_agents_deliberation(symbol: str = "BTCUSDT") -> Dict[str, Any]:
         df = pd.DataFrame()
         if os.path.exists(DB_PATH):
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+            with _closing_connect(uri, uri=True, timeout=5.0) as con:
                 df = pd.read_sql_query(
                     "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol=? ORDER BY timestamp DESC LIMIT 200",
                     con, params=(sym,)
@@ -548,7 +679,7 @@ def get_live_agents_deliberation(symbol: str = "BTCUSDT") -> Dict[str, Any]:
         # Busca o Funding Rate real mais recente do SQLite
         funding_rate = 0.0001
         try:
-            with sqlite3.connect(f"file:{os.path.abspath(DB_PATH)}?mode=ro", uri=True, timeout=3.0) as fcon:
+            with _closing_connect(f"file:{os.path.abspath(DB_PATH)}?mode=ro", uri=True, timeout=3.0) as fcon:
                 fcur = fcon.cursor()
                 fcur.execute("SELECT funding_rate FROM funding_rates WHERE symbol=? ORDER BY timestamp DESC LIMIT 1", (sym,))
                 frow = fcur.fetchone()
@@ -650,6 +781,8 @@ def get_live_agents_deliberation(symbol: str = "BTCUSDT") -> Dict[str, Any]:
             format_agent(agent_onchain, "onchain", "Agente On-Chain", "link", "DefiLlama TVL & Stablecoins"),
             format_agent(agent_risk, "risk_guard", "Sentinela de Risco (VETO)", "shield-alert", "Veto Authority, Circuit Breaker, SL/TP")
         ]
+        # Tape Reading é GATE pós-comitê: exibido, mas FORA do consenso/score (judge acima não o recebe).
+        agents.append(get_tape_agent_card(sym, decision.direction))
 
         return {
             "agents": agents,
@@ -678,7 +811,8 @@ def get_live_agents_deliberation(symbol: str = "BTCUSDT") -> Dict[str, Any]:
                 {"id": "sentiment", "name": "Agente de Sentimento", "icon": "smile", "role": "Fear & Greed Index + CryptoPanic", "bias": "NEUTRAL", "confidence": 55, "status": "OPERACIONAL (DADOS REAIS)", "is_simulation": False, "summary": "Sentimento de mercado em patamar neutro/moderado."},
                 {"id": "macro", "name": "Agente Macroeconômico", "icon": "globe", "role": "DXY, Fed Funds, Yields (FRED/Yahoo)", "bias": "NEUTRAL", "confidence": 60, "status": "OPERACIONAL (DADOS REAIS)", "is_simulation": False, "summary": "DXY e juros estáveis sem pressão imediata."},
                 {"id": "onchain", "name": "Agente On-Chain", "icon": "link", "role": "DefiLlama TVL & Stablecoins", "bias": "BULLISH", "confidence": 70, "status": "OPERACIONAL (DADOS REAIS)", "is_simulation": False, "summary": "Fluxo positivo de stablecoins registrado nas últimas 24h."},
-                {"id": "risk_guard", "name": "Sentinela de Risco (VETO)", "icon": "shield-alert", "role": "Veto Authority, Circuit Breaker, SL/TP", "bias": "CLEAR", "confidence": 100, "status": "CLEAR_TO_TRADE (Operacional)", "is_simulation": False, "summary": "Condições operacionais normais. VETO desarmado."}
+                {"id": "risk_guard", "name": "Sentinela de Risco (VETO)", "icon": "shield-alert", "role": "Veto Authority, Circuit Breaker, SL/TP", "bias": "CLEAR", "confidence": 100, "status": "CLEAR_TO_TRADE (Operacional)", "is_simulation": False, "summary": "Condições operacionais normais. VETO desarmado."},
+                get_tape_agent_card(sym, "")
             ],
             "consensus": {
                 "direction": "HOLD",
@@ -737,6 +871,42 @@ def api_status():
         "agents": agents,
         "consensus": deliberation.get("consensus", {}),
         "agent_mode": "LIVE_EVALUATION_PAPER_TRADING"
+    })
+
+
+@app.route("/api/tape-gate/status", methods=["GET"])
+def api_tape_gate_status():
+    """Status do gate Tape Reading: último voto por símbolo coberto, idade dos dados e flow_gate_log (somente leitura)."""
+    symbols: Dict[str, Any] = {}
+    try:
+        agent = _make_tape_agent()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Tape agent indisponível: {e}")
+        agent = None
+    for sym in TAPE_COVERED_SYMBOLS:
+        try:
+            res = agent.evaluate(sym, "") if agent else {}
+        except Exception as e:  # noqa: BLE001
+            res = {"reason": f"agent_error:{type(e).__name__}"}
+        ages = get_tape_data_ages(sym)
+        symbols[sym] = {
+            "vote": res.get("vote", "HOLD"),
+            "status": res.get("status", "UNAVAILABLE"),
+            "confidence": float(res.get("confidence") or 0.0),
+            "reason": res.get("reason", "agent_unavailable"),
+            "features": res.get("features") or {},
+            "timestamp": res.get("timestamp"),
+            "book_age_s": ages["book_age_s"],
+            "tick_age_s": ages["tick_age_s"],
+        }
+    gate = get_flow_gate_stats(10)
+    return jsonify({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "read_only_mode": True,
+        "collector_db_available": os.path.exists(MICRO_DB_PATH),
+        "symbols": symbols,
+        "gate": {"counts": gate["counts"], "pct": gate["pct"], "total": gate["total"],
+                 "log_available": gate["available"], "last": gate["last"]},
     })
 
 
@@ -1031,7 +1201,7 @@ def api_get_simulation_settings():
     }
     try:
         uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+        with _closing_connect(uri, uri=True, timeout=5.0) as con:
             cur = con.cursor()
             try:
                 cur.execute("SELECT key, value FROM simulation_settings")
@@ -1128,7 +1298,7 @@ def api_update_simulation_settings():
         to_update["reset_daily_quotas"] = "1"
 
     try:
-        with sqlite3.connect(DB_PATH, timeout=10.0) as con:
+        with _closing_connect(DB_PATH, timeout=10.0) as con:
             con.execute("PRAGMA journal_mode=WAL")
             cur = con.cursor()
             cur.execute("""
@@ -1185,7 +1355,7 @@ def api_paper_trading_status():
 
     try:
         uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+        with _closing_connect(uri, uri=True, timeout=5.0) as con:
             con.row_factory = sqlite3.Row
             cur = con.cursor()
 
@@ -1411,7 +1581,7 @@ def _query_paper_positions(which: str, with_summary: bool = False):
     if os.path.exists(DB_PATH):
         try:
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+            with _closing_connect(uri, uri=True, timeout=5.0) as con:
                 con.row_factory = sqlite3.Row
                 cur = con.cursor()
                 if which == "open":
@@ -1499,7 +1669,7 @@ def api_paper_trading_trades():
     if os.path.exists(DB_PATH):
         try:
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+            with _closing_connect(uri, uri=True, timeout=5.0) as con:
                 con.row_factory = sqlite3.Row
                 cur = con.cursor()
                 cur.execute("SELECT * FROM paper_trades ORDER BY timestamp DESC LIMIT 100")
@@ -1521,7 +1691,7 @@ def api_golden_pots():
     if os.path.exists(DB_PATH):
         try:
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+            with _closing_connect(uri, uri=True, timeout=5.0) as con:
                 con.row_factory = sqlite3.Row
                 cur = con.cursor()
                 cur.execute("SELECT * FROM golden_pots ORDER BY timestamp DESC, score DESC LIMIT 50")
@@ -1551,7 +1721,7 @@ def api_regime():
         df_btc = pd.DataFrame()
         if os.path.exists(DB_PATH):
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+            with _closing_connect(uri, uri=True, timeout=5.0) as con:
                 df_btc = pd.read_sql_query(
                     "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' ORDER BY timestamp DESC LIMIT 150",
                     con

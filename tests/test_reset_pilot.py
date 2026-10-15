@@ -58,6 +58,7 @@ def env(tmp_path, monkeypatch):
     con.execute("INSERT INTO circuit_breaker_state VALUES (1,'COOLDOWN',0,'perdas',9999999999999,1,1)")
     con.execute("INSERT INTO agent_learning_memory (decision_id,timestamp,symbol,regime,consensus_direction,"
                 "consensus_confidence,agent_signals_json,position_id) VALUES ('d1',1,'BTC','BULL','LONG',0.5,'{}','p0')")
+    con.executemany("INSERT INTO flow_gate_log (ts_ms,symbol,decision) VALUES (?, 'BTCUSDT', 'BLOCKED')", [(i,) for i in range(4)])
     con.execute("INSERT INTO agent_regime_weights VALUES ('BULL','agentX',1.2,0.6,10,1)")
     for k, v in (("ledger_epoch_trade_rowid", "3"), ("ledger_epoch_pos_rowid", "3"),
                  ("quota_epoch_trade_rowid", "3"), ("MANUAL_RESET", "1"), ("reset_daily_quotas", "1")):
@@ -96,6 +97,7 @@ def test_tables_cleaned_and_untouched_intact(env):
     for t in rp.PILOT_TABLES + ["market_regime"]:
         assert _count(env["db"], t) == 0, t
     assert r["tables_before"]["paper_trades"] == 5
+    assert r["tables_before"]["flow_gate_log"] == 4
     assert _count(env["db"], "candles") == 50
     assert _count(env["db"], "funding_rates") == 7
     assert _count(env["db"], "macro_series") == 5

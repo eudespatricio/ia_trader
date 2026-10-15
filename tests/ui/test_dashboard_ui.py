@@ -63,7 +63,7 @@ def test_ticker_and_cards_populated(make_page):
     p = make_page()
     p.page.wait_for_function("document.getElementById('metricTotalCandles').innerText !== '--'")
     assert p.page.locator("#metricTotalCandles").inner_text() == "800"
-    assert p.page.locator("#agentsGrid > div").count() == 6
+    assert p.page.locator("#agentsGrid > div").count() == 7  # 6 do comitê + Tape (gate)
     assert p.page.locator("#connectorsList > div").count() in (6, 7)
     assert p.page.locator("#cacheTableBody tr").count() == 4
 
@@ -513,3 +513,98 @@ def test_ledger_friendly_labels_in_history(make_page):
     assert p.page.evaluate("ledgerLabel('TP2_PARTIAL')").startswith("TP2 parcial")
     assert p.page.evaluate("ledgerLabel('LIQUIDATION')") == "Liquidação"
     assert p.page_errors == []
+
+
+# ----------------------------------------------------------------- Tape Reading (gate)
+def _tape_card(vote="BUY", ok=True):
+    bias = {"BUY": "BULLISH", "SELL": "BEARISH"}.get(vote, "NEUTRAL")
+    return {
+        "id": "tape", "name": "Agente Tape Reading", "icon": "activity",
+        "role": "Order Book, Times & Trades (tape) — gate de fluxo", "bias": bias,
+        "confidence": 62 if ok else 0, "status": "OPERACIONAL (DADOS REAIS)" if ok else "SEM DADOS",
+        "data_status": "OK" if ok else "UNAVAILABLE", "is_simulation": False, "is_gate": True,
+        "confirms_direction": ok and vote == "BUY",
+        "features": {"taker_imb_5m": 0.22, "book_imb_10": 0.14, "microprice_dev": 0.3, "spread_bps": 0.1} if ok else {},
+        "gate": {"counts": {"PASSED": 6, "BLOCKED": 3, "UNAVAILABLE_PASSED": 1}, "pct": {"PASSED": 60.0, "BLOCKED": 30.0, "UNAVAILABLE_PASSED": 10.0}, "total": 10},
+        "summary": "Fluxo comprador confirmado: taker +0.22, book +0.14, microprice +0.3 bps, spread 0.1 bps" if ok else "Símbolo fora da cobertura do coletor",
+    }
+
+
+def _status_route(card):
+    def handler(route):
+        resp = route.fetch()
+        data = resp.json()
+        data["agents"] = [a for a in data["agents"] if a["id"] != "tape"] + [card]
+        route.fulfill(response=resp, body=json.dumps(data), headers={**resp.headers, "content-type": "application/json"})
+    return [("**/api/status*", handler)]
+
+
+def _brain_tape(page):
+    return page.evaluate("(() => { const n = brainNodes.find(x => x.id === 'tape'); return n && {noData: n.noData, confirms: n.confirms, color: n.color, bias: n.bias, conf: n.conf}; })()")
+
+
+def test_tape_card_with_vote_confidence_and_gate_block(make_page):
+    p = make_page(routes=_status_route(_tape_card("BUY", True)))
+    p.page.wait_for_selector('[data-agent-card="tape"]')
+    card = p.page.locator('[data-agent-card="tape"]')
+    txt = card.inner_text()
+    assert "Agente Tape Reading" in txt and "DADOS REAIS" in txt and "GATE" in txt
+    assert "BULLISH (62%)" in txt and "Fluxo comprador confirmado" in txt
+    assert "Passou" in txt and "Bloqueou" in txt and "Sem dados" in txt and "60%" in txt
+    assert "taker" in (card.locator("[data-tape-vote]").get_attribute("title") or "").lower()
+    assert p.page.locator("#agentsGrid > div").count() == 7
+    # consenso não inclui o Tape: score/convicção vêm do comitê (nada do tape no banner)
+    assert "Tape" not in p.page.locator("#committeeConsensusBanner").inner_text()
+    node = _brain_tape(p.page)
+    assert node["noData"] is False and node["confirms"] is True and node["bias"] == "BULLISH" and node["color"] == "#10B981"
+    assert p.console_errors == [] and p.page_errors == []
+
+
+def test_tape_card_no_data_state_is_gray(make_page):
+    p = make_page(routes=_status_route(_tape_card("HOLD", False)))
+    p.page.wait_for_selector('[data-agent-card="tape"][data-no-data="1"]')
+    card = p.page.locator('[data-agent-card="tape"]')
+    assert "SEM DADOS" in card.locator("[data-agent-badge]").inner_text()
+    assert "DADOS REAIS" not in card.locator("[data-agent-badge]").inner_text()
+    assert "Símbolo fora da cobertura do coletor" in card.inner_text()
+    node = _brain_tape(p.page)
+    assert node["noData"] is True and node["color"] == "#64748B" and node["confirms"] is False
+
+
+def test_tape_default_server_without_collector_db_shows_no_data(make_page):
+    """Servidor de teste aponta o coletor para um banco inexistente: card presente e SEM DADOS, console limpo."""
+    p = make_page()
+    p.page.wait_for_selector('[data-agent-card="tape"]')
+    assert "SEM DADOS" in p.page.locator('[data-agent-card="tape"] [data-agent-badge]').inner_text()
+    assert _brain_tape(p.page)["noData"] is True
+    p.page.wait_for_timeout(1500)
+    assert p.console_errors == [] and p.page_errors == [] and p.failed == []
+
+
+def test_brain_has_tape_node_wired_to_core_and_sentinel(make_page):
+    p = make_page()
+    info = p.page.evaluate("""() => {
+        const idx = id => brainNodes.findIndex(n => n.id === id);
+        const t = idx('tape'), c = idx('consensus'), r = idx('risk_guard');
+        const has = (a, b) => brainEdges.some(e => (e.from === a && e.to === b) || (e.from === b && e.to === a));
+        return {t, core: has(t, c), risk: has(t, r), n: brainNodes.length};
+    }""")
+    assert info["t"] >= 0 and info["core"] and info["risk"] and info["n"] == 8
+    assert "TAP" in p.page.locator("#brainLegend").inner_text()
+
+
+@pytest.mark.parametrize("name", list(VIEWPORTS))
+def test_tape_card_no_overflow(make_page, name):
+    w, h = VIEWPORTS[name]
+    p = make_page(viewport=(w, h), routes=_status_route(_tape_card("BUY", True)))
+    p.page.wait_for_selector('[data-agent-card="tape"]')
+    p.page.wait_for_timeout(500)
+    info = p.page.evaluate("""() => {
+        const de = document.documentElement;
+        const c = document.querySelector('[data-agent-card="tape"]');
+        const cr = c.getBoundingClientRect();
+        const wide = [...c.querySelectorAll('*')].filter(e => e.getBoundingClientRect().right > cr.right + 1).map(e => e.tagName + ':' + (e.innerText || '').slice(0, 30));
+        return {sw: de.scrollWidth, cw: de.clientWidth, right: cr.right, wide};
+    }""")
+    assert info["sw"] <= info["cw"], info
+    assert info["wide"] == [], info

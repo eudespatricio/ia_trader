@@ -30,6 +30,7 @@ import pandas as pd
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from agents.golden_pot_agent import GoldenPotAgent
+from agents.tape_reading_agent import TapeReadingAgent
 from signal_generator import TradeSignal
 from smart_trade import (PaperTradingEngine, NON_CLOSING_TRADE_ACTIONS, STRATEGY_PROFILES,
                          FUNDING_INTERVAL_MS, DIRECTIONAL_BAR_MS, INTRADAY_BAR_MS)
@@ -107,12 +108,15 @@ class PaperTradingDaemon:
         loader: Optional[DataLoader] = None,
         fe: Optional[FeatureEngineer] = None,
         golden_pot_agent: Optional[GoldenPotAgent] = None,
+        tape_agent: Optional[TapeReadingAgent] = None,
     ):
         self.poll_interval = poll_interval_seconds
         self.engine = engine or PaperTradingEngine()
         self.loader = loader or DataLoader()
         self.fe = fe or FeatureEngineer()
         self.scanner = golden_pot_agent or GoldenPotAgent(min_volume_usd=20_000_000.0)
+        self.tape_agent = tape_agent or TapeReadingAgent()
+        self.last_tape: Optional[Dict[str, object]] = None   # último voto do tape (telemetria)
         self.is_running = False
         self._last_tick_bar_ts: Dict[str, int] = {}        # última barra 15m FECHADA já aplicada por símbolo
         self._funding_refresh_done: Dict[str, int] = {}    # liquidação de funding já consultada (evita rede repetida)
@@ -375,6 +379,49 @@ class PaperTradingDaemon:
             return None
         return committee
 
+    def _flow_gate(
+        self, strategy_type: str, sym: str, direction: str, sig: TradeSignal, lev: float, close: float, atr: float,
+    ) -> bool:
+        """GATE DE FLUXO (ADDENDUM E8), aplicado DEPOIS da porta do comitê. O voto do TapeReadingAgent deve ser
+        IGUAL à direção do sinal; oposto/HOLD => bloqueia (False); UNAVAILABLE => passa (fail-open) marcado.
+        TODO sinal que chega aqui é gravado em flow_gate_log (inclusive bloqueados) para análise contrafactual."""
+        now_ms = int(time.time() * 1000)
+        try:
+            tape = self.tape_agent.evaluate(sym, direction, now_ms=now_ms)
+        except Exception as e:  # noqa: BLE001 - falha do agente = indisponível (fail-open registrado)
+            tape = {"vote": "HOLD", "status": "UNAVAILABLE", "reason": f"agent_error:{type(e).__name__}", "features": {}}
+        self.last_tape = {**tape, "strategy_type": strategy_type, "direction": direction}
+        if tape.get("status") == "UNAVAILABLE":
+            decision = "UNAVAILABLE_PASSED"
+        elif tape.get("vote") == direction:
+            decision = "PASSED"
+        else:
+            decision = "BLOCKED"
+        f = tape.get("features") or {}
+        prof = STRATEGY_PROFILES[strategy_type]
+        sgn = 1.0 if direction == "BUY" else -1.0
+        self.engine.log_flow_gate({
+            "ts_ms": now_ms, "symbol": sym, "strategy_type": strategy_type, "direction": direction,
+            "decision": decision, "tape_vote": tape.get("vote"), "tape_status": tape.get("status"),
+            "tape_reason": tape.get("reason"), "taker_imb_5m": f.get("taker_imb_5m"),
+            "book_imb_10": f.get("book_imb_10"), "microprice_dev": f.get("microprice_dev"),
+            "spread_bps": f.get("spread_bps"), "entry_price": close, "stop_loss": sig.stop_loss,
+            "tp1": close + sgn * prof.tp1_atr_mult * atr, "tp2": close + sgn * prof.tp2_atr_mult * atr,
+            "tp3": close + sgn * prof.tp3_atr_mult * atr, "atr": atr, "confidence": sig.confidence,
+            "consensus_score": sig.consensus_score, "leverage": lev,
+        })
+        if decision == "BLOCKED":
+            logger.info(f"[{sym}] {strategy_type} bloqueado pelo gate de fluxo: tape {tape.get('vote')} "
+                        f"({tape.get('reason')}) x sinal {direction}.")
+            return False
+        return True
+
+    def flow_gate_telemetry(self) -> str:
+        c = self.engine.flow_gate_counts()
+        lt = self.last_tape
+        last = f"{lt.get('vote')}/{lt.get('status')}({lt.get('reason')})" if lt else "n/a"
+        return (f"Tape: último {last} | Gate P/B/U: {c['PASSED']}/{c['BLOCKED']}/{c['UNAVAILABLE_PASSED']}")
+
     def _build_ladder_signal(
         self, committee: TradeSignal, strategy_type: str, direction: str, close: float, atr: float,
         latest: pd.Series, margin_cap: float, rationale: str, low_liquidity: bool = False,
@@ -486,6 +533,8 @@ class PaperTradingDaemon:
                     rationale=f"Golden Pot v3: {why}",
                     low_liquidity=float(pot.get("volume_24h_usd", 0.0) or 0.0) < GP_LOW_LIQUIDITY_USD,
                 )
+                if not self._flow_gate("GOLDEN_POT", sym, direction, sig, lev, close, atr):
+                    continue
                 pos = self.engine.execute_golden_pot_signal(
                     signal=sig, current_price=close, timestamp=ts, leverage=lev,
                 )
@@ -581,6 +630,8 @@ class PaperTradingDaemon:
                     margin_cap=self.engine.balance * 0.25,
                     rationale=f"Scalp Padrão Core: VWAP {vwap_dist:+.2f}% | RSI {rsi:.1f} | Vol Z {vol_z:+.1f}",
                 )
+                if not self._flow_gate("SCALP", sym, direction, sig, lev, close, atr):
+                    continue
                 pos = self.engine.execute_scalp_signal(
                     signal=sig, current_price=close, timestamp=ts, leverage=lev,
                 )
@@ -647,6 +698,9 @@ class PaperTradingDaemon:
                         notional = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95) * lev
                         dir_sig = {**dir_sig, "position_size": notional, "risk_dollars": (notional / close) * sl_dist}
                         sig = TradeSignal(**dir_sig)
+                        if not self._flow_gate("DIRECTIONAL", sym, sig.direction, sig, lev, close,
+                                               float(latest.get("atr_14", 0.0) or 0.0)):
+                            continue
                         pos = self.engine.execute_directional_signal(sig, current_price=close, timestamp=ts, leverage=lev)
                         if pos:
                             logger.info(f"[{sym}] SWING TRADE DISPARADO: {sig.direction} @ ${close:,.2f}")
@@ -691,7 +745,8 @@ class PaperTradingDaemon:
                     f"PnL: ${m['net_profit']:+,.2f} ({m['return_pct']:+.2f}%) | "
                     f"Scalps Hoje: {scalp_stat['daily_scalps_count']}/{scalp_stat['max_daily_scalps']} ({scalp_stat['quota_status']}) | "
                     f"Golden Pots: {m['daily_golden_pots_count']}/{m['max_daily_golden_pots']} | "
-                    f"Posições Abertas: {m['open_positions']} | Trades Totais: {m['total_trades_count']}"
+                    f"Posições Abertas: {m['open_positions']} | Trades Totais: {m['total_trades_count']} | "
+                    f"{self.flow_gate_telemetry()}"
                 )
 
                 if max_cycles > 0 and cycle >= max_cycles:

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from db_conn import connect as _db_connect
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -69,7 +70,7 @@ class MarketRegimeClassifier:
             return
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         try:
-            with sqlite3.connect(self.db_path, timeout=10.0) as con:
+            with _db_connect(self.db_path, timeout=10.0) as con:
                 con.execute("PRAGMA journal_mode=WAL")
                 con.execute("""
                     CREATE TABLE IF NOT EXISTS market_regime (
@@ -208,7 +209,7 @@ class MarketRegimeClassifier:
         if not self.db_path:
             return
         try:
-            with sqlite3.connect(self.db_path, timeout=5.0) as con:
+            with _db_connect(self.db_path, timeout=5.0) as con:
                 con.execute("""
                     INSERT OR REPLACE INTO market_regime (
                         timestamp, regime, bias, confidence, recommended_strategies,

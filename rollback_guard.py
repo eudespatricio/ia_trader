@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from db_conn import connect as _db_connect
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -81,7 +82,7 @@ class RollbackGuard:
         self._load_persisted_state()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=15.0)
+        conn = _db_connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")

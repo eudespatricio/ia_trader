@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import sqlite3
+from db_conn import connect as _db_connect
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -99,7 +100,7 @@ class GoldenPotAgent:
     def _get_connection(self) -> sqlite3.Connection:
 
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        con = sqlite3.connect(self.db_path, timeout=10.0)
+        con = _db_connect(self.db_path, timeout=10.0)
         con.execute("PRAGMA journal_mode=WAL")
         return con
 

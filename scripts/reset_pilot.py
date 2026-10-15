@@ -48,7 +48,7 @@ PILOT_REPORT = os.path.join(BASE, "datasets", "reports", "pilot_report.json")
 PILOT_TABLES: List[str] = [
     "paper_trades", "paper_positions", "paper_portfolio",
     "circuit_breaker_events", "circuit_breaker_state",
-    "golden_pots", "performance_snapshots",
+    "golden_pots", "performance_snapshots", "flow_gate_log",
 ]
 # Memória episódica / calibração de pesos por regime: PRESERVADAS por decisão do usuário.
 # position_id referenciado é uuid4[:8] (sem colisão com posições novas) e o LearningTracker só o usa em

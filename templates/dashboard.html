@@ -502,7 +502,7 @@
                     </div>
                     <div class="flex items-center gap-3 text-[10px] font-mono text-slate-400">
                         <span>Frequência: <strong id="brainFreqText" class="text-cyan-300">14.8 Hz</strong></span>
-                        <span>Neurônios: <strong class="text-emerald-400">6 Ativos</strong></span>
+                        <span>Neurônios: <strong class="text-emerald-400">6 + 1 Gate</strong></span>
                         <span class="hidden sm:inline">Neuroplasticidade: <strong class="text-indigo-300">Adaptativa</strong></span>
                     </div>
                 </div>
@@ -515,6 +515,12 @@
                         <div id="brainTooltipBias" class="text-[10px] font-mono my-0.5"></div>
                         <div id="brainTooltipDesc" class="text-[10px] text-slate-300 max-w-[200px] leading-tight"></div>
                     </div>
+                </div>
+                <div id="brainLegend" class="w-full flex flex-wrap items-center gap-x-3 gap-y-1 pt-2 mt-1 border-t border-dark-700/60 text-[10px] text-slate-400">
+                    <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-emerald-400"></span>Compra</span>
+                    <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-rose-400"></span>Venda</span>
+                    <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-amber-400"></span>Neutro</span>
+                    <span id="brainLegendTape" class="flex items-center gap-1" title="O nó TAP (Tape Reading) é um GATE pós-comitê: não entra no consenso/score; pulsa quando o fluxo confirma a direção do consenso. Cinza = sem dados do coletor."><span class="h-2 w-2 rounded-full bg-slate-500"></span>TAP = Gate de fluxo (cinza: sem dados; pulsa ao confirmar)</span>
                 </div>
             </div>
 
@@ -1510,7 +1516,7 @@
         // ==========================================
         async function loadStatus() {
             try {
-                const res = await fetch("/api/status");
+                const res = await fetch(`/api/status?symbol=${encodeURIComponent(currentSymbol)}`);
                 if (!res.ok) throw new Error("HTTP " + res.status);
                 const data = await res.json();
 
@@ -1642,26 +1648,56 @@
                                 "bg-amber-950/80 text-amber-300 border-amber-800/60" : 
                                 "bg-emerald-950/80 text-emerald-300 border-emerald-800/60";
 
+                            const noData = a.data_status === "UNAVAILABLE";
+                            let badgeLabelFinal = badgeLabel, badgeStyleFinal = badgeStyle;
+                            if (noData) {
+                                biasBadge = "bg-slate-800/70 text-slate-500 border-slate-700";
+                                badgeLabelFinal = "SEM DADOS";
+                                badgeStyleFinal = "bg-slate-800/80 text-slate-400 border-slate-600/60";
+                            }
+                            const gateTag = a.is_gate ? `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 uppercase" title="GATE pós-comitê: não entra no consenso/score, apenas confirma ou bloqueia a entrada.">GATE</span>` : "";
+                            let tapeTip = "";
+                            let gateBlock = "";
+                            if (a.is_gate) {
+                                const f = a.features || {};
+                                const fx = (v, nd, sg) => (v === undefined || v === null || isNaN(Number(v))) ? "n/d" : ((sg && Number(v) > 0 ? "+" : "") + Number(v).toFixed(nd));
+                                tapeTip = `Taker 5m: ${fx(f.taker_imb_5m, 2, true)} | Book 10: ${fx(f.book_imb_10, 2, true)} | Microprice: ${fx(f.microprice_dev, 1, true)} bps | Spread: ${fx(f.spread_bps, 1, false)} bps`;
+                                const g = a.gate || {};
+                                const gc = g.counts || {}, gp = g.pct || {};
+                                const cell = (label, n, pct, cls) => `<div class="flex-1 min-w-0 text-center px-1 py-1 rounded bg-dark-900/60 border border-dark-700/50"><div class="text-[9px] text-slate-500">${label}</div><div class="text-[11px] font-mono font-semibold ${cls}">${n || 0} <span class="text-[9px] font-normal">(${Number(pct || 0).toFixed(0)}%)</span></div></div>`;
+                                gateBlock = `
+                                    <div data-tape-gate class="mt-1.5">
+                                        <div class="text-[9px] uppercase tracking-wide text-slate-500 mb-1">Gate de entrada &bull; ${g.total || 0} avaliações</div>
+                                        <div class="flex gap-1.5">
+                                            ${cell("Passou", gc.PASSED, gp.PASSED, "text-emerald-400")}
+                                            ${cell("Bloqueou", gc.BLOCKED, gp.BLOCKED, "text-rose-400")}
+                                            ${cell("Sem dados", gc.UNAVAILABLE_PASSED, gp.UNAVAILABLE_PASSED, "text-slate-400")}
+                                        </div>
+                                    </div>`;
+                            }
+
                             return `
-                                <div class="p-3 rounded-lg bg-dark-800/90 border border-dark-600/70 hover:border-dark-500 transition-all">
-                                    <div class="flex items-center justify-between mb-1.5">
-                                        <div class="flex items-center gap-2">
-                                            <div class="h-6 w-6 rounded bg-dark-700 flex items-center justify-center text-slate-300">
-                                                <i data-lucide="${escapeHtml(a.icon || 'circle')}" class="h-3.5 w-3.5 text-cyan-400"></i>
+                                <div data-agent-card="${escapeHtml(a.id)}" ${noData ? 'data-no-data="1"' : ''} ${a.is_gate ? 'data-gate="1"' : ''} class="min-w-0 p-3 rounded-lg bg-dark-800/90 border border-dark-600/70 hover:border-dark-500 transition-all ${noData ? 'opacity-80' : ''}">
+                                    <div class="flex items-start justify-between gap-2 mb-1.5">
+                                        <div class="flex items-center gap-2 min-w-0">
+                                            <div class="h-6 w-6 shrink-0 rounded bg-dark-700 flex items-center justify-center text-slate-300">
+                                                <i data-lucide="${escapeHtml(a.icon || 'circle')}" class="h-3.5 w-3.5 ${noData ? 'text-slate-500' : 'text-cyan-400'}"></i>
                                             </div>
-                                            <div>
-                                                <div class="text-xs font-semibold text-white flex items-center gap-1.5">
+                                            <div class="min-w-0">
+                                                <div class="text-xs font-semibold text-white flex items-center flex-wrap gap-1.5">
                                                     <span>${escapeHtml(a.name)}</span>
-                                                    <span class="px-1.5 py-0.2 rounded text-[9px] font-semibold ${badgeStyle} uppercase">${badgeLabel}</span>
+                                                    <span data-agent-badge class="px-1.5 py-0.2 rounded text-[9px] font-semibold ${badgeStyleFinal} uppercase">${badgeLabelFinal}</span>
+                                                    ${gateTag}
                                                 </div>
-                                                <div class="text-[10px] text-slate-500">${escapeHtml(a.role)}</div>
+                                                <div class="text-[10px] text-slate-500 break-words">${escapeHtml(a.role)}</div>
                                             </div>
                                         </div>
-                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold border ${biasBadge}">${escapeHtml(a.bias)} (${a.confidence}%)</span>
+                                        <span ${a.is_gate ? `data-tape-vote title="${escapeHtml(tapeTip)}"` : ''} class="shrink-0 px-2 py-0.5 rounded text-[10px] font-bold border ${biasBadge}">${escapeHtml(a.bias)} (${a.confidence}%)</span>
                                     </div>
-                                    <p class="text-[11px] text-slate-300 leading-relaxed bg-dark-900/60 p-2 rounded border border-dark-700/50 mt-1">
+                                    <p ${a.is_gate ? `title="${escapeHtml(tapeTip)}"` : ''} class="text-[11px] ${noData ? 'text-slate-400' : 'text-slate-300'} leading-relaxed bg-dark-900/60 p-2 rounded border border-dark-700/50 mt-1 break-words">
                                         ${escapeHtml(a.summary)}
                                     </p>
+                                    ${gateBlock}
                                 </div>
                             `;
                         }).join('');
@@ -2348,6 +2384,7 @@
                 customInput.value = sym;
             }
             loadChartData();
+            loadStatus();
         }
 
         function setTimeframe(tf, skipLoad = false) {
@@ -3568,7 +3605,8 @@
             { id: "macro", label: "MCR", name: "Agente Macro", lobe: "Córtex Occipital", role: "Macro Global & Juros", rx: 0.76, ry: 0.32, bias: "BEARISH", conf: 73, summary: "", color: "#EF4444", r: 16, phase: 3.6 },
             { id: "onchain", label: "ONC", name: "Agente On-Chain", lobe: "Lobo Temporal", role: "TVL & Stablecoins", rx: 0.70, ry: 0.62, bias: "BEARISH", conf: 78, summary: "", color: "#EF4444", r: 16, phase: 4.8 },
             { id: "risk_guard", label: "RSK", name: "Sentinela de Risco", lobe: "Tronco Encefálico", role: "Veto Authority & Circuit Breaker", rx: 0.50, ry: 0.82, bias: "CLEAR", conf: 50, summary: "", color: "#06B6D4", r: 17, phase: 5.5 },
-            { id: "consensus", label: "CORE", name: "Deliberação Soberana", lobe: "Núcleo de Consenso", role: "Decisão Executiva Unificada", rx: 0.50, ry: 0.44, bias: "SELL", conf: 70, summary: "", color: "#EF4444", r: 21, isCore: true, phase: 0 }
+            { id: "consensus", label: "CORE", name: "Deliberação Soberana", lobe: "Núcleo de Consenso", role: "Decisão Executiva Unificada", rx: 0.50, ry: 0.44, bias: "SELL", conf: 70, summary: "", color: "#EF4444", r: 21, isCore: true, phase: 0 },
+            { id: "tape", label: "TAP", name: "Agente Tape Reading", lobe: "Gate de Fluxo (pós-comitê)", role: "Order Book, Times & Trades — GATE", rx: 0.62, ry: 0.19, bias: "NEUTRAL", conf: 0, summary: "", color: "#64748B", r: 16, phase: 6.3, noData: true, confirms: false, isGate: true }
         ];
 
         // Synaptic Axon Connections
@@ -3583,7 +3621,10 @@
             { from: 2, to: 0 }, // Sentiment <-> Technical
             { from: 1, to: 3 }, // Flow <-> Macro
             { from: 3, to: 4 }, // Macro <-> OnChain
-            { from: 2, to: 5 }  // Sentiment <-> Risk
+            { from: 2, to: 5 }, // Sentiment <-> Risk
+            { from: 7, to: 6 }, // Tape (gate) -> Consensus
+            { from: 7, to: 5 }, // Tape (gate) <-> Sentinela
+            { from: 1, to: 7 }  // Flow <-> Tape
         ];
 
         // Synaptic Action Potential Particles
@@ -3642,9 +3683,9 @@
 
                         if (titleEl) titleEl.innerHTML = `<span class="h-2 w-2 rounded-full" style="background:${hovered.color}"></span> ${hovered.name} <span class="text-slate-400 font-normal font-mono text-[9px]">(${hovered.lobe})</span>`;
                         if (biasEl) {
-                            const bColor = hovered.bias === "BULLISH" ? "text-emerald-400" : (hovered.bias === "BEARISH" ? "text-rose-400" : "text-amber-400");
+                            const bColor = hovered.noData ? "text-slate-400" : hovered.bias === "BULLISH" ? "text-emerald-400" : (hovered.bias === "BEARISH" ? "text-rose-400" : "text-amber-400");
                             biasEl.className = `text-[10px] font-mono my-0.5 ${bColor}`;
-                            biasEl.innerText = `${hovered.bias} (${hovered.conf}%) • ${hovered.role}`;
+                            biasEl.innerText = hovered.noData ? `SEM DADOS • ${hovered.role}` : `${hovered.bias} (${hovered.conf}%) • ${hovered.role}${hovered.isGate ? " • não entra no consenso" : ""}`;
                         }
                         if (descEl) descEl.innerText = hovered.summary || "Neurônio operacional com dados reais do mercado.";
 
@@ -3700,6 +3741,11 @@
                     node.conf = a.confidence;
                     node.summary = a.summary;
                     node.color = colorMap[a.bias] || "#06B6D4";
+                    if (a.is_gate) {
+                        node.noData = a.data_status === "UNAVAILABLE";
+                        node.confirms = !!a.confirms_direction;
+                        if (node.noData) node.color = "#64748B";
+                    }
                 }
             }
 
@@ -3847,6 +3893,19 @@
                     ctx.stroke();
                     ctx.restore();
 
+                    // Pulso de confirmação (gate Tape confirma a direção do consenso)
+                    if (node.confirms && !node.noData) {
+                        const ph = (time * 1.2) % 1;
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.arc(nx, ny, currentR + 8 + ph * 16, 0, Math.PI * 2);
+                        ctx.strokeStyle = node.color;
+                        ctx.globalAlpha = 0.7 * (1 - ph);
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+
                     // Inner Core
                     ctx.save();
                     ctx.beginPath();
@@ -3869,7 +3928,7 @@
                     // Mini Bias Text Underneath
                     ctx.font = `bold 8px ui-monospace, monospace`;
                     ctx.fillStyle = node.color;
-                    ctx.fillText(`${node.bias.substring(0, 4)} ${node.conf}%`, nx, ny + currentR + 10);
+                    ctx.fillText(node.noData ? "S/ DADOS" : `${node.bias.substring(0, 4)} ${node.conf}%`, nx, ny + currentR + 10);
 
                     ctx.restore();
                 }

@@ -321,3 +321,35 @@ Posições abertas antes do E7 (sem `tp3_price`) mantêm o comportamento legado 
 - **Sem evidência de alfa.** Nada disto demonstra vantagem estatística; o prior (alfa nulo após custos), a hipótese nula do E4.3 e os critérios de refutação do E4.6 valem sem alteração. Os multiplicadores, frações e limiares do gatilho GP foram escolhidos por julgamento, **sem otimização em dados** — mas também sem validação fora da amostra; contam como tentativas no DSR.
 - **Premissas do simulador:** execução a limite sempre preenchida ao tocar o nível (sem fila/rejeição), slippage fixo, ordem intra-barra assumida (stop primeiro), ATR de entrada congelado no trailing, gaps não modelados além do clamp ao range da barra, funding ignorado em direcionais. Escada com parciais aumenta a taxa de acerto aparente sem aumentar, por si só, a expectância.
 - A porta do comitê reduz a amostra (SCALP e GP serão mais raros que em E5/E6); N mínimo de E4 tende a levar mais dias.
+
+---
+
+# ADDENDUM E8 — Gate de fluxo (Tape Reading) na entrada (2026-10-15)
+
+## E8.1 Regra exata (pré-registrada, fixa)
+`agents/tape_reading_agent.py::TapeReadingAgent` lê **somente leitura** (`sqlite mode=ro`) `datasets/microstructure.db` (coletor: `book_features`, `tick_agg`), usando apenas linhas com `ts <= now_ms` (sem lookahead):
+
+| Feature | Definição |
+|---|---|
+| `taker_imb_5m` | `(Σbuy_notional − Σsell_notional)/(Σbuy_notional + Σsell_notional)` sobre os minutos de `tick_agg` com `now−5min < minute_ms <= now`; exige ≥ 3 minutos e ≥ 30 trades |
+| `book_imb_10` | média dos 4 últimos snapshots de `(bid_n10 − ask_n10)/(bid_n10 + ask_n10)` |
+| `microprice_dev` | média de `microprice_dev_bps` dos 4 últimos snapshots |
+| `spread_bps` | do último snapshot |
+
+Voto: **BUY** se `taker_imb_5m >= +0.15` **E** `book_imb_10 >= +0.10` **E** `microprice_dev >= 0`; **SELL** espelhado (`<= −0.15`, `<= −0.10`, `<= 0`); senão **HOLD**. `spread_bps > 5.0` ⇒ HOLD (`spread_wide`). **UNAVAILABLE** (status; fail-open): símbolo fora de BTC/ETH/SOL, DB ausente/ilegível, sem dados, dados insuficientes, book > 120 s ou tick (`minute_ms` mais recente) > 180 s. Constantes nomeadas no topo do módulo; não serão ajustadas.
+
+**Gate** (`PaperTradingDaemon._flow_gate`, `scripts/run_paper_simulation.py`), aplicado a SCALP, GOLDEN_POT e DAY TRADE **depois** da porta do comitê (E7.1: mesma direção, sem veto, confiança ≥ 0,70): voto do tape **igual** à direção ⇒ `PASSED`; voto oposto ou HOLD ⇒ `BLOCKED` (nenhum trade); UNAVAILABLE ⇒ `UNAVAILABLE_PASSED` (entra, marcado). Símbolos do Golden Pot fora de BTC/ETH/SOL serão quase sempre UNAVAILABLE_PASSED (sem cobertura de fluxo).
+
+**Auditoria:** tabela `flow_gate_log` (market_cache.db) registra TODO sinal que chega ao gate (decisão, voto/status/motivo do tape, features, entrada, SL, TP1–TP3 teóricos do perfil, ATR, confiança, consenso, alavancagem), permitindo reproduzir offline os bloqueados. Limpa por `scripts/reset_pilot.py`. Telemetria (último voto e contagens P/B/U) na linha `[STATUS DEMO]` do daemon.
+
+## E8.2 Hipótese, métrica e refutação
+- **H0 (nula):** o gate **não** melhora a expectância líquida (após taxas/slippage/funding) das entradas do comitê.
+- **Métrica:** expectância líquida por trade, grupo **PASSED** (+ UNAVAILABLE_PASSED reportado à parte) vs **BLOCKED contrafactual**, este reproduzido no backtest `pilot_parity` a partir de `flow_gate_log` (entrada/SL/TP1–3/ATR registrados, mesma escada E7 e mesmos custos).
+- **Amostra mínima:** ≥ 100 sinais por grupo (PASSED e BLOCKED) antes de qualquer conclusão; antes disso, nenhuma inferência.
+- **Refutação de utilidade (H0 não rejeitada):** se, com N ≥ 100 por grupo, `E[PASSED] − E[BLOCKED]` tiver IC 95% (bootstrap por bloco/dia) incluindo 0 ou negativo, o gate é considerado sem valor e removido/desativado. Rejeição de H0 exige diferença positiva com IC95% > 0, contada como mais uma tentativa no DSR (E4).
+
+## E8.3 Declarações honestas
+- **Não há evidência prévia** de que o gate melhore resultados; limiares escolhidos por julgamento, sem otimização em dados.
+- O gate **não é backtestável** de forma ordinária: não existe histórico de book/tape; a avaliação só é possível prospectivamente, via `flow_gate_log`.
+- O gate reduz a amostra (E7 já a reduziu) e pode ser dominado por UNAVAILABLE_PASSED se o coletor estiver parado; a taxa de indisponibilidade deve ser reportada.
+- **Piloto reiniciado com esta mudança.** E4–E7 permanecem inalterados, exceto que as entradas de SCALP/GP/DAY TRADE agora exigem também confirmação de fluxo (E8); a amostra anterior ao gate não é comparável.

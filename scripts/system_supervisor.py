@@ -20,6 +20,9 @@ import signal
 import socket
 import logging
 import sqlite3
+import os as _os_dbc, sys as _sys_dbc
+_sys_dbc.path.insert(0, _os_dbc.path.dirname(_os_dbc.path.dirname(_os_dbc.path.abspath(__file__))))
+from db_conn import connect as _db_connect
 import subprocess
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -281,7 +284,7 @@ class SystemSupervisor:
                 return res
 
             res["size_bytes"] = os.path.getsize(DB_PATH)
-            with sqlite3.connect(f"file:{os.path.abspath(DB_PATH)}?mode=ro", uri=True, timeout=3.0) as con:
+            with _db_connect(f"file:{os.path.abspath(DB_PATH)}?mode=ro", uri=True, timeout=3.0) as con:
                 mode = con.execute("PRAGMA journal_mode;").fetchone()[0]
                 res["wal_mode"] = (mode.lower() == "wal")
                 check = con.execute("PRAGMA quick_check;").fetchone()[0]

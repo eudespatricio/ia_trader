@@ -23,6 +23,7 @@ import asyncio
 import logging
 import os
 import sqlite3
+from db_conn import connect as _db_connect
 import sys
 import time
 import uuid
@@ -341,7 +342,7 @@ class PaperTradingEngine:
 
     def _get_connection(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        con = sqlite3.connect(self.db_path, timeout=15.0)
+        con = _db_connect(self.db_path, timeout=15.0)
         con.execute("PRAGMA journal_mode=WAL")
         return con
 
@@ -394,6 +395,16 @@ class PaperTradingEngine:
                 except sqlite3.OperationalError:
                     pass
 
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS flow_gate_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts_ms INTEGER, symbol TEXT, strategy_type TEXT, direction TEXT,
+                    decision TEXT, tape_vote TEXT, tape_status TEXT, tape_reason TEXT,
+                    taker_imb_5m REAL, book_imb_10 REAL, microprice_dev REAL, spread_bps REAL,
+                    entry_price REAL, stop_loss REAL, tp1 REAL, tp2 REAL, tp3 REAL, atr REAL,
+                    confidence REAL, consensus_score REAL, leverage REAL
+                )
+            """)
             con.execute("""
                 CREATE TABLE IF NOT EXISTS paper_trades (
                     trade_id TEXT PRIMARY KEY,
@@ -880,6 +891,28 @@ class PaperTradingEngine:
                     else "DISPONIVEL"
                 ),
             }
+
+    def log_flow_gate(self, row: Dict[str, Any]) -> None:
+        """Auditoria contrafactual do gate de fluxo (E8): TODO sinal que chega ao gate é registrado."""
+        cols = ["ts_ms", "symbol", "strategy_type", "direction", "decision", "tape_vote", "tape_status",
+                "tape_reason", "taker_imb_5m", "book_imb_10", "microprice_dev", "spread_bps", "entry_price",
+                "stop_loss", "tp1", "tp2", "tp3", "atr", "confidence", "consensus_score", "leverage"]
+        try:
+            with self._get_connection() as con:
+                con.execute(f"INSERT INTO flow_gate_log ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                            [row.get(c) for c in cols])
+        except Exception as e:  # noqa: BLE001 - auditoria nunca derruba o ciclo
+            logger.warning(f"flow_gate_log: falha ao registrar: {e}")
+
+    def flow_gate_counts(self) -> Dict[str, int]:
+        out = {"PASSED": 0, "BLOCKED": 0, "UNAVAILABLE_PASSED": 0}
+        try:
+            with self._get_connection() as con:
+                for d, n in con.execute("SELECT decision, COUNT(*) FROM flow_gate_log GROUP BY decision"):
+                    out[str(d)] = int(n)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
 
     def get_summary_metrics(self) -> Dict[str, Any]:
         """Calcula métricas agregadas de desempenho da carteira simulada."""

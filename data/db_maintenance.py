@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from db_conn import connect as _db_connect
 from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ def wal_checkpoint(db_path: str, busy_timeout_ms: int = 500, truncate_threshold_
         if res["wal_before"] <= truncate_threshold_bytes:
             res.update(ok=True, mode="SKIPPED")
             return res
-        conn = sqlite3.connect(db_path, timeout=busy_timeout_ms / 1000.0)
+        conn = _db_connect(db_path, timeout=busy_timeout_ms / 1000.0)
         try:
             conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)};")
             for mode in ("TRUNCATE", "PASSIVE"):
@@ -58,7 +59,7 @@ def find_sparse_symbols(
 ) -> List[Dict[str, Any]]:
     """Lista (exchange, symbol) com menos de `min_samples` candles no timeframe. Somente leitura."""
     prot = {p.upper() for p in protected}
-    conn = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True, timeout=5.0)
+    conn = _db_connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True, timeout=5.0)
     try:
         rows = conn.execute(
             "SELECT exchange, symbol, COUNT(*), MIN(timestamp), MAX(timestamp) FROM candles "
@@ -89,7 +90,7 @@ def purge_sparse_symbols(
     deleted = 0
     if not dry_run and targets:
         prot = {p.upper() for p in protected}
-        conn = sqlite3.connect(db_path, timeout=15.0)
+        conn = _db_connect(db_path, timeout=15.0)
         try:
             with conn:
                 for t in targets:

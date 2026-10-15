@@ -138,6 +138,7 @@ class BacktestEngine:
         max_concurrent_positions: Optional[int] = 5,
         daily_quota: Optional[int] = None,       # None = padrão do piloto (DIRECTIONAL sem cota; SCALP 5; GOLDEN_POT 3)
         cooldown_bars: Optional[int] = None,     # None = padrão (DIRECTIONAL 0; SCALP 4; GOLDEN_POT 16 barras)
+        trailing_activation: str = "tp2",        # pilot_parity: "tp2" (padrão do piloto) | "tp1" (trailing liga já no TP1; experimento offline)
     ):
         self.initial_capital = initial_capital
         self.fee_rate = fee_rate
@@ -164,6 +165,9 @@ class BacktestEngine:
                 raise ValueError(f"strategy_type inválido: {strategy_type!r}")
             if entry_mode not in (None, "signal_close", "next_open"):
                 raise ValueError(f"entry_mode inválido: {entry_mode!r}")
+        if trailing_activation not in ("tp2", "tp1"):
+            raise ValueError(f"trailing_activation inválido: {trailing_activation!r}")
+        self.trailing_activation = trailing_activation
         self.strategy_type = strategy_type
         self.entry_mode = entry_mode or "signal_close"
         self.lot_margin = lot_margin
@@ -769,16 +773,24 @@ class _PilotSimulator:
             be = p.entry * (1.0 + sgn * st.BREAKEVEN_FEE_BUFFER_PCT)
             p.sl = max(p.sl, be) if long else min(p.sl, be)          # nunca afrouxa
             self.balance += self._leg(p, p.tp1, min(p.qty0 * st.EXIT_TP1_FRACTION, p.qty), "TAKE_PROFIT_1", True)
+            if self.e.trailing_activation == "tp1" and p.trail_mult > 0.0 and p.entry_atr > 0.0:
+                p.trail_active = True       # experimento: trailing liga já no TP1 (mult x ATR de entrada, nunca afrouxa)
+                p.trail_ref = p.tp1
+                p.trail_bar = None
+                self._ratchet(p, p.tp1, p.tp1)
             if stop_hit():
                 return stop_close(False)
         if p.tp1_hit and not p.tp2_hit and reached(p.tp2):
             p.tp2_hit = True
             self.balance += self._leg(p, p.tp2, min(p.qty0 * st.EXIT_TP2_FRACTION, p.qty), "TAKE_PROFIT_2", True)
             if p.trail_mult > 0.0 and p.entry_atr > 0.0:
-                p.trail_active = True
-                p.trail_ref = p.tp2
-                p.trail_bar = None
-                self._ratchet(p, p.tp2, p.tp2)
+                if p.trail_active:           # já ligado no TP1: só incorpora o extremo TP2 (fechado nesta barra)
+                    self._ratchet(p, p.tp2, p.tp2)
+                else:
+                    p.trail_active = True
+                    p.trail_ref = p.tp2
+                    p.trail_bar = None
+                    self._ratchet(p, p.tp2, p.tp2)
         if p.tp2_hit and reached(p.tp3):
             return "TAKE_PROFIT_3", p.tp3
         if p.trail_active:   # esta barra só vira stop quando a seguinte chegar

@@ -443,3 +443,114 @@ class TestExitLadderApi:
         assert p["close_action"] == "TRAILING_STOP" and p["close_action_label"] == "Trailing stop"
         labels = [e["label"] for e in p["events"]]
         assert "TP1 parcial" in labels and "TP2 parcial (trailing ativado)" in labels
+
+
+class TestTapeGateStatus:
+    """/api/tape-gate/status e card do Agente Tape Reading (gate pós-comitê). Bancos e agente mockados."""
+
+    @staticmethod
+    def _gate_db(path, rows=None, create=True):
+        con = sqlite3.connect(path)
+        if create:
+            con.execute("""CREATE TABLE flow_gate_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts_ms INTEGER, symbol TEXT,
+                strategy_type TEXT, direction TEXT, decision TEXT, tape_vote TEXT, tape_status TEXT, tape_reason TEXT)""")
+            for r in rows or []:
+                con.execute("INSERT INTO flow_gate_log (ts_ms,symbol,strategy_type,direction,decision,tape_vote,tape_status,tape_reason) VALUES (?,?,?,?,?,?,?,?)", r)
+        con.commit()
+        con.close()
+
+    @staticmethod
+    def _fake_agent(status="OK", vote="BUY"):
+        class Fake:
+            def evaluate(self, symbol, direction="", now_ms=None):
+                if symbol != "BTCUSDT" and status == "OK":
+                    return {"agent_name": "TapeReadingAgent", "symbol": symbol, "vote": "HOLD", "status": "UNAVAILABLE",
+                            "confidence": 0.0, "features": {}, "reason": "no_book_data", "timestamp": 1}
+                return {"agent_name": "TapeReadingAgent", "symbol": symbol, "vote": vote, "status": status,
+                        "confidence": 0.62 if status == "OK" else 0.0,
+                        "features": {"taker_imb_5m": 0.22, "book_imb_10": 0.14, "microprice_dev": 0.3, "spread_bps": 0.1} if status == "OK" else {},
+                        "reason": "flow_buy_confirmed" if status == "OK" else "db_unavailable:FileNotFoundError", "timestamp": 1}
+        return Fake()
+
+    def test_empty_table_and_missing_collector_db(self, client, tmp_path, monkeypatch):
+        import flask_interface as fi
+        db = str(tmp_path / "pilot.db")
+        self._gate_db(db)
+        monkeypatch.setattr(fi, "DB_PATH", db)
+        monkeypatch.setattr(fi, "MICRO_DB_PATH", str(tmp_path / "ausente.db"))
+        monkeypatch.setattr(fi, "_make_tape_agent", lambda: self._fake_agent("UNAVAILABLE", "HOLD"))
+        r = client.get("/api/tape-gate/status")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["read_only_mode"] is True and d["collector_db_available"] is False
+        assert set(d["symbols"]) == {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+        for s in d["symbols"].values():
+            assert s["status"] == "UNAVAILABLE" and s["book_age_s"] is None and s["tick_age_s"] is None
+        assert d["gate"]["total"] == 0 and d["gate"]["last"] == [] and d["gate"]["log_available"] is True
+        assert d["gate"]["counts"] == {"PASSED": 0, "BLOCKED": 0, "UNAVAILABLE_PASSED": 0}
+
+    def test_table_missing_does_not_error(self, client, tmp_path, monkeypatch):
+        import flask_interface as fi
+        db = str(tmp_path / "pilot.db")
+        self._gate_db(db, create=False)
+        monkeypatch.setattr(fi, "DB_PATH", db)
+        monkeypatch.setattr(fi, "MICRO_DB_PATH", str(tmp_path / "ausente.db"))
+        monkeypatch.setattr(fi, "_make_tape_agent", lambda: self._fake_agent("UNAVAILABLE", "HOLD"))
+        d = client.get("/api/tape-gate/status").get_json()
+        assert d["gate"]["total"] == 0 and d["gate"]["log_available"] is False
+
+    def test_with_records_counts_last10_and_ages(self, client, tmp_path, monkeypatch):
+        import time as _t
+        import flask_interface as fi
+        db = str(tmp_path / "pilot.db")
+        now = int(_t.time() * 1000)
+        rows = [(now - i * 1000, "BTCUSDT", "SCALP", "BUY", "PASSED" if i % 2 == 0 else "BLOCKED",
+                 "BUY", "OK", "flow_buy_confirmed") for i in range(11)]
+        rows.append((now - 99999, "ETHUSDT", "SWING", "SELL", "UNAVAILABLE_PASSED", "HOLD", "UNAVAILABLE", "no_book_data"))
+        self._gate_db(db, rows)
+        micro = str(tmp_path / "micro.db")
+        con = sqlite3.connect(micro)
+        con.execute("CREATE TABLE book_features (ts_ms INTEGER, symbol TEXT)")
+        con.execute("CREATE TABLE tick_agg (minute_ms INTEGER, symbol TEXT)")
+        con.execute("INSERT INTO book_features VALUES (?, 'BTCUSDT')", (now - 5000,))
+        con.execute("INSERT INTO tick_agg VALUES (?, 'BTCUSDT')", (now - 30000,))
+        con.commit()
+        con.close()
+        monkeypatch.setattr(fi, "DB_PATH", db)
+        monkeypatch.setattr(fi, "MICRO_DB_PATH", micro)
+        monkeypatch.setattr(fi, "_make_tape_agent", lambda: self._fake_agent("OK", "BUY"))
+        d = client.get("/api/tape-gate/status").get_json()
+        g = d["gate"]
+        assert g["counts"] == {"PASSED": 6, "BLOCKED": 5, "UNAVAILABLE_PASSED": 1} and g["total"] == 12
+        assert len(g["last"]) == 10
+        assert set(g["last"][0]) == {"ts", "ts_ms", "symbol", "strategy_type", "direction", "decision", "tape_vote", "reason"}
+        assert g["last"][0]["ts_ms"] >= g["last"][-1]["ts_ms"]
+        btc = d["symbols"]["BTCUSDT"]
+        assert btc["vote"] == "BUY" and btc["status"] == "OK" and btc["confidence"] == 0.62
+        assert 4 <= btc["book_age_s"] < 60 and 29 <= btc["tick_age_s"] < 90
+        assert d["symbols"]["ETHUSDT"]["status"] == "UNAVAILABLE" and d["symbols"]["ETHUSDT"]["book_age_s"] is None
+        assert d["collector_db_available"] is True
+
+    def test_agent_card_mapping_and_not_in_consensus(self, tmp_path, monkeypatch):
+        import flask_interface as fi
+        monkeypatch.setattr(fi, "DB_PATH", str(tmp_path / "x.db"))
+        monkeypatch.setattr(fi, "_make_tape_agent", lambda: self._fake_agent("OK", "BUY"))
+        c = fi.get_tape_agent_card("BTCUSDT", "BUY")
+        assert c["id"] == "tape" and c["name"] == "Agente Tape Reading" and c["is_gate"] is True
+        assert c["bias"] == "BULLISH" and c["confidence"] == 62 and c["data_status"] == "OK"
+        assert c["confirms_direction"] is True
+        assert c["summary"] == "Fluxo comprador confirmado: taker +0.22, book +0.14, microprice +0.3 bps, spread 0.1 bps"
+        assert fi.get_tape_agent_card("BTCUSDT", "SELL")["confirms_direction"] is False
+        monkeypatch.setattr(fi, "_make_tape_agent", lambda: self._fake_agent("UNAVAILABLE", "HOLD"))
+        u = fi.get_tape_agent_card("BTCUSDT", "BUY")
+        assert u["bias"] == "NEUTRAL" and u["status"] == "SEM DADOS" and u["data_status"] == "UNAVAILABLE"
+
+    def test_uncovered_symbol_message_and_status_has_tape_gate(self, client, tmp_path, monkeypatch):
+        import flask_interface as fi
+        monkeypatch.setattr(fi, "MICRO_DB_PATH", str(tmp_path / "ausente.db"))
+        c = fi.get_tape_agent_card("DOGEUSDT", "BUY")
+        assert c["summary"] == "Símbolo fora da cobertura do coletor" and c["data_status"] == "UNAVAILABLE"
+        d = client.get("/api/status").get_json()
+        ids = [a["id"] for a in d["agents"]]
+        assert ids[-1] == "tape" and len(ids) == 7
+        assert d["agents"][-1]["is_gate"] is True
