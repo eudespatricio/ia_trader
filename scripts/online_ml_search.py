@@ -58,6 +58,11 @@ def load_candles(sym):
 
 
 EXT = False
+LABEL_FN = None      # função de rótulo alternativa (ex.: execução maker); None = barreira com custo taker
+LABEL_COST = COST    # custo subtraído do rótulo (0 quando a função já devolve retorno líquido)
+EV_COST = COST       # custo usado na regra de entrada EV_R
+HOLD_EXTRA = 0       # barras extras de ocupação (espera de fill)
+SIGSTATS = {"signals": 0, "filled": 0}
 _BTC_CACHE = {}
 
 
@@ -138,9 +143,9 @@ def build(H):
         feat["symbol"] = s
         feat["dt"] = pd.to_datetime(feat["timestamp"], unit="ms")
         atr = feat["atr_14"].values.astype(float)
-        bo = barrier_outcomes(feat, atr, H)
-        feat["r_long"] = bo["long"] - COST
-        feat["r_short"] = bo["short"] - COST
+        bo = (LABEL_FN or barrier_outcomes)(feat, atr, H)
+        feat["r_long"] = bo["long"] - LABEL_COST
+        feat["r_short"] = bo["short"] - LABEL_COST
         feat["atr_pct"] = atr / feat["close"].values
         if EXT:
             feat = add_ext_features(feat, s)
@@ -196,8 +201,8 @@ def simulate(df, p_long, p_short, H):
         for row in g.itertuples(index=False):
             if row.dt < busy_until:
                 continue
-            ev_l = row.pl * TP_M - (1 - row.pl) * SL_M - COST / row.atr_pct
-            ev_s = row.ps * TP_M - (1 - row.ps) * SL_M - COST / row.atr_pct
+            ev_l = row.pl * TP_M - (1 - row.pl) * SL_M - EV_COST / row.atr_pct
+            ev_s = row.ps * TP_M - (1 - row.ps) * SL_M - EV_COST / row.atr_pct
             side = None
             if ev_l > EV_MIN and ev_l >= ev_s:
                 side = "long"
@@ -206,10 +211,12 @@ def simulate(df, p_long, p_short, H):
             if side is None:
                 continue
             r = row.r_long if side == "long" else row.r_short
+            SIGSTATS["signals"] += 1
             if np.isnan(r):
                 continue
+            SIGSTATS["filled"] += 1
             trades.append((s, row.dt, side, float(r), float(row.pl if side == "long" else row.ps)))
-            busy_until = row.dt + pd.Timedelta(hours=H)
+            busy_until = row.dt + pd.Timedelta(hours=H + HOLD_EXTRA)
     return pd.DataFrame(trades, columns=["symbol", "dt", "side", "r", "p"])
 
 

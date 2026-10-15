@@ -29,3 +29,11 @@ LightGBM binário por lado, retreino **mensal** (janela expandida, embargo H+10)
 - Nenhuma configuração passa o critério de promoção (IC95 inferior > 0 e DSR ≥ 0,95). **Nada é promovido ao piloto; o holdout permanece trancado.**
 - Hipótese ainda não testada (e que NÃO está validada): se o custo por trade cair de forma comprovada (execução maker com modelo de fill-rate e seleção adversa, ou menor taxa por volume), o mesmo sinal passaria a ter margem. Isso exige modelar execução limit antes de qualquer afirmação.
 - O piloto atual NÃO usa este modelo de aprendizado contínuo (o `TechnicalAgent` roda sem modelo; `LearningTracker` não é chamado).
+
+## 3. Teste com execução MAKER realista (scripts/maker_exec_test.py; entrada limite com trade-through de 0,02%, TP maker, SL/timeout taker)
+| Config | Fill rate | Expectância líq./trade | IC95 | p(permutação) | Sharpe |
+|---|---|---|---|---|---|
+| H=48, TP2.5/SL1.5 | 96,9% | -0,126% | [-0,243; -0,004] | 0,464 | -1,04 |
+| H=24, TP1.5/SL1.0 | 96,6% | +0,007% | [-0,084; +0,101] | 0,000 | +0,08 |
+
+Leitura: a execução maker NÃO resgata o sinal. O custo médio cai pouco (média nula de -0,168% para -0,132%) porque ~60% das saídas são stops a mercado (taker + slippage). O H=48 deixa de ser distinguível de aleatório (p=0,46) por seleção adversa; o H=24 fica em +0,007%/trade com IC95 [-0,084; +0,101]. Nenhum candidato passa o critério (IC95 inferior > 0, DSR >= 0,95). Tentativas totais desta rodada: 13 (N do DSR = 97). Ressalva: só OHLC 1h; fill-rate é estimativa, não substitui ordens reais.
