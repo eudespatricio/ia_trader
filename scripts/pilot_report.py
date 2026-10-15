@@ -132,7 +132,8 @@ def stress_equity(d, t):
     return s, float(-dd.min())
 
 
-EPOCH_KEYS = {"ledger_epoch_trade_rowid", "ledger_epoch_pos_rowid", "quota_epoch_trade_rowid", "MANUAL_RESET"}
+EPOCH_KEYS = {"ledger_epoch_trade_rowid", "ledger_epoch_pos_rowid", "quota_epoch_trade_rowid", "MANUAL_RESET",
+              "pilot_start_utc", "pilot_reset_id"}
 RESET_TOLERANCE_MS = 120_000  # o evento/flag do próprio reset que define o início não conta como "reset na janela"
 
 
@@ -152,6 +153,25 @@ def reset_epoch(d):
     except (TypeError, ValueError):
         rid = 0
     return ms, rid
+
+
+def pilot_start(d):
+    """Início do piloto gravado por scripts/reset_pilot.py (simulation_settings.pilot_start_utc).
+
+    Retorna (start_ms, reset_id) ou (None, None). Tem prioridade sobre ledger_epoch_*.
+    """
+    st = d["set"]
+    row = st[st.key == "pilot_start_utc"]
+    if row.empty:
+        return None, None
+    try:
+        ts = pd.Timestamp(str(row.value.iloc[0]))
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+        ms = int(ts.timestamp() * 1000)
+    except (TypeError, ValueError):
+        return None, None
+    rid = st[st.key == "pilot_reset_id"]
+    return ms, (str(rid.value.iloc[0]) if not rid.empty else None)
 
 
 def last_reset_and_setting_change(d, start_ms, reset_tol_ms=0):
@@ -214,9 +234,12 @@ def main():
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
     if d["trades"].empty:
-        print("INCONCLUSIVO: ledger vazio")
+        print("INCONCLUSIVO: ledger vazio (sem trades pós-reset)")
         return 2
     epoch_ms, epoch_rowid = reset_epoch(d)
+    pilot_ms, pilot_reset_id = pilot_start(d)
+    if pilot_ms is not None:
+        epoch_ms, epoch_rowid = pilot_ms, 0   # pilot_start_utc tem prioridade sobre ledger_epoch
     if a.start:
         start_ms = int(pd.Timestamp(a.start, tz="UTC").timestamp() * 1000)
     elif epoch_ms is not None:
@@ -239,6 +262,7 @@ def main():
          "reset_epoch_utc": (datetime.fromtimestamp(epoch_ms / 1000, timezone.utc).isoformat()
                              if epoch_ms is not None else None),
          "ledger_epoch_trade_rowid": epoch_rowid,
+         "pilot_reset_id": pilot_reset_id,
          "pre_reset_history": {
              "label": "histórico pré-reset (viesado, não conta)",
              "closed_trades": int(len(P_pre)),

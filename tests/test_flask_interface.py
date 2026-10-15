@@ -261,4 +261,140 @@ class TestFlaskInterfaceEndpoints:
         assert isinstance(data["top_swings"], list)
 
 
+class TestSimulationLotSettings:
+    """paper_lot_usd editável (10..1000); alavancagem nunca é aceita via POST."""
 
+    @pytest.fixture
+    def tmp_db(self, tmp_path, monkeypatch):
+        import flask_interface
+        db = str(tmp_path / "sim_settings.db")
+        sqlite3.connect(db).close()
+        monkeypatch.setattr(flask_interface, "DB_PATH", db)
+        return db
+
+    def test_get_default_lot(self, client, tmp_db):
+        data = client.get("/api/simulation/settings").get_json()
+        assert data["paper_lot_usd"] == 100.0
+        assert "leverage" not in data
+
+    def test_post_valid_lot_persisted_with_updated_at(self, client, tmp_db):
+        res = client.post("/api/simulation/settings", json={"paper_lot_usd": 250})
+        assert res.status_code == 200
+        assert res.get_json()["paper_lot_usd"] == 250.0
+        row = sqlite3.connect(tmp_db).execute(
+            "SELECT value, updated_at FROM simulation_settings WHERE key='paper_lot_usd'").fetchone()
+        assert float(row[0]) == 250.0 and row[1]
+
+    @pytest.mark.parametrize("bad", [9.99, 0, -5, 1000.01, 5000, "abc", True, float("nan")])
+    def test_post_invalid_lot_rejected(self, client, tmp_db, bad):
+        res = client.post("/api/simulation/settings", json={"paper_lot_usd": bad})
+        assert res.status_code == 400
+        assert "lote" in res.get_json()["message"].lower()
+        con = sqlite3.connect(tmp_db)
+        try:
+            n = con.execute("SELECT COUNT(*) FROM simulation_settings WHERE key='paper_lot_usd'").fetchone()[0]
+        except sqlite3.OperationalError:
+            n = 0
+        assert n == 0
+
+    @pytest.mark.parametrize("lot", [10, 1000])
+    def test_lot_boundaries_accepted(self, client, tmp_db, lot):
+        assert client.post("/api/simulation/settings", json={"paper_lot_usd": lot}).status_code == 200
+
+    def test_leverage_ignored_on_post(self, client, tmp_db):
+        res = client.post("/api/simulation/settings", json={"paper_lot_usd": 50, "leverage": 20, "max_leverage": 50})
+        assert res.status_code == 200
+        keys = [r[0] for r in sqlite3.connect(tmp_db).execute("SELECT key FROM simulation_settings")]
+        assert "leverage" not in keys and "max_leverage" not in keys
+        assert "leverage" not in res.get_json()
+
+    def test_dashboard_has_lot_input_and_readonly_leverage(self, client):
+        html = client.get("/").get_data(as_text=True)
+        assert 'id="inputPaperLotUsd"' in html
+        assert "máximo 5x (piloto)" in html
+        assert "A11" in html
+        assert 'id="inputLeverage' not in html
+
+
+class TestOpenPositionsEndpoint:
+    """Aba de abertos: somente status OPEN (inclui parcial pós-TP1); fechados nunca em /open."""
+
+    @pytest.fixture
+    def pos_db(self, tmp_path, monkeypatch):
+        import flask_interface
+        db = str(tmp_path / "pos.db")
+        con = sqlite3.connect(db)
+        con.execute("""CREATE TABLE paper_positions (position_id TEXT PRIMARY KEY, symbol TEXT, side TEXT,
+            entry_price REAL, current_price REAL, quantity REAL, notional REAL, stop_loss REAL, take_profit REAL,
+            unrealized_pnl REAL, entry_timestamp INTEGER, strategy_type TEXT, status TEXT,
+            tp1_price REAL, tp1_hit INTEGER, tp2_price REAL, initial_quantity REAL)""")
+        rows = [
+            ("A", "BTCUSDT", "LONG", 100, 101, 1.0, 100, 95, 110, 1.0, 3, "SCALP", "OPEN", 105, 0, 110, 1.0),
+            ("B", "ETHUSDT", "SHORT", 50, 49, 0.5, 25, 55, 40, 0.5, 2, "SWING", "CLOSED", 45, 1, 40, 1.0),
+            ("C", "SOLUSDT", "LONG", 20, 21, 0.5, 10, 18, 25, 0.5, 1, "SCALP", "OPEN", 22, 1, 25, 1.0),
+        ]
+        con.executemany("INSERT INTO paper_positions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        con.commit(); con.close()
+        monkeypatch.setattr(flask_interface, "DB_PATH", db)
+        return db
+
+    def test_open_excludes_closed(self, client, pos_db):
+        for url in ("/api/paper-trading/positions/open", "/api/paper-trading/positions"):
+            data = client.get(url).get_json()
+            ids = [p["position_id"] for p in data["positions"]]
+            assert sorted(ids) == ["A", "C"], url
+            assert all(p["status"] == "OPEN" for p in data["positions"])
+            assert len(ids) == len(set(ids))
+
+    def test_partially_reduced_tp1_stays_open(self, client, pos_db):
+        data = client.get("/api/paper-trading/positions/open").get_json()
+        c = [p for p in data["positions"] if p["position_id"] == "C"][0]
+        assert c["tp1_hit"] == 1 and c["quantity"] == 0.5 and c["initial_quantity"] == 1.0
+
+    def test_closed_only_in_closed(self, client, pos_db):
+        data = client.get("/api/paper-trading/positions/closed").get_json()
+        assert [p["position_id"] for p in data["positions"]] == ["B"]
+        allp = client.get("/api/paper-trading/positions?status=all").get_json()
+        assert allp["total"] == 3
+
+
+
+class TestPositionsEnrichment:
+    @pytest.fixture
+    def rich_db(self, tmp_path, monkeypatch):
+        import flask_interface
+        db = str(tmp_path / "rich.db")
+        con = sqlite3.connect(db)
+        con.execute("""CREATE TABLE paper_positions (position_id TEXT PRIMARY KEY, symbol TEXT, side TEXT,
+            entry_price REAL, current_price REAL, quantity REAL, notional REAL, stop_loss REAL, take_profit REAL,
+            unrealized_pnl REAL, realized_pnl REAL, entry_timestamp INTEGER, strategy_type TEXT, status TEXT,
+            tp1_price REAL, tp1_hit INTEGER, tp2_price REAL, initial_quantity REAL, leverage REAL)""")
+        con.execute("""CREATE TABLE paper_trades (trade_id TEXT PRIMARY KEY, position_id TEXT, symbol TEXT, action TEXT,
+            price REAL, quantity REAL, fee REAL, pnl REAL, timestamp INTEGER, rationale TEXT)""")
+        con.execute("INSERT INTO paper_positions VALUES ('O','BTCUSDT','LONG',100,102,1,102,95,110,2,0,1700000000,'SCALP','OPEN',105,0,110,1,4)")
+        con.execute("INSERT INTO paper_positions VALUES ('S','ETHUSDT','SHORT',200,190,1,190,210,150,0,5,1700000000000,'SCALP','CLOSED',0,0,0,1,NULL)")
+        con.execute("INSERT INTO paper_trades VALUES ('t1','S','ETHUSDT','OPEN_SCALP_SHORT',200,1,0,0,1700000000000,'')")
+        con.execute("INSERT INTO paper_trades VALUES ('t2','S','ETHUSDT','STOP_LOSS',190,1,0,5,1700003600000,'')")
+        con.commit(); con.close()
+        monkeypatch.setattr(flask_interface, "DB_PATH", db)
+
+    def test_open_enrichment_ms_roi_and_margin(self, client, rich_db):
+        d = client.get("/api/paper-trading/positions/open").get_json()
+        p = d["positions"][0]
+        assert p["opened_at_ms"] == 1700000000000  # s -> ms
+        assert p["leverage_effective"] == 4 and p["margin_effective"] == 25.0
+        assert p["roi_pct"] == 8.0 and p["price_change_pct"] == 2.0
+        assert d["summary"]["count"] == 1 and d["summary"]["win_rate_pct"] == 100.0
+        assert d["summary"]["total_pnl_pct_initial"] == 0.02
+
+    def test_closed_enrichment_fallback_1x_and_close_time(self, client, rich_db):
+        d = client.get("/api/paper-trading/positions/closed").get_json()
+        p = d["positions"][0]
+        assert p["leverage_effective"] == 1.0 and p["margin_effective"] == 200.0 and p["margin_estimated"] is True
+        assert p["closed_at_ms"] == 1700003600000 and p["duration_s"] == 3600
+        assert p["net_pnl"] == 5.0 and p["net_pnl_pct_margin"] == 2.5 and p["price_change_pct"] == 5.0
+        assert d["summary"]["wins"] == 1
+
+    def test_trades_endpoint_has_timestamp_ms(self, client, rich_db):
+        t = client.get("/api/paper-trading/trades").get_json()["trades"]
+        assert all(x["timestamp_ms"] >= 1700000000000 for x in t)

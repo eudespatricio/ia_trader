@@ -6,6 +6,9 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ## [Não lançado] - 2026-10-14/15 - Auditoria e Correções
 
+### Alterado
+- **GOLDEN_POT v2 (E5, 2026-10-15):** entrada só com concordância do comitê completo (sem veto), `confidence`/`consensus`/`risk` reais, cooldown 16 barras, 1 GP/vela, filtro de faca-caindo, exclusão de ativos tokenizados, ≥400 candles com `sma_200` válida; lote = margem `paper_lot_usd` (padrão US$100) com alavancagem do Smart Trader (`leverage_policy.py`, teto 5x, liquidação). Piloto reiniciado; E4 invalidado para GOLDEN_POT.
+
 ### Corrigido
 - **Lookahead V1-V8:** CPI no dia 20 do mês seguinte; FEDFUNDS no fim do mês+1; removido `bfill`; snapshots macro/order book só na última barra; `as_of_date` em VIX/DXY/SP500; candle em formação descartado. V9 (trailing intrabarra, backtesting.py) segue pendente.
 - **Execução:** taxa de saída em dobro (`smart_trade.py`); cota diária reaberta na virada UTC; teto de margem no carry; race em `update_market_tick`; TP1 parcial duplicado; `entry_fees` em `funding_carry`.

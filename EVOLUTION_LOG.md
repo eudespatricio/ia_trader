@@ -859,6 +859,10 @@ A sensibilidade teórica a taxas no modelo Maker passivo (taxa de 0.02% e 0% sli
 
 ---
 
+**7. GOLDEN_POT v2 (2026-10-15):** o GP v1 usava constantes (0,90/±0,85/$50) e ignorava comitê/veto, abrindo 5 posições na mesma vela; v2 exige comitê+RiskSentinel, cooldown (16 barras), 1 GP/vela, filtro de faca-caindo, exclusão de ativos tokenizados e warmup `sma_200`; lote passa a ser margem (`paper_lot_usd`=US$100) com alavancagem ≤5x decidida por `leverage_policy.py`. Ver ADDENDUM E5; piloto reiniciado.
+
+---
+
 ## 📋 Template Padrão para Novos Registros (Obrigatório)
 
 Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:

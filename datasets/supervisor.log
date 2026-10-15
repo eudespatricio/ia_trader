@@ -21,3 +21,8 @@
 [2026-10-14 21:47:51,084] [INFO] [supervisor] 🔗 [cloudflare_tunnel] Adotou túnel existente (PID=167075).
 [2026-10-14 21:47:51,088] [INFO] [supervisor] 🟢 [flask_dashboard] Iniciado com sucesso (PID=253922).
 [2026-10-14 21:47:51,090] [INFO] [supervisor] 🟢 [paper_trading_daemon] Iniciado com sucesso (PID=253923).
+[2026-10-14 22:24:18,103] [INFO] [supervisor] 🛡️ [SystemSupervisor] Iniciando Gestor de Sistema e Dependências (Piloto Resiliente)...
+[2026-10-14 22:24:18,149] [INFO] [supervisor] 🔗 [flask_dashboard] Adotou processo existente na porta 5000 (PID=253922).
+[2026-10-14 22:24:18,155] [INFO] [supervisor] 🔗 [paper_trading_daemon] Adotou processo existente (PID=253923).
+[2026-10-14 22:24:18,162] [INFO] [supervisor] 🔗 [cloudflare_tunnel] Adotou túnel existente (PID=167075).
+[2026-10-14 22:24:21,394] [INFO] [supervisor] Encerrando SystemSupervisor...

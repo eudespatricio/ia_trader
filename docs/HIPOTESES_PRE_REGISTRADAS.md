@@ -212,3 +212,45 @@ Herdam R1–R7 de `docs/CRITERIOS_APROVACAO_PILOTO.md` e adicionam, por estraté
 ## E4.7 Lista de proibições durante a janela
 
 Não alterar: limiares de entrada/saída, múltiplos de ATR, cotas diárias, tamanho, `operation_mode`, universo, RollbackGuard, nem o código de `smart_trade.py`, `core.py`, `signal_generator.py`, `agents/*`, `scripts/run_paper_simulation.py`. Correções de bug exigem registro de nova versão e **reinício do relógio de aprovação** (A1) com nota neste documento. Qualquer *novo* `strategy_type` negociado sem registro aqui faz A3 falhar.
+
+# ADDENDUM E5 — GOLDEN_POT v2, lote = margem e alavancagem do Smart Trader (2026-10-15)
+
+**Status:** substitui a regra de GOLDEN_POT do E4. **O piloto é REINICIADO** após esta mudança (relógio de aprovação zerado, A1/A11) e **o E4 fica INVALIDADO para GOLDEN_POT** (regra de entrada, tamanho e universo mudaram). SCALP, DIRECTIONAL/SWING mantêm a regra de entrada do E4, mas o **tamanho de lote mudou para todos** (E5.6), o que também reinicia o piloto. Tokens de estratégia inalterados: `GOLDEN_POT`, `SCALP`, `DIRECTIONAL`, `SWING`.
+
+## E5.1 Motivo (falhas confirmadas da v1)
+(a) `confidence=0.90`, `consensus_score=±0.85`, `risk_dollars=50` eram constantes; o comitê e o RiskSentinel (veto) nunca eram consultados; (b) sem cooldown nem limite por vela (5 GPs na mesma vela 15m, 4 stopados em ~20 min); (c) compra de faca caindo sem filtro de regime; (d) perps de ações/ETFs tokenizados e listagens novas (~100–140 candles).
+
+## E5.2 Regra exata do GOLDEN_POT v2 (`scripts/run_paper_simulation.py::evaluate_golden_pot_opportunities`)
+Por ciclo, só se `can_execute_golden_pot` (cota **3/dia**, inalterada; posições simultâneas; margem; circuit breaker):
+1. **Descoberta:** `GoldenPotAgent.scan_market()` → `top_scalps`, removendo símbolos da lista de exclusão (E5.4) e limitando a `GP_MAX_CANDIDATES=4`. Pula símbolo com GP aberto.
+2. **Dados:** `GP_CANDLE_LIMIT=400` velas 15m (binance, fallback bitget); mínimo bruto `GP_MIN_WARMUP_CANDLES=250`; **descarta a vela em formação** (somente velas fechadas); features só valem com `sma_200` finita e > 0 (exclui listagens novas).
+3. **Limite por vela:** no máximo `GP_MAX_ENTRIES_PER_BAR=1` entrada GP por vela de 15m (chave = `timestamp//15min` da vela; lido de `trade_history`, restaurado do ledger ⇒ sobrevive a reinício).
+4. **Cooldown:** sem reentrada no símbolo por `GP_COOLDOWN_BARS=16` barras de 15m após qualquer saída total (`TP1_PARTIAL` não conta), também via ledger.
+5. **Gatilho de descoberta (inalterado do E4):** (VWAP ≤ −2,5% e RSI ≤ 38) ou (sweep SSL + POI bullish) ⇒ BUY; simétrico ⇒ SELL (limiares DEMO 1,2%/42/58). É só gatilho: não decide a entrada.
+6. **Filtro de regime / faca-caindo:** "tendência forte contra" = (close < sma_200 e [RSI < `GP_KNIFE_RSI_LOW=20` ou queda > `GP_KNIFE_ATR_MOVE=3.0` ATR em `GP_KNIFE_LOOKBACK_BARS=4` barras]) para BUY; simétrico (close > sma_200, RSI > `GP_KNIFE_RSI_HIGH=80`, alta > 3 ATR) para SELL. Em tendência forte contra, **só entra com confirmação de reversão** (última vela fechada a favor e RSI virando); sem confirmação ⇒ bloqueia.
+7. **Comitê completo:** `core.evaluate_market_async(context=última linha de features, ...)` (RiskSentinel + Technical/OrderFlow/Sentiment/Macro/OnChain + ConsensusJudge). Entra **somente** se: sem veto do RiskSentinel, `direction` do comitê == direção do gatilho e `confidence ≥ GP_MIN_COMMITTEE_CONFIDENCE=0.70`.
+8. **Sinal:** `confidence`, `consensus_score` e `rationale` vêm do `TradeSignal` real do comitê (nada de constantes); `risk_dollars = (notional/preço) × distância do SL`. Saídas inalteradas: SL 1,0 ATR, TP1 1,2 ATR (50% + breakeven), TP2 2,5 ATR (`GP_*_ATR_MULT`).
+
+## E5.4 Exclusão de ativos tokenizados
+`GP_EXCLUDED_BASE_ASSETS` (topo do script, casamento por ativo-base exato após remover USDT/USDC/USD/PERP): SKHYNIX, SKHY, SAMSUNG, KORU, SOXL, SOXS, TQQQ/SQQQ/SPXL/SPXS/UVXY, TSLA, NVDA, AAPL, MSFT, GOOGL/GOOG, AMZN, META, NFLX, AMD, INTC, COIN, MSTR, HOOD, PLTR, BABA, TSM, SPY, QQQ, IWM, GLD, SLV, USO. Motivo: perps TradFi têm sessão/gaps e liquidez fora do pregão, fora da hipótese de dinâmica cripto 24/7. Editar a lista = mudança de universo (reinicia o relógio).
+
+## E5.6 Lote = MARGEM; alavancagem decidida pelo Smart Trader
+- **Lote** = margem (capital alocado) por trade = `simulation_settings.paper_lot_usd` (padrão **US$ 100**, válido 10–1000; lido via `sync_settings_from_db` em tempo real). Vale para GOLDEN_POT, SCALP e DIRECTIONAL/SWING (substitui 1200/1500/risco-1%-de-10k). `notional = margem × alavancagem`; margem = `min(lote, margem livre×0,95, cap do saldo, position_size/alavancagem)`. Cotas diárias e `max_concurrent_positions` **não** foram alterados.
+- **Alavancagem não é configurável pelo usuário** (`leverage_policy.decide_leverage`, teto duro `MAX_LEVERAGE=5`, também reforçado no engine: clamp 1..5 em passos de 0,5). Usa a confiança **real** do comitê:
+
+| Confiança | Alavancagem base |
+|---|---|
+| < 0,60 | 1x |
+| 0,60–0,70 | 2x |
+| 0,70–0,80 | 3x |
+| 0,80–0,90 | 4x |
+| ≥ 0,90 | 5x |
+
+  −1 degrau se ATR% ≥ 3% (volatilidade extrema); −1 degrau se a entrada é contra a tendência (`sma_200`); 1x forçado com veto ou símbolo sem histórico/baixa liquidez (volume 24h < US$ 50M, `GP_LOW_LIQUIDITY_USD`). SCALP padrão (sem comitê) usa 1x.
+- **Liquidação:** preço aproximado LONG `entry×(1−1/lev+0,005)`, SHORT `entry×(1+1/lev−0,005)` (manutenção 0,5%); fechamento `LIQUIDATION` se tocado. O engine **garante SL antes da liquidação** (senão reduz a alavancagem em 0,5). PnL e taxas sobre o notional; `margin_used = Σ notional/lev`; teto de margem 85% mantido; funding ignorado como antes. `PaperPosition.leverage` persistido (migração `ADD COLUMN`, default 1.0) e restaurado.
+- **Expectância:** taxas e slippage são proporcionais ao notional, logo a expectância em % do notional **não muda** com lote ou alavancagem. **Não há evidência de que alavancar melhore o resultado**: amplifica ganhos e perdas igualmente (e adiciona risco de liquidação); métricas de aprovação seguem em % do notional.
+- **Amostra:** com cotas inalteradas (GP 3/dia, SCALP 5/dia) e 1 posição por par, o lote/alavancagem não aumenta o nº de trades; o teto efetivo continua ~8/dia (GP+SCALP) + swing. A v2 deve **reduzir** o nº de GPs (comitê+cooldown+1/vela), portanto N=100 para GOLDEN_POT tende a levar mais que 56 dias.
+
+## E5.7 Reinício do piloto
+Mudanças de regra (GP v2), de universo (E5.4) e de tamanho/alavancagem (E5.6) reiniciam o relógio de aprovação; o ledger anterior (incluindo GP v1) permanece contado para **refutação** (E4.6 item 8). `trial_log.csv` +1 (nova versão de GOLDEN_POT).
+

@@ -1025,6 +1025,7 @@ def api_get_simulation_settings():
         "scalp_rsi_oversold": 35.0,
         "scalp_rsi_overbought": 65.0,
         "scalp_volume_z": 0.2,
+        "paper_lot_usd": 100.0,
         "daily_golden_pots_count": 0,
         "daily_scalps_count": 0,
     }
@@ -1037,7 +1038,7 @@ def api_get_simulation_settings():
                 for k, v in cur.fetchall():
                     if k in ("max_daily_golden_pots", "max_daily_scalps", "max_concurrent_positions"):
                         defaults[k] = int(v)
-                    elif k in ("scalp_vwap_dev_pct", "scalp_rsi_oversold", "scalp_rsi_overbought", "scalp_volume_z", "max_margin_utilization_pct"):
+                    elif k in ("scalp_vwap_dev_pct", "scalp_rsi_oversold", "scalp_rsi_overbought", "scalp_volume_z", "max_margin_utilization_pct", "paper_lot_usd"):
                         defaults[k] = float(v)
                     else:
                         defaults[k] = v
@@ -1070,6 +1071,7 @@ def api_get_simulation_settings():
     except Exception as e:
         defaults["error"] = str(e)
 
+    defaults["leverage_policy"] = "Smart Trader (confiança do mercado), máximo 5x (piloto) — somente leitura"
     return jsonify(defaults)
 
 
@@ -1101,6 +1103,21 @@ def api_update_simulation_settings():
             to_update["scalp_rsi_oversold"] = "42.0"
             to_update["scalp_rsi_overbought"] = "58.0"
             to_update["scalp_volume_z"] = "-0.5"
+
+    # Alavancagem é decidida pelo Smart Trader: qualquer "leverage" enviado é ignorado.
+    if "paper_lot_usd" in data and data["paper_lot_usd"] is not None:
+        raw_lot = data["paper_lot_usd"]
+        try:
+            if isinstance(raw_lot, bool):
+                raise ValueError
+            lot = float(raw_lot)
+            if lot != lot or lot in (float("inf"), float("-inf")):
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Tamanho do lote inválido: informe um número entre US$ 10 e US$ 1000."}), 400
+        if lot < 10.0 or lot > 1000.0:
+            return jsonify({"status": "error", "message": "Tamanho do lote fora da faixa permitida: deve estar entre US$ 10 e US$ 1000."}), 400
+        to_update["paper_lot_usd"] = str(lot)
 
     for k in ("max_daily_golden_pots", "max_daily_scalps", "max_concurrent_positions", "max_margin_utilization_pct",
               "scalp_vwap_dev_pct", "scalp_rsi_oversold", "scalp_rsi_overbought", "scalp_volume_z"):
@@ -1279,24 +1296,147 @@ def api_paper_trading_status():
     return jsonify(default_resp)
 
 
-@app.route("/api/paper-trading/positions", methods=["GET"])
-def api_paper_trading_positions():
-    """Retorna posições atualmente abertas e histórico recente de fechadas."""
-    positions = []
+PAPER_INITIAL_CAPITAL = 10000.0
+
+
+def _to_ms(ts: Any) -> int:
+    """Normaliza timestamps (s ou ms, UTC) para ms UTC. Retorna 0 se inválido."""
+    try:
+        t = int(float(ts))
+    except (TypeError, ValueError):
+        return 0
+    if t <= 0:
+        return 0
+    return t if t > 100000000000 else t * 1000
+
+
+def _side_sign(side: Any) -> float:
+    return -1.0 if str(side or "").upper() == "SHORT" else 1.0
+
+
+def _enrich_position(pos: Dict[str, Any], close_info: Optional[Dict[str, Any]], now_ms: int) -> Dict[str, Any]:
+    """Acrescenta timestamps em ms UTC, margem/alavancagem (fallback 1x) e performance em %."""
+    entry = float(pos.get("entry_price") or 0.0)
+    status = str(pos.get("status") or "").upper()
+    try:
+        lev = float(pos.get("leverage") or 0.0)
+    except (TypeError, ValueError):
+        lev = 0.0
+    lev_estimated = lev < 1.0
+    lev = 1.0 if lev_estimated else lev
+    init_qty = float(pos.get("initial_quantity") or 0.0) or float(pos.get("quantity") or 0.0)
+    init_notional = init_qty * entry if entry > 0 else float(pos.get("notional") or 0.0)
+    try:
+        margin_raw = float(pos.get("margin")) if pos.get("margin") not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        margin_raw = 0.0
+    margin_initial = margin_raw if margin_raw > 0 else init_notional / lev
+    pos["leverage_effective"] = lev
+    pos["margin_effective"] = round(margin_initial, 4)
+    pos["margin_estimated"] = bool(lev_estimated or margin_raw <= 0)
+    opened_ms = _to_ms(pos.get("entry_timestamp"))
+    pos["opened_at_ms"] = opened_ms
+    sign = _side_sign(pos.get("side"))
+    if status == "OPEN":
+        cur_price = float(pos.get("current_price") or 0.0)
+        remaining_margin = (float(pos.get("quantity") or 0.0) * entry / lev) if entry > 0 else margin_initial
+        unreal = float(pos.get("unrealized_pnl") or 0.0)
+        pos["price_change_pct"] = round(sign * (cur_price - entry) / entry * 100.0, 4) if entry > 0 and cur_price > 0 else 0.0
+        pos["roi_pct"] = round(unreal / remaining_margin * 100.0, 4) if remaining_margin > 0 else 0.0
+        pos["open_for_s"] = max(0, int((now_ms - opened_ms) / 1000)) if opened_ms else None
+    else:
+        closed_ms = int((close_info or {}).get("closed_at_ms") or 0)
+        exit_price = float((close_info or {}).get("exit_price") or pos.get("current_price") or 0.0)
+        net = float(pos.get("realized_pnl") or 0.0)
+        pos["closed_at_ms"] = closed_ms or None
+        pos["exit_price"] = exit_price
+        pos["duration_s"] = max(0, int((closed_ms - opened_ms) / 1000)) if closed_ms and opened_ms else None
+        pos["net_pnl"] = net
+        pos["net_pnl_pct_margin"] = round(net / margin_initial * 100.0, 4) if margin_initial > 0 else 0.0
+        pos["price_change_pct"] = round(sign * (exit_price - entry) / entry * 100.0, 4) if entry > 0 and exit_price > 0 else 0.0
+    return pos
+
+
+def _query_paper_positions(which: str, with_summary: bool = False):
+    """Lê paper_positions (estado atual do engine, NÃO o ledger de eventos). which: open|closed|all.
+
+    Retorna lista (e, com with_summary, (lista, resumo)). Resumo cobre TODAS as linhas do filtro
+    (não só as 50 exibidas); win rate é por position_id.
+    """
+    positions: list = []
+    summary = {"count": 0, "total_pnl": 0.0, "total_pnl_pct_initial": 0.0, "wins": 0, "losses": 0, "win_rate_pct": 0.0}
     if os.path.exists(DB_PATH):
         try:
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
             with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
                 con.row_factory = sqlite3.Row
                 cur = con.cursor()
-                cur.execute("SELECT * FROM paper_positions ORDER BY entry_timestamp DESC LIMIT 50")
-                positions = [dict(r) for r in cur.fetchall()]
+                if which == "open":
+                    # Posição reduzida pelo TP1 segue OPEN com quantity remanescente (>0).
+                    cur.execute("SELECT * FROM paper_positions WHERE UPPER(status) = 'OPEN' AND quantity > 0 "
+                                "ORDER BY entry_timestamp DESC")
+                elif which == "closed":
+                    cur.execute("SELECT * FROM paper_positions WHERE UPPER(status) != 'OPEN' "
+                                "ORDER BY entry_timestamp DESC")
+                else:
+                    cur.execute("SELECT * FROM paper_positions ORDER BY entry_timestamp DESC")
+                rows = [dict(r) for r in cur.fetchall()]
+
+                close_map: Dict[str, Dict[str, Any]] = {}
+                if any(str(r.get("status") or "").upper() != "OPEN" for r in rows):
+                    try:
+                        cur.execute("SELECT position_id, action, price, timestamp FROM paper_trades ORDER BY timestamp ASC")
+                        for t in cur.fetchall():
+                            if str(t["action"] or "").upper().startswith("OPEN"):
+                                continue
+                            close_map[t["position_id"]] = {"closed_at_ms": _to_ms(t["timestamp"]), "exit_price": t["price"]}
+                    except sqlite3.OperationalError:
+                        close_map = {}
+
+                now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                for r in rows:
+                    _enrich_position(r, close_map.get(r.get("position_id")), now_ms)
+                    st_open = str(r.get("status") or "").upper() == "OPEN"
+                    pnl = float(r.get("unrealized_pnl") or 0.0) if st_open else float(r.get("net_pnl") or 0.0)
+                    summary["total_pnl"] += pnl
+                    summary["wins" if pnl > 0 else "losses"] += 1
+                summary["count"] = len(rows)
+                summary["total_pnl"] = round(summary["total_pnl"], 4)
+                summary["total_pnl_pct_initial"] = round(summary["total_pnl"] / PAPER_INITIAL_CAPITAL * 100.0, 4)
+                summary["win_rate_pct"] = round(summary["wins"] / len(rows) * 100.0, 2) if rows else 0.0
+                positions = rows[:50]
         except sqlite3.OperationalError:
             positions = []
         except Exception as e:
             logger.warning(f"Erro ao buscar paper_positions: {e}")
+    return (positions, summary) if with_summary else positions
 
-    return jsonify({"positions": positions, "total": len(positions)})
+
+def _positions_response(which: str):
+    positions, summary = _query_paper_positions(which, with_summary=True)
+    return jsonify({"positions": positions, "total": len(positions), "summary": summary,
+                    "initial_capital": PAPER_INITIAL_CAPITAL})
+
+
+@app.route("/api/paper-trading/positions/open", methods=["GET"])
+def api_paper_trading_positions_open():
+    """Somente posições realmente abertas (status OPEN), uma por position_id."""
+    return _positions_response("open")
+
+
+@app.route("/api/paper-trading/positions/closed", methods=["GET"])
+def api_paper_trading_positions_closed():
+    """Somente posições encerradas (histórico), uma linha por position_id."""
+    return _positions_response("closed")
+
+
+@app.route("/api/paper-trading/positions", methods=["GET"])
+def api_paper_trading_positions():
+    """Posições de simulação. Padrão: somente ABERTAS. Use ?status=closed|all para outros estados."""
+    which = (request.args.get("status") or "open").strip().lower()
+    if which not in ("open", "closed", "all"):
+        which = "open"
+    return _positions_response(which)
 
 
 @app.route("/api/paper-trading/trades", methods=["GET"])
@@ -1311,6 +1451,8 @@ def api_paper_trading_trades():
                 cur = con.cursor()
                 cur.execute("SELECT * FROM paper_trades ORDER BY timestamp DESC LIMIT 100")
                 trades = [dict(r) for r in cur.fetchall()]
+                for t in trades:
+                    t["timestamp_ms"] = _to_ms(t.get("timestamp"))
         except sqlite3.OperationalError:
             trades = []
         except Exception as e:

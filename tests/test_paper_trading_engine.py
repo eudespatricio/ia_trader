@@ -98,7 +98,7 @@ class TestOrderExecutionAndCosts:
         # Preço com slippage de 0.02%
         assert pos.entry_price == pytest.approx(60000.0 * 1.0002)
         # Taxa de 0.06% deduzida
-        expected_fee = 1000.0 * 0.0006
+        expected_fee = 100.0 * 0.0006  # lote padrão PAPER_LOT_USD=100 (margem) com 1x
         assert engine.total_fees_paid == pytest.approx(expected_fee)
         assert engine.balance == pytest.approx(10000.0 - expected_fee)
         assert len(engine.positions) == 1

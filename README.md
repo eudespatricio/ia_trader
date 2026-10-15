@@ -236,6 +236,7 @@ flowchart LR
 - Lookahead V1-V8 corrigidos; **V9 (trailing intrabarra no backtesting.py) pendente**. Bugs de execução e de paper trading corrigidos (detalhes em [EVOLUTION_LOG.md](EVOLUTION_LOG.md) e [CHANGELOG.md](CHANGELOG.md)). Suíte atual: **273 testes passando**.
 - Ajustes de consenso propostos aguardam backtest A/B.
 - **Alfa NÃO demonstrado.** A estratégia em paper (GOLDEN_POT/scalp/swing) não é S1/S2/S3 do Parecer. Piloto pré-reset: REPROVADO (35 trades, expectância bruta -0,995%, viesado). Piloto limpo a partir do reset de 2026-10-14/15, parâmetros congelados por >= 56 dias. Critérios: [docs/CRITERIOS_APROVACAO_PILOTO.md](docs/CRITERIOS_APROVACAO_PILOTO.md); relatório: `python scripts/pilot_report.py`.
+- **GOLDEN_POT v2 (2026-10-15, ADDENDUM E5):** entrada exige o comitê completo sem veto, cooldown/1-por-vela, filtro de faca-caindo e exclusão de ativos tokenizados; lote = margem `paper_lot_usd` (US$100) com alavancagem ≤5x decidida pelo Smart Trader; piloto reiniciado (E4 invalidado para GOLDEN_POT).
 - Infra: `data/db_maintenance.py` (checkpoint WAL; purge em dry-run), supervisor com healthcheck 5s/3 falhas/re-adoção de PID, `logs/flask.log`.
 
 ### Conectar e enviar ao Git

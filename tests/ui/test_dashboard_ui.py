@@ -212,6 +212,30 @@ def test_modal_fits_viewport_mobile(make_page):
     p.page.screenshot(path=os.path.join(SHOT_DIR, "modal_mobile_390x844.png"))
 
 
+def test_limits_modal_lot_field_validation_and_mobile(make_page):
+    p = make_page(viewport=(390, 844))
+    p.page.evaluate("openLimitsModal()")
+    p.page.wait_for_selector("#inputPaperLotUsd", state="visible")
+    assert "máximo 5x" in p.page.inner_text("#leverageReadOnlyInfo")
+    assert "A11" in p.page.inner_text("#pilotChangeWarning")
+    assert p.page.locator("input[id*=everage]").count() == 0
+    p.page.fill("#inputPaperLotUsd", "5")
+    p.page.evaluate("document.getElementById('limitsForm').requestSubmit()")
+    p.page.wait_for_timeout(300)
+    assert "entre US$ 10 e US$ 1000" in p.page.inner_text("#errPaperLotUsd")
+    over = p.page.evaluate("document.documentElement.scrollWidth > innerWidth")
+    assert not over, "overflow horizontal com modal de limites aberto"
+    box = p.page.evaluate("""() => { const r = document.querySelector('#limitsModal > div').getBoundingClientRect();
+        return {l: r.left, r: r.right, w: innerWidth}; }""")
+    assert box["l"] >= 0 and box["r"] <= box["w"]
+
+
+def test_fmt_lev_margin_handles_missing(make_page):
+    p = make_page()
+    out = p.page.evaluate("[fmtLevMargin({}), fmtLevMargin({leverage: 3, margin: 100}), fmtLevMargin(null)]")
+    assert out == ["— / —", "3x / $100.00", "— / —"]
+
+
 # ----------------------------------------------------------------- estados vazios / erro
 def test_empty_state_symbol_without_candles(make_page):
     p = make_page()
@@ -323,3 +347,129 @@ def test_responsive_viewport(make_page, name):
     cw = p.page.evaluate("(() => { const c = document.getElementById('chartContainer').getBoundingClientRect(); const s = document.querySelector('#chartContainer .main-svg').getBoundingClientRect(); return [c.width, s.width]; })()")
     assert cw[1] <= cw[0] + 1 and cw[1] > cw[0] * 0.9, cw
     assert p.console_errors == [] and p.page_errors == []
+
+
+# ----------------------------------------------------------------- posições abertas / histórico
+def _pos_routes(state):
+    import time as _t
+    now = int(_t.time() * 1000)
+
+    def open_handler(route):
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "positions": state["open"], "total": len(state["open"]), "initial_capital": 10000.0,
+            "summary": {"count": len(state["open"]), "total_pnl": 12.5, "total_pnl_pct_initial": 0.125,
+                        "wins": 1, "losses": 0, "win_rate_pct": 100.0}}))
+
+    def closed_handler(route):
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "positions": state["closed"], "total": len(state["closed"]), "initial_capital": 10000.0,
+            "summary": {"count": len(state["closed"]), "total_pnl": -3.0, "total_pnl_pct_initial": -0.03,
+                        "wins": 0, "losses": 1, "win_rate_pct": 0.0}}))
+    return [("**/api/paper-trading/positions/open", open_handler),
+            ("**/api/paper-trading/positions/closed", closed_handler)]
+
+
+def _state():
+    import time as _t
+    now = int(_t.time() * 1000)
+    base = dict(status="OPEN", entry_timestamp=now - 600_000, opened_at_ms=now - 600_000, open_for_s=600)
+    return {
+        "open": [
+            dict(base, position_id="P1", symbol="BTCUSDT", side="LONG", strategy_type="SCALP", entry_price=65000.0,
+                 current_price=65100.0, quantity=0.01, notional=650.0, stop_loss=64500.0, take_profit=66000.0,
+                 tp1_price=65500.0, tp2_price=66000.0, unrealized_pnl=1.0, leverage=3, margin=216.67,
+                 leverage_effective=3, margin_effective=216.67, roi_pct=0.46, price_change_pct=0.15),
+            # sem leverage/margin: não pode quebrar
+            dict(base, position_id="P2", symbol="ETHUSDT", side="SHORT", strategy_type="SWING", entry_price=3200.0,
+                 current_price=3190.0, quantity=0.1, notional=320.0, stop_loss=3300.0, take_profit=3000.0,
+                 tp1_price=3100.0, tp2_price=3000.0, unrealized_pnl=1.0),
+        ],
+        "closed": [dict(status="CLOSED", position_id="C1", symbol="BTCUSDT", side="LONG", strategy_type="SCALP",
+                        entry_price=65000.0, exit_price=64900.0, quantity=0.01, notional=650.0, realized_pnl=-3.0,
+                        opened_at_ms=now_ms_ago(7200), closed_at_ms=now_ms_ago(3600), duration_s=3600,
+                        net_pnl=-3.0, net_pnl_pct_margin=-1.4, price_change_pct=-0.15,
+                        leverage_effective=3, margin_effective=216.67)],
+    }
+
+
+def now_ms_ago(sec):
+    import time as _t
+    return int((_t.time() - sec) * 1000)
+
+
+def test_open_list_only_open_with_datetime_and_percent(make_page):
+    st = _state()
+    p = make_page(routes=_pos_routes(st))
+    p.page.wait_for_selector("#paperPositionsTableBody tr[data-position-id]")
+    rows = p.page.locator("#paperPositionsTableBody tr[data-position-id]")
+    assert rows.count() == 2
+    txt = p.page.inner_text("#paperPositionsTableBody")
+    import re
+    assert re.search(r"\d{2}/\d{2} \d{2}:\d{2}:\d{2}", txt), "falta data/hora dd/mm HH:MM:SS"
+    assert "ROI" in txt and "%" in txt and "3x" in txt
+    assert "undefined" not in txt and "NaN" not in txt
+    assert "Abertas" in p.page.inner_text("#positionsSummary") and "Win rate" in p.page.inner_text("#positionsSummary")
+    assert p.page_errors == [], p.page_errors
+
+
+def test_closed_history_has_close_time_duration_and_summary(make_page):
+    st = _state()
+    p = make_page(routes=_pos_routes(st))
+    p.page.evaluate("switchPaperTab('trades')")
+    p.page.wait_for_selector("#paperTradesTableBody tr[data-symbol]")
+    txt = p.page.inner_text("#paperTradesTableBody")
+    assert "FECHAMENTO" in txt.upper() and "DURAÇÃO" in txt.upper() and "1h 00m" in txt and "-1.40%" in txt
+    assert "Fechadas" in p.page.inner_text("#tradesSummary")
+    assert "Win rate" in p.page.inner_text("#tradesSummary")
+
+
+def test_click_open_position_projects_live_lines_and_clears_on_close(make_page):
+    st = _state()
+    p = make_page(routes=_pos_routes(st))
+    p.page.wait_for_selector("#paperPositionsTableBody tr[data-position-id='P1']")
+    p.page.click("#paperPositionsTableBody tr[data-position-id='P1']")
+    p.page.wait_for_function("document.getElementById('chartContainer').layout && (document.getElementById('chartContainer').layout.annotations||[]).length >= 4", timeout=15000)
+    info = p.page.evaluate("""() => ({tf: currentTimeframe, sym: currentSymbol,
+        ann: document.getElementById('chartContainer').layout.annotations.map(a => a.text),
+        shapes: document.getElementById('chartContainer').layout.shapes.length,
+        markers: document.getElementById('chartContainer').data.filter(t => t.mode === 'markers').length,
+        banner: !document.getElementById('chartOrderOverlayBanner').classList.contains('hidden')})""")
+    assert info["tf"] == "15m" and info["sym"] == "BTCUSDT"
+    joined = " ".join(info["ann"])
+    for k in ("ENTRY LONG", "SL:", "TP1:", "TP2:"):
+        assert k in joined, joined
+    assert info["shapes"] >= 4 and info["banner"] and info["markers"] == 1
+    assert "ring-cyan" in p.page.get_attribute("#paperPositionsTableBody tr[data-position-id='P1']", "class")
+    # posição fecha -> linhas removidas + aviso
+    st["open"] = [x for x in st["open"] if x["position_id"] != "P1"]
+    p.page.evaluate("loadPaperTradingData()")
+    p.page.wait_for_function("(document.getElementById('chartContainer').layout.shapes||[]).length === 0", timeout=10000)
+    assert "encerrada" in p.page.inner_text("#toastContainer")
+    assert "hidden" in p.page.get_attribute("#chartOrderOverlayBanner", "class")
+    assert p.page_errors == [], p.page_errors
+
+
+def test_swing_position_switches_to_1h_and_clear_selection(make_page):
+    st = _state()
+    p = make_page(routes=_pos_routes(st))
+    p.page.wait_for_selector("#paperPositionsTableBody tr[data-position-id='P2']")
+    p.page.evaluate("setTimeframe('15m')")
+    p.page.wait_for_timeout(800)
+    p.page.click("#paperPositionsTableBody tr[data-position-id='P2']")
+    p.page.wait_for_function("currentTimeframe === '1h' && currentSymbol === 'ETHUSDT'", timeout=10000)
+    p.page.wait_for_function("(document.getElementById('chartContainer').layout.annotations||[]).length >= 3", timeout=15000)
+    p.page.click("#chartOrderOverlayBanner button")
+    p.page.wait_for_function("(document.getElementById('chartContainer').layout.shapes||[]).length === 0", timeout=10000)
+    assert "ring-cyan" not in p.page.get_attribute("#paperPositionsTableBody tr[data-position-id='P2']", "class")
+
+
+@pytest.mark.parametrize("name", ["mobile_small", "mobile"] if False else list(VIEWPORTS))
+def test_position_cards_no_horizontal_overflow(make_page, name):
+    w, h = VIEWPORTS[name]
+    p = make_page(viewport=(w, h), routes=_pos_routes(_state()))
+    p.page.wait_for_selector("#paperPositionsTableBody tr[data-position-id]")
+    over = p.page.evaluate("document.documentElement.scrollWidth > innerWidth")
+    assert not over, f"overflow horizontal em {name}"
+    p.page.evaluate("switchPaperTab('trades')")
+    p.page.wait_for_selector("#paperTradesTableBody tr[data-symbol]")
+    assert not p.page.evaluate("document.documentElement.scrollWidth > innerWidth")

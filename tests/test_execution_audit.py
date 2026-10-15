@@ -90,7 +90,9 @@ def test_exposure_never_exceeds_margin_cap_with_many_orders(engine):
         s2 = _sig(f"GP{i}USDT", "SELL", 100.0, size=1200.0)
         engine.execute_scalp_signal(s2, 100.0, DAY1)
         assert engine.margin_used <= engine.balance * engine.max_margin_utilization_pct + 1e-6
-    assert opened < 11
+    # Com lote padrão PAPER_LOT_USD=100 cada ordem é limitada a $100 (antes 1200 estourava a margem em ~11)
+    assert opened <= engine.max_concurrent_positions
+    assert engine.margin_used <= 100.0 * engine.max_concurrent_positions + 1e-6
 
 
 def test_carry_allocation_respects_margin_cap(engine):

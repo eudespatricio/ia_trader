@@ -36,6 +36,16 @@ import pandas as pd
 
 from core import TradingCore
 from signal_generator import TradeSignal
+from leverage_policy import MAX_LEVERAGE, clamp_leverage
+
+# Lote padrão = MARGEM (capital alocado, USD) por trade em TODA ordem do paper trading
+# (GP, Scalp, Directional); notional = lote x alavancagem (decidida pelo Smart Trader, <= MAX_LEVERAGE).
+# Configurável em runtime via simulation_settings["paper_lot_usd"] (validado em [MIN, MAX]).
+# Taxas/slippage são proporcionais ao notional -> expectância em % independe do lote e da alavancagem.
+PAPER_LOT_USD = 100.0
+PAPER_LOT_MIN_USD = 10.0
+PAPER_LOT_MAX_USD = 1000.0
+MAINTENANCE_MARGIN_PCT = 0.005   # 0.5% de margem de manutenção (preço de liquidação aproximado)
 
 logger = logging.getLogger("ia_trader.smart_trade")
 if not logger.handlers:
@@ -74,9 +84,32 @@ class PaperPosition:
     tp1_hit: bool = False
     tp2_price: float = 0.0
     initial_quantity: float = 0.0
+    leverage: float = 1.0
+
+    @property
+    def margin(self) -> float:
+        """Margem (capital alocado) = notional / alavancagem."""
+        lev = self.leverage if self.leverage and self.leverage >= 1.0 else 1.0
+        return self.notional / lev
+
+    @property
+    def liquidation_price(self) -> float:
+        """Preço de liquidação aproximado (0.0 se sem alavancagem ou não-direcional)."""
+        if self.leverage is None or self.leverage <= 1.0 or self.side not in ("LONG", "SHORT"):
+            return 0.0
+        return PaperPosition.calc_liquidation_price(self.side, self.entry_price, self.leverage)
+
+    @staticmethod
+    def calc_liquidation_price(side: str, entry: float, leverage: float) -> float:
+        if side == "LONG":
+            return entry * (1.0 - 1.0 / leverage + MAINTENANCE_MARGIN_PCT)
+        return entry * (1.0 + 1.0 / leverage - MAINTENANCE_MARGIN_PCT)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d["margin"] = self.margin
+        d["liquidation_price"] = self.liquidation_price
+        return d
 
 
 
@@ -159,6 +192,8 @@ class PaperTradingEngine:
         self.max_concurrent_positions: Optional[int] = max_concurrent_positions
         self.max_margin_utilization_pct: float = 0.85 if max_margin_utilization_pct is None else float(max_margin_utilization_pct)
 
+        self.paper_lot_usd: float = PAPER_LOT_USD
+
         self._lock = threading.RLock()
 
         # Otimização: Compressão inteligente de snapshots de portfólio no SQLite
@@ -232,6 +267,7 @@ class PaperTradingEngine:
                 ("tp1_hit", "INTEGER DEFAULT 0"),
                 ("tp2_price", "REAL DEFAULT 0.0"),
                 ("initial_quantity", "REAL DEFAULT 0.0"),
+                ("leverage", "REAL DEFAULT 1.0"),
             ]:
                 try:
                     con.execute(f"ALTER TABLE paper_positions ADD COLUMN {col} {col_type}")
@@ -287,6 +323,8 @@ class PaperTradingEngine:
                     ("reset_daily_quotas", "0"),
                 ]
                 cur.executemany("INSERT OR IGNORE INTO simulation_settings (key, value) VALUES (?, ?)", defaults)
+            cur.execute("INSERT OR IGNORE INTO simulation_settings (key, value) VALUES ('paper_lot_usd', ?)",
+                        (str(PAPER_LOT_USD),))
             con.commit()
 
     # =========================================================================
@@ -371,7 +409,7 @@ class PaperTradingEngine:
                 cur.execute(
                     "SELECT position_id, symbol, side, entry_price, current_price, quantity, notional, stop_loss, "
                     "take_profit, unrealized_pnl, realized_pnl, funding_collected, fees_paid, entry_timestamp, "
-                    "strategy_type, status, tp1_price, tp1_hit, tp2_price, initial_quantity "
+                    "strategy_type, status, tp1_price, tp1_hit, tp2_price, initial_quantity, COALESCE(leverage, 1.0) "
                     "FROM paper_positions WHERE rowid > ? ORDER BY rowid", (p_epoch,))
                 pos_rows = cur.fetchall()
 
@@ -408,7 +446,7 @@ class PaperTradingEngine:
                     unrealized_pnl=f(r[9]), realized_pnl=f(r[10]), funding_collected=f(r[11]),
                     fees_paid=f(r[12]), entry_timestamp=int(r[13] or 0), strategy_type=r[14] or "DIRECTIONAL",
                     status=r[15], tp1_price=f(r[16]), tp1_hit=bool(r[17]), tp2_price=f(r[18]),
-                    initial_quantity=f(r[19]),
+                    initial_quantity=f(r[19]), leverage=max(1.0, f(r[20])),
                 )
                 if pos.status == "OPEN":
                     open_pos[pos.position_id] = pos
@@ -463,6 +501,7 @@ class PaperTradingEngine:
             "scalp_rsi_oversold": 35.0,
             "scalp_rsi_overbought": 65.0,
             "scalp_volume_z": 0.2,
+            "paper_lot_usd": self.paper_lot_usd,
         }
         try:
             with self._get_connection() as con:
@@ -471,7 +510,7 @@ class PaperTradingEngine:
                 for k, v in cur.fetchall():
                     if k in ("max_daily_golden_pots", "max_daily_scalps", "max_concurrent_positions"):
                         defaults[k] = int(v)
-                    elif k in ("scalp_vwap_dev_pct", "scalp_rsi_oversold", "scalp_rsi_overbought", "scalp_volume_z", "max_margin_utilization_pct"):
+                    elif k in ("scalp_vwap_dev_pct", "scalp_rsi_oversold", "scalp_rsi_overbought", "scalp_volume_z", "max_margin_utilization_pct", "paper_lot_usd"):
                         defaults[k] = float(v)
                     else:
                         defaults[k] = v
@@ -485,8 +524,20 @@ class PaperTradingEngine:
         defaults["open_positions_count"] = len([p for p in self.positions.values() if p.status == "OPEN"])
         return defaults
 
+    @staticmethod
+    def _valid_paper_lot(v: Any) -> Optional[float]:
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
+        if x != x or not (PAPER_LOT_MIN_USD <= x <= PAPER_LOT_MAX_USD):
+            return None
+        return x
+
     def update_simulation_settings(self, settings: Dict[str, Any], reset_quotas: bool = False) -> Dict[str, Any]:
         """Atualiza configurações de simulação no SQLite e propaga aos parâmetros internos."""
+        if "paper_lot_usd" in settings and self._valid_paper_lot(settings["paper_lot_usd"]) is None:
+            raise ValueError(f"paper_lot_usd deve estar entre {PAPER_LOT_MIN_USD:g} e {PAPER_LOT_MAX_USD:g} USD.")
         with self._lock:
             with self._get_connection() as con:
                 cur = con.cursor()
@@ -536,6 +587,10 @@ class PaperTradingEngine:
                         self.max_margin_utilization_pct = float(settings_dict["max_margin_utilization_pct"])
                     if "operation_mode" in settings_dict:
                         self.operation_mode = settings_dict["operation_mode"]
+                    if "paper_lot_usd" in settings_dict:
+                        lot = self._valid_paper_lot(settings_dict["paper_lot_usd"])
+                        if lot is not None:
+                            self.paper_lot_usd = lot
 
                     return settings_dict
             except Exception as e:
@@ -553,7 +608,7 @@ class PaperTradingEngine:
     def margin_used(self) -> float:
         """Margem comprometida em posições abertas."""
         with self._lock:
-            return sum(p.notional for p in self.positions.values() if p.status == "OPEN")
+            return sum(p.margin for p in self.positions.values() if p.status == "OPEN")
 
     @property
     def available_margin(self) -> float:
@@ -732,13 +787,37 @@ class PaperTradingEngine:
     # ROTEAMENTO E EXECUÇÃO DE ORDENS SIMULADAS
     # =========================================================================
 
+    def _resolve_leverage(self, side: str, exec_price: float, sl_price: float, requested: float) -> float:
+        """Clamp 1..MAX_LEVERAGE (passos de 0.5) e garante SL ANTES da liquidação (senão reduz a alavancagem)."""
+        lev = clamp_leverage(requested, MAX_LEVERAGE)
+        while lev > 1.0:
+            liq = PaperPosition.calc_liquidation_price(side, exec_price, lev)
+            sl_ok = (sl_price > liq) if side == "LONG" else (sl_price < liq)
+            if sl_ok:
+                break
+            lev -= 0.5
+        return max(1.0, lev)
+
+    def _lot_margin(self, signal: TradeSignal, lev_req: float, balance_cap_pct: float) -> Tuple[float, float]:
+        """Margem do trade = min(lote, margem livre*0.95, cap do saldo, position_size(notional)/alavancagem)."""
+        max_margin = self.balance * self.max_margin_utilization_pct
+        free_margin = max(0.0, max_margin - self.margin_used)
+        margin = min(self.paper_lot_usd, free_margin * 0.95, self.balance * balance_cap_pct,
+                     signal.position_size / lev_req)
+        return margin, free_margin
+
     def execute_directional_signal(
         self,
         signal: TradeSignal,
         current_price: float,
         timestamp: int,
+        leverage: float = 1.0,
     ) -> Optional[PaperPosition]:
-        """Abre ou gerencia uma posição direcional a partir de um sinal do comitê."""
+        """Abre ou gerencia uma posição direcional a partir de um sinal do comitê.
+
+        `leverage` é decidida pelo Smart Trader (leverage_policy); aqui só é clampada (1..5) e
+        reduzida se o SL ficar além do preço de liquidação. margem = lote; notional = margem x lev.
+        """
         with self._lock:
             if signal.direction not in ["BUY", "SELL"] or signal.is_vetoed:
                 return None
@@ -757,19 +836,21 @@ class PaperTradingEngine:
 
             # Dimensionamento de lote com limite estrito de margem livre
             max_margin = self.balance * self.max_margin_utilization_pct
-            free_margin = max(0.0, max_margin - self.margin_used)
-            notional = min(signal.position_size, free_margin, self.balance * 0.5)
-            if notional < 10.0:  # Mínimo de $10 USD
+            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
+            margin, free_margin = self._lot_margin(signal, lev_req, 0.5)
+            if margin < 10.0:  # Mínimo de $10 USD de margem
                 logger.info(f"[{symbol}] Ordem Direcional Rejeitada: Margem livre insuficiente (${free_margin:,.2f}).")
                 return None
 
             side = "LONG" if signal.direction == "BUY" else "SHORT"
             slip = self.slippage_perp if side == "SHORT" else self.slippage_spot
             exec_price = current_price * (1.0 + slip) if side == "LONG" else current_price * (1.0 - slip)
+            lev = self._resolve_leverage(side, exec_price, signal.stop_loss, lev_req)
+            notional = margin * lev
             qty = notional / exec_price
             fee = notional * self.taker_fee
 
-            if (self.margin_used + notional + fee) > max_margin:
+            if (self.margin_used + margin + fee) > max_margin:
                 logger.info(f"[{symbol}] Ordem Direcional Rejeitada: Excede margem máxima permitida.")
                 return None
 
@@ -790,6 +871,7 @@ class PaperTradingEngine:
                 entry_timestamp=timestamp,
                 strategy_type="DIRECTIONAL",
                 status="OPEN",
+                leverage=lev,
             )
 
             trade = PaperTrade(
@@ -817,7 +899,7 @@ class PaperTradingEngine:
             self.positions[pos_id] = pos
             self.trade_history.append(trade)
 
-            logger.info(f"[{symbol}] Ordem Simulada {side} ABERTA @ ${exec_price:,.2f} | Qtd: {qty:.4f} | Risco: ${signal.risk_dollars:.2f}")
+            logger.info(f"[{symbol}] Ordem Simulada {side} ABERTA @ ${exec_price:,.2f} | Qtd: {qty:.4f} | Lev: {lev:g}x | Margem: ${margin:,.2f} | Risco: ${signal.risk_dollars:.2f}")
             return pos
 
     def execute_scalp_signal(
@@ -828,6 +910,7 @@ class PaperTradingEngine:
         tp1_atr_mult: float = 1.0,
         tp2_atr_mult: float = 1.8,
         sl_atr_mult: float = 0.9,
+        leverage: float = 1.0,
     ) -> Optional[PaperPosition]:
         """
         Executa um scalp intradiário cirúrgico (15m) com cota estrita de 2 a 5 trades por dia.
@@ -843,13 +926,13 @@ class PaperTradingEngine:
 
             # Dimensionamento de lote para scalp (máx 25% do saldo e respeitando margem livre)
             max_margin = self.balance * self.max_margin_utilization_pct
-            free_margin = max(0.0, max_margin - self.margin_used)
-            notional = min(signal.position_size, free_margin, self.balance * 0.25)
-            if notional < 10.0:
+            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
+            margin, free_margin = self._lot_margin(signal, lev_req, 0.25)
+            if margin < 10.0:
                 logger.info(f"[{signal.symbol}] Scalp Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
                 return None
 
-            can_exec, reason = self.can_execute_scalp(timestamp, notional=notional)
+            can_exec, reason = self.can_execute_scalp(timestamp, notional=margin)
             if not can_exec:
                 logger.info(f"[{signal.symbol}] Scalp Rejeitado: {reason}")
                 return None
@@ -868,12 +951,6 @@ class PaperTradingEngine:
             # Execução Maker para Day Trade (slippage mínimo 0.01%)
             maker_slip = 0.0001
             exec_price = current_price * (1.0 + maker_slip) if side == "LONG" else current_price * (1.0 - maker_slip)
-            qty = notional / exec_price
-            fee = notional * self.maker_fee  # Taxa Maker de 0.02%
-
-            if (self.margin_used + notional + fee) > max_margin:
-                logger.info(f"[{symbol}] Scalp Rejeitado: Excede margem máxima permitida.")
-                return None
 
             atr = signal.atr if signal.atr > 0 else (current_price * 0.005)
             if side == "LONG":
@@ -884,6 +961,15 @@ class PaperTradingEngine:
                 sl_price = exec_price + (sl_atr_mult * atr)
                 tp1_p = exec_price - (tp1_atr_mult * atr)
                 tp2_p = exec_price - (tp2_atr_mult * atr)
+
+            lev = self._resolve_leverage(side, exec_price, sl_price, lev_req)
+            notional = margin * lev
+            qty = notional / exec_price
+            fee = notional * self.maker_fee  # Taxa Maker de 0.02%
+
+            if (self.margin_used + margin + fee) > max_margin:
+                logger.info(f"[{symbol}] Scalp Rejeitado: Excede margem máxima permitida.")
+                return None
 
             pos_id = str(uuid.uuid4())[:8]
             pos = PaperPosition(
@@ -906,6 +992,7 @@ class PaperTradingEngine:
                 tp1_hit=False,
                 tp2_price=tp2_p,
                 initial_quantity=qty,
+                leverage=lev,
             )
 
             next_quota_num = self.daily_scalps_count + 1
@@ -947,6 +1034,7 @@ class PaperTradingEngine:
         tp1_atr_mult: float = 1.2,
         tp2_atr_mult: float = 2.5,
         sl_atr_mult: float = 1.0,
+        leverage: float = 1.0,
     ) -> Optional[PaperPosition]:
         """
         Executa operação originada de detecção do GoldenPotAgent (Golden Pot de Alta Convicção).
@@ -963,13 +1051,13 @@ class PaperTradingEngine:
 
             # Dimensionamento de lote para Golden Pot (máx 20% do saldo e respeitando margem livre)
             max_margin = self.balance * self.max_margin_utilization_pct
-            free_margin = max(0.0, max_margin - self.margin_used)
-            notional = min(signal.position_size, free_margin, self.balance * 0.20)
-            if notional < 10.0:
+            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
+            margin, free_margin = self._lot_margin(signal, lev_req, 0.20)
+            if margin < 10.0:
                 logger.info(f"[{signal.symbol}] Golden Pot Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
                 return None
 
-            can_exec, reason = self.can_execute_golden_pot(timestamp, notional=notional)
+            can_exec, reason = self.can_execute_golden_pot(timestamp, notional=margin)
             if not can_exec:
                 logger.info(f"[{signal.symbol}] Golden Pot Rejeitado: {reason}")
                 return None
@@ -988,12 +1076,6 @@ class PaperTradingEngine:
             # Execução Maker para Golden Pot (slippage mínimo 0.01%)
             maker_slip = 0.0001
             exec_price = current_price * (1.0 + maker_slip) if side == "LONG" else current_price * (1.0 - maker_slip)
-            qty = notional / exec_price
-            fee = notional * self.maker_fee  # Taxa Maker 0.02%
-
-            if (self.margin_used + notional + fee) > max_margin:
-                logger.info(f"[{symbol}] Golden Pot Rejeitado: Excede margem máxima permitida.")
-                return None
 
             atr = signal.atr if signal.atr > 0 else (current_price * 0.008)
             if side == "LONG":
@@ -1004,6 +1086,15 @@ class PaperTradingEngine:
                 sl_price = exec_price + (sl_atr_mult * atr)
                 tp1_p = exec_price - (tp1_atr_mult * atr)
                 tp2_p = exec_price - (tp2_atr_mult * atr)
+
+            lev = self._resolve_leverage(side, exec_price, sl_price, lev_req)
+            notional = margin * lev
+            qty = notional / exec_price
+            fee = notional * self.maker_fee  # Taxa Maker 0.02%
+
+            if (self.margin_used + margin + fee) > max_margin:
+                logger.info(f"[{symbol}] Golden Pot Rejeitado: Excede margem máxima permitida.")
+                return None
 
             pos_id = str(uuid.uuid4())[:8]
             pos = PaperPosition(
@@ -1026,6 +1117,7 @@ class PaperTradingEngine:
                 tp1_hit=False,
                 tp2_price=tp2_p,
                 initial_quantity=qty,
+                leverage=lev,
             )
 
             next_quota_num = self.daily_golden_pots_count + 1
@@ -1305,6 +1397,17 @@ class PaperTradingEngine:
             pos.highest_price = max(pos.highest_price, high)
             pos.lowest_price = min(pos.lowest_price, low)
 
+            # Liquidação (alavancagem > 1x): só ocorre antes do SL se o SL estiver além da liquidação
+            # (o engine garante SL antes da liquidação na abertura; defesa em profundidade).
+            liq = pos.liquidation_price
+            if liq > 0.0:
+                if (pos.side == "LONG" and low <= liq and liq >= pos.stop_loss) or \
+                   (pos.side == "SHORT" and high >= liq and liq <= pos.stop_loss):
+                    t = self.close_position(pos_id, liq, timestamp, reason="LIQUIDATION")
+                    if t:
+                        triggered_trades.append(t)
+                    continue
+
             # 1. Estratégia SCALP ou GOLDEN_POT (Saídas Parciais TP1 50% + Breakeven Protegido + TP2)
             if pos.strategy_type in ["SCALP", "GOLDEN_POT"]:
                 strat_name = "Golden Pot" if pos.strategy_type == "GOLDEN_POT" else "Scalp"
@@ -1467,14 +1570,14 @@ class PaperTradingEngine:
                     position_id, symbol, side, entry_price, current_price, quantity,
                     notional, stop_loss, take_profit, unrealized_pnl, realized_pnl,
                     funding_collected, fees_paid, entry_timestamp, strategy_type, status,
-                    tp1_price, tp1_hit, tp2_price, initial_quantity
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tp1_price, tp1_hit, tp2_price, initial_quantity, leverage
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 pos.position_id, pos.symbol, pos.side, pos.entry_price, pos.current_price,
                 pos.quantity, pos.notional, pos.stop_loss, pos.take_profit,
                 pos.unrealized_pnl, pos.realized_pnl, pos.funding_collected,
                 pos.fees_paid, pos.entry_timestamp, pos.strategy_type, pos.status,
-                pos.tp1_price, 1 if pos.tp1_hit else 0, pos.tp2_price, pos.initial_quantity
+                pos.tp1_price, 1 if pos.tp1_hit else 0, pos.tp2_price, pos.initial_quantity, pos.leverage
             ))
             con.commit()
 
