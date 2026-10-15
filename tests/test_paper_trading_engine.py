@@ -123,8 +123,8 @@ class TestOrderExecutionAndCosts:
         pos = engine.execute_directional_signal(sig, current_price=3000.0, timestamp=1700000000000)
         assert pos is not None
         assert pos.side == "SHORT"
-        # Preço de venda com slippage perp de 0.03%
-        assert pos.entry_price == pytest.approx(3000.0 * (1.0 - 0.0003))
+        # Preço de venda com slippage de mercado simétrico (0.02%, igual ao long e ao BacktestEngine)
+        assert pos.entry_price == pytest.approx(3000.0 * (1.0 - 0.0002))
 
     def test_execute_carry_allocation_delta_neutral(self, engine):
         pos = engine.execute_carry_allocation(
@@ -193,16 +193,16 @@ class TestIntraBarSimulationAndTriggers:
         )
         engine.execute_directional_signal(sig, current_price=60000.0, timestamp=1700000000000)
 
-        # Vela toca o Take Profit (high = 64500 >= 64000)
+        # E7: DIRECTIONAL usa a ladder comum (TP1 1.5xATR, TP2 2.5xATR, TP3 4.0xATR; o take_profit
+        # único do sinal não é mais o alvo). Vela forte (low acima do breakeven) percorre TP1->TP2->TP3.
         triggered = engine.update_market_tick(
             symbol="BTCUSDT",
             high=64500.0,
-            low=59800.0,
+            low=61000.0,
             close=64100.0,
             timestamp=1700003600000,
         )
-        assert len(triggered) == 1
-        assert triggered[0].action == "TAKE_PROFIT"
+        assert [t.action for t in triggered] == ["TP1_PARTIAL", "TP2_PARTIAL", "TAKE_PROFIT_3"]
         assert len(engine.positions) == 0
         assert engine.total_realized_pnl > 0.0
 
@@ -339,7 +339,7 @@ class TestDailyScalperQuotaAndExecution:
         assert engine.current_day_utc != "1970-01-01"
 
     def test_scalp_staged_tp1_breakeven_and_tp2(self, engine):
-        """Valida a mecânica de saída parcial (50% no TP1 + SL no Breakeven) e finalização no TP2."""
+        """Ladder E7: TP1 (40%) + SL no Breakeven; TP2 (30%) é parcial e ativa o trailing (runner 30% segue aberto)."""
         ts = 1700000000000
         sig = TradeSignal(
             signal_id="scalp-precision-01",
@@ -387,7 +387,7 @@ class TestDailyScalperQuotaAndExecution:
 
         pos_after_tp1 = engine.positions[pos.position_id]
         assert pos_after_tp1.tp1_hit is True
-        assert pos_after_tp1.quantity == pytest.approx(initial_qty * 0.5)
+        assert pos_after_tp1.quantity == pytest.approx(initial_qty * 0.6)  # E7: TP1 realiza 40% (antes 50%)
         # SL agora está em breakeven protegido (>= entry_price)
         assert pos_after_tp1.stop_loss > pos.entry_price
 
@@ -400,8 +400,10 @@ class TestDailyScalperQuotaAndExecution:
             timestamp=ts + 1800000,
         )
         assert len(triggers2) == 1
-        assert triggers2[0].action == "TAKE_PROFIT_2"
-        assert len(engine.positions) == 0  # Totalmente encerrado
+        assert triggers2[0].action == "TP2_PARTIAL"   # E7: TP2 é parcial (antes encerrava a posição)
+        assert pos.position_id in engine.positions     # runner de 30% segue com trailing
+        assert engine.positions[pos.position_id].trailing_active is True
+        assert engine.positions[pos.position_id].quantity == pytest.approx(initial_qty * 0.3)
         assert engine.total_realized_pnl > 0.0
 
 
@@ -540,7 +542,7 @@ class TestPaperTradingConcurrencyAndIntegrityStress:
         # Consulta o banco e valida espelhamento
         with sqlite3.connect(temp_db) as con:
             cur = con.cursor()
-            cur.execute("SELECT position_id, symbol, side, status, notional FROM paper_positions ORDER BY entry_timestamp")
+            cur.execute("SELECT position_id, symbol, side, status, notional FROM paper_positions ORDER BY rowid")
             rows = cur.fetchall()
 
         assert len(rows) == 2
@@ -641,7 +643,8 @@ class TestPaperTradingConcurrencyAndIntegrityStress:
         10 threads no primeiro milissegundo do Dia 2 (00:00:00.001 UTC) -> contador reseta e exatamente 5 executam.
         """
         # 2023-11-14 23:59:59.999 UTC = 1700006399999
-        ts_day1 = 1700006399999
+        # (P2: a cota diária é do dia da ENTRADA = ts(decisão)+15m; a decisão ocorre 15m antes do fim do dia 1)
+        ts_day1 = 1700006399999 - 900000
         # 2023-11-15 00:00:00.001 UTC = 1700006400001
         ts_day2 = 1700006400001
 
@@ -792,7 +795,7 @@ class TestPaperTradingConcurrencyAndIntegrityStress:
         assert metrics["daily_golden_pots_limit_reached"] is True
 
     def test_golden_pot_staged_exits(self, engine):
-        """Valida saídas parciais (TP1 50% + Breakeven + TP2) para Golden Pots."""
+        """Valida a ladder E7 (TP1 40% + Breakeven + TP2 30% + trailing no runner) para Golden Pots."""
         ts = 1700000000000
         sig = TradeSignal(
             signal_id="gp-exit-test",
@@ -818,20 +821,20 @@ class TestPaperTradingConcurrencyAndIntegrityStress:
 
         # 1. Preço atinge TP1 (+1.0x ATR = $102.0)
         trades_tp1 = engine.update_market_tick(
-            symbol="SOLUSDT", high=102.5, low=100.1, close=102.0, timestamp=ts + 60000
+            symbol="SOLUSDT", high=102.5, low=100.1, close=102.0, timestamp=ts + 900000 + 60000   # 1ª barra pós-entrada (entry = ts + 15m)
         )
         assert any(t.action == "TP1_PARTIAL" for t in trades_tp1)
         assert pos.tp1_hit is True
-        assert pos.quantity == pytest.approx(initial_qty * 0.5)
+        assert pos.quantity == pytest.approx(initial_qty * 0.6)
         # Stop loss deve ter sido elevado para breakeven
         assert pos.stop_loss > pos.entry_price
 
         # 2. Preço atinge TP2 (+2.5x ATR = $105.0)
         trades_tp2 = engine.update_market_tick(
-            symbol="SOLUSDT", high=105.5, low=101.5, close=105.0, timestamp=ts + 120000
+            symbol="SOLUSDT", high=105.5, low=101.5, close=105.0, timestamp=ts + 900000 + 120000
         )
-        assert any(t.action == "TAKE_PROFIT_2" for t in trades_tp2)
-        assert pos.position_id not in engine.positions
+        assert any(t.action == "TP2_PARTIAL" for t in trades_tp2)   # E7: TP2 parcial; runner segue (TP3 = 6 ATR)
+        assert pos.position_id in engine.positions and pos.trailing_active
 
     def test_portfolio_snapshot_compression(self, engine, temp_db):
         """Valida compressão inteligente de snapshots de portfólio no SQLite."""

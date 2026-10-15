@@ -436,6 +436,7 @@ def symbol_worker(args: Tuple[str, List[Variant], bool, str]) -> Dict[str, Any]:
         "open": feat["open"].to_numpy(float), "high": feat["high"].to_numpy(float),
         "low": feat["low"].to_numpy(float), "close": feat["close"].to_numpy(float),
         "atr": feat["atr_14"].to_numpy(float),
+        "sma": feat["sma_200"].to_numpy(float),
         "dec": {},
     }
     # NaN em atr_median -> P2 não veta (baseline_atr NaN: `float(nan) > 0` é False)
@@ -530,6 +531,49 @@ def simulate_trades(sym: Dict[str, Any], dec: Dict[str, np.ndarray], fund: Tuple
         })
         t = x_idx + 1   # só reavalia após fechar (como o piloto: 1 posição DIRECTIONAL/símbolo)
     return pd.DataFrame(rows)
+
+
+TRADE_COLS = ["symbol", "dir", "entry_ts", "exit_ts", "reason", "ret_notional", "gross_ret_notional",
+              "pnl_pct_capital", "bars"]
+
+
+def simulate_trades_pilot(per_symbol: List[Dict[str, Any]], variant_name: str,
+                          funding: Dict[str, Tuple[np.ndarray, np.ndarray]], entry_mode: str = "signal_close",
+                          **engine_kw: Any) -> pd.DataFrame:
+    """Execução 'laranjas com laranjas': BacktestEngine(pilot_parity=True) = mesmo engine do piloto (ladder 40/30/30 + BE +
+    trailing, maker/taker por saída, lote=margem, alavancagem por leverage_policy com a CONFIANÇA do sinal, liquidação,
+    saldo único com margem agregada <=85% e <=5 posições, timeout 48 barras e funding UTC 8h com taxa real do cache).
+    Os 3 símbolos rodam JUNTOS (saldo único), ao contrário do modo legado (capital por símbolo)."""
+    from backtesting import BacktestEngine
+    data: Dict[str, pd.DataFrame] = {}
+    sigs: Dict[str, np.ndarray] = {}
+    confs: Dict[str, np.ndarray] = {}
+    fund: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for sy in per_symbol:
+        sym = sy["symbol"]
+        d = sy["dec"][variant_name]
+        data[sym] = pd.DataFrame({"timestamp": sy["ts"], "open": sy["open"], "high": sy["high"], "low": sy["low"],
+                                  "close": sy["close"], "atr_14": sy["atr"], "sma_200": sy["sma"]})
+        sigs[sym] = np.where(d["direction"] > 0, 1, np.where(d["direction"] < 0, 2, 0))
+        confs[sym] = d["conf"]
+        f_ts, f_cum = funding[sym]
+        fund[sym] = (f_ts, np.diff(f_cum))
+    eng = BacktestEngine(initial_capital=CAPITAL, fee_rate=TAKER_FEE, slippage=SLIPPAGE, pilot_parity=True,
+                         risk_per_trade=None, timeframe="1h", entry_mode=entry_mode,
+                         max_holding_bars=MAX_HOLD_BARS, **engine_kw)
+    res = eng.run_portfolio(data, sigs, confs, funding=fund)
+    rows = []
+    for t in res.trades:
+        notional = t.entry_price * t.size
+        rows.append({
+            "symbol": t.symbol, "dir": 1 if t.direction == "LONG" else -1, "entry_ts": int(t.entry_timestamp),
+            "exit_ts": int(t.exit_timestamp) + HOUR_MS, "reason": t.exit_reason,
+            "ret_notional": t.pnl_net / notional if notional > 0 else 0.0,
+            "gross_ret_notional": t.pnl_gross / notional if notional > 0 else 0.0,
+            "pnl_pct_capital": t.pnl_net / CAPITAL, "bars": int(t.exit_idx - t.entry_idx + 1),
+            "leverage": t.leverage, "legs": t.legs,
+        })
+    return pd.DataFrame(rows, columns=TRADE_COLS + ["leverage", "legs"])
 
 
 # =====================================================================
@@ -631,12 +675,15 @@ def segment_metrics(trades: pd.DataFrame, t0: int, t1: int, strict_exit: bool = 
 
 
 def analyze(per_symbol: List[Dict[str, Any]], variants: List[Variant], funding: Dict[str, Tuple[np.ndarray, np.ndarray]],
-            n_trials_total: int) -> Dict[str, Any]:
+            n_trials_total: int, exec_mode: str = "legacy", entry_mode: str = "signal_close") -> Dict[str, Any]:
     from statistical_rigor import deflated_sharpe_ratio
 
     results: Dict[str, Any] = {}
     trades_by_var: Dict[str, pd.DataFrame] = {}
     for v in variants:
+        if exec_mode == "pilot":
+            trades_by_var[v.name] = simulate_trades_pilot(per_symbol, v.name, funding, entry_mode=entry_mode)
+            continue
         parts = [simulate_trades(s, s["dec"][v.name], funding[s["symbol"]]) for s in per_symbol]
         parts = [p for p in parts if len(p)]
         trades_by_var[v.name] = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(
@@ -765,6 +812,7 @@ def analyze(per_symbol: List[Dict[str, Any]], variants: List[Variant], funding: 
             "start": start, "split": split, "holdout_start": hold0, "end": end,
             "var_sharpe_holdout": var_sh, "alpha_bonferroni": alpha_adj,
         }
+    results.setdefault("_meta", {})["_exec"] = {"mode": exec_mode, "entry_mode": entry_mode}
     return results
 
 
@@ -792,11 +840,18 @@ def render_report(results: Dict[str, Any], variants: List[Variant], elapsed: flo
     L.append("- **Dados:** Binance 1h do cache (BTC/ETH/SOL), candles fechados (última barra descartada), features `FeatureEngineer.compute_all_features(drop_na=False)` como no piloto.")
     L.append("- **Baseline (BASE)** = réplica do `evaluate_swing_opportunities`: contexto só com features 1h (sem F&G/macro/on-chain, **sem `volume_sma` nem `atr_median`**), TechnicalAgent sem modelo, `ConsensusJudge(0.30)`, gate `confidence ≥ 0.70`.")
     L.append("- **Mundo PROD** = contexto idêntico ao piloto. **Mundo FULL** = + F&G, DXY, VIX, S&P, stablecoins diários defasados +24h (somente ≥ 2021-12-01). TVL não existe no cache → metade TVL de P3 só é coberta por teste unitário.")
-    L.append("- **Execução:** decisão no fechamento de *t*, entrada na abertura de *t+1*; SL 1.0×ATR / TP 1.5×ATR (`SignalGenerator`, sizing 1% risco, 1× alavancagem, capital $10k); SL vence TP na mesma barra; timeout 48 barras; 1 posição por símbolo; funding real do cache.")
-    L.append("- **Custos:** taker 0,06% + slippage 0,02% por perna em *todos* os fills (0,16% round-trip) — SL tratado como taker.")
+    ex = meta.get("_exec", {"mode": "legacy"})
+    if ex["mode"] == "pilot":
+        L.append(f"- **Execução (`BacktestEngine(pilot_parity=True)`, entrada `{ex.get('entry_mode')}`):** MESMO engine do piloto — decisão no fechamento de *t*, entrada a mercado em close(t) (== open(t+1)); ladder TP1 40% (1,5×ATR) → SL=BE(+0,04%), TP2 30% (2,5×ATR) → trailing 1,2×ATR(entrada) só com barras fechadas, runner 30% em TP3 (4,0×ATR) ou trailing; SL 1,0×ATR; lote=margem $100, alavancagem `decide_leverage(confiança do sinal)` ≤5×, SL antes da liquidação; saldo único ($10k) com margem agregada ≤85% e ≤5 posições; timeout 48 barras; funding UTC 8h com taxa real do cache.")
+        L.append("- **Custos (iguais ao piloto):** taker 0,06% (entrada, SL/BE/trailing/timeout/liquidação) + slippage de mercado 0,02%; TP1/TP2/TP3 maker 0,02% (TP1/TP2 sem slippage, TP3 0,01%). Retorno por trade = % do *notional* (invariante à alavancagem).")
+    else:
+        L.append("- **Execução:** decisão no fechamento de *t*, entrada na abertura de *t+1*; SL 1.0×ATR / TP 1.5×ATR (`SignalGenerator`, sizing 1% risco, 1× alavancagem, capital $10k); SL vence TP na mesma barra; timeout 48 barras; 1 posição por símbolo; funding real do cache.")
+        L.append("- **Custos:** taker 0,06% + slippage 0,02% por perna em *todos* os fills (0,16% round-trip) — SL tratado como taker.")
     for w, m in meta.items():
+        if w.startswith("_"):
+            continue
         L.append(f"- **Split {w}:** {_ts(m['start'])} → TREINO até {_ts(m['split'])}; embargo {EMBARGO_DAYS}d; HOLDOUT {_ts(m['holdout_start'])} → {_ts(m['end'])} (trades que cruzam a fronteira são descartados).")
-    L.append(f"- **Estatística:** DSR com N = {len(variants)} variantes (e N+{results[variants[0].name]['n_trial_log']} do trial_log como cenário mais severo); variância dos Sharpes = entre variantes do mundo no holdout; bootstrap por blocos móveis (bloco {BLOCK_LEN}d, {BOOT_ITERS} reamostras) da diferença diária pareada vs baseline; IC com correção de Bonferroni (K = {len(variants) - 2}; α = {meta[next(iter(meta))]['alpha_bonferroni']:.4f}); consistência em {N_BLOCKS} blocos temporais.")
+    L.append(f"- **Estatística:** DSR com N = {len(variants)} variantes (e N+{results[variants[0].name]['n_trial_log']} do trial_log como cenário mais severo); variância dos Sharpes = entre variantes do mundo no holdout; bootstrap por blocos móveis (bloco {BLOCK_LEN}d, {BOOT_ITERS} reamostras) da diferença diária pareada vs baseline; IC com correção de Bonferroni (K = {len(variants) - 2}; α = {next(m for k, m in meta.items() if not k.startswith('_'))['alpha_bonferroni']:.4f}); consistência em {N_BLOCKS} blocos temporais.")
     L.append("- **Critério de 'melhora defensável' (TODOS):** diferença pareada média > 0 no holdout, limite inferior Bonferroni > 0, DSR ≥ 0,95, melhora também no treino, ≥ 4/6 blocos positivos, ≥ 100 trades no holdout, e variante não-inerte.\n")
 
     for world in ("PROD", "FULL"):
@@ -871,20 +926,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="amostra reduzida (smoke test)")
     ap.add_argument("--no-write", action="store_true", help="não grava docs/")
+    ap.add_argument("--exec", dest="exec_mode", choices=["legacy", "pilot"], default="pilot",
+                    help="pilot = BacktestEngine(pilot_parity=True) (padrão); legacy = bracket único SL1.0/TP1.5 por símbolo")
+    ap.add_argument("--entry", choices=["signal_close", "next_open"], default="signal_close",
+                    help="preço-base da entrada no modo pilot (close(t) como o piloto, ou open[t+1] bruto)")
     args = ap.parse_args(argv)
     t0 = time.time()
     variants = build_variants()
     with ProcessPoolExecutor(max_workers=len(SYMBOLS)) as ex:
         per_symbol = list(ex.map(symbol_worker, [(s, variants, args.quick, DB_PATH) for s in SYMBOLS]))
     funding = {s: load_funding(s) for s in SYMBOLS}
-    results = analyze(per_symbol, variants, funding, n_trials_total=len(variants))
+    results = analyze(per_symbol, variants, funding, n_trials_total=len(variants), exec_mode=args.exec_mode,
+                      entry_mode=args.entry)
     elapsed = time.time() - t0
     md = render_report(results, variants, elapsed, args.quick)
     print(md)
     if not args.no_write:
-        with open(REPORT_JSON, "w", encoding="utf-8") as fh:
+        sfx = "" if args.exec_mode == "legacy" else ("_pilot" if args.entry == "signal_close" else "_pilot_next_open")
+        with open(REPORT_JSON.replace(".json", f"{sfx}.json"), "w", encoding="utf-8") as fh:
             json.dump(json_safe(results), fh, indent=1)
-        name = "_ab_consenso_tabelas_quick.md" if args.quick else "_ab_consenso_tabelas.md"
+        name = f"_ab_consenso_tabelas{sfx}_quick.md" if args.quick else f"_ab_consenso_tabelas{sfx}.md"
         with open(os.path.join(ROOT, "docs", name), "w", encoding="utf-8") as fh:
             fh.write(md)
     return 0

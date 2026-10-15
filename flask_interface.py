@@ -1314,6 +1314,48 @@ def _side_sign(side: Any) -> float:
     return -1.0 if str(side or "").upper() == "SHORT" else 1.0
 
 
+LEDGER_ACTION_LABELS = {
+    "OPEN": "Abertura", "OPEN_LONG": "Abertura LONG", "OPEN_SHORT": "Abertura SHORT",
+    "TP1_PARTIAL": "TP1 parcial", "TP2_PARTIAL": "TP2 parcial (trailing ativado)",
+    "TAKE_PROFIT_3": "TP3 (runner encerrado)", "TAKE_PROFIT": "Take profit",
+    "TRAILING_STOP": "Trailing stop", "BREAKEVEN_STOP": "Stop no breakeven",
+    "STOP_LOSS": "Stop loss", "LIQUIDATION": "Liquidação",
+}
+
+
+def _ledger_label(action: Any) -> str:
+    a = str(action or "").upper()
+    return LEDGER_ACTION_LABELS.get(a) or (a.replace("_", " ").capitalize() if a else "—")
+
+
+def _opt_float(v: Any) -> Optional[float]:
+    try:
+        return None if v in (None, "") else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _enrich_ladder(pos: Dict[str, Any]) -> None:
+    """Expõe a escada de saída (aliases tp1/tp2/tp3, frações, trailing). Legadas -> None (UI mostra '—')."""
+    tp1, tp2, tp3 = (_opt_float(pos.get(k)) for k in ("tp1_price", "tp2_price", "tp3_price"))
+    ladder = bool(tp1 and tp1 > 0)
+    pos["tp1"], pos["tp2"], pos["tp3"] = (tp1 or None), (tp2 or None), (tp3 or None)
+    pos["exit_ladder"] = ladder
+    f1, f2 = _opt_float(pos.get("tp1_fraction")), _opt_float(pos.get("tp2_fraction"))
+    if ladder and f1 is not None and f2 is not None and f2 > 0:
+        pos["tp1_fraction"], pos["tp2_fraction"] = f1, f2
+        pos["runner_fraction"] = max(0.0, 1.0 - f1 - f2)
+    else:  # posição legada (pré-ladder): defaults de coluna não representam frações reais
+        pos["tp1_fraction"] = pos["tp2_fraction"] = pos["runner_fraction"] = None
+    iq, q = _opt_float(pos.get("initial_quantity")), _opt_float(pos.get("quantity"))
+    pos["remaining_fraction"] = round(min(1.0, q / iq), 4) if iq and iq > 0 and q is not None else None
+    pos["tp1_hit"] = bool(pos.get("tp1_hit"))
+    pos["tp2_hit"] = bool(pos.get("tp2_hit"))
+    pos["trailing_active"] = bool(pos.get("trailing_active"))
+    ts = _opt_float(pos.get("trailing_stop_price"))
+    pos["trailing_stop_price"] = ts if ts and ts > 0 else None
+
+
 def _enrich_position(pos: Dict[str, Any], close_info: Optional[Dict[str, Any]], now_ms: int) -> Dict[str, Any]:
     """Acrescenta timestamps em ms UTC, margem/alavancagem (fallback 1x) e performance em %."""
     entry = float(pos.get("entry_price") or 0.0)
@@ -1331,6 +1373,7 @@ def _enrich_position(pos: Dict[str, Any], close_info: Optional[Dict[str, Any]], 
     except (TypeError, ValueError):
         margin_raw = 0.0
     margin_initial = margin_raw if margin_raw > 0 else init_notional / lev
+    _enrich_ladder(pos)
     pos["leverage_effective"] = lev
     pos["margin_effective"] = round(margin_initial, 4)
     pos["margin_estimated"] = bool(lev_estimated or margin_raw <= 0)
@@ -1383,19 +1426,29 @@ def _query_paper_positions(which: str, with_summary: bool = False):
                 rows = [dict(r) for r in cur.fetchall()]
 
                 close_map: Dict[str, Dict[str, Any]] = {}
-                if any(str(r.get("status") or "").upper() != "OPEN" for r in rows):
-                    try:
-                        cur.execute("SELECT position_id, action, price, timestamp FROM paper_trades ORDER BY timestamp ASC")
-                        for t in cur.fetchall():
-                            if str(t["action"] or "").upper().startswith("OPEN"):
-                                continue
-                            close_map[t["position_id"]] = {"closed_at_ms": _to_ms(t["timestamp"]), "exit_price": t["price"]}
-                    except sqlite3.OperationalError:
-                        close_map = {}
+                events_map: Dict[str, list] = {}
+                try:
+                    cur.execute("SELECT position_id, action, price, timestamp FROM paper_trades ORDER BY timestamp ASC")
+                    for t in cur.fetchall():
+                        act = str(t["action"] or "").upper()
+                        events_map.setdefault(t["position_id"], []).append(
+                            {"action": act, "label": _ledger_label(act), "price": t["price"], "timestamp_ms": _to_ms(t["timestamp"])})
+                        if act.startswith("OPEN"):
+                            continue
+                        # Eventos parciais (TP1/TP2) não encerram a posição: só o último evento define o fechamento.
+                        close_map[t["position_id"]] = {"closed_at_ms": _to_ms(t["timestamp"]), "exit_price": t["price"],
+                                                       "action": act}
+                except sqlite3.OperationalError:
+                    close_map, events_map = {}, {}
 
                 now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                 for r in rows:
                     _enrich_position(r, close_map.get(r.get("position_id")), now_ms)
+                    r["events"] = events_map.get(r.get("position_id"), [])
+                    ci = close_map.get(r.get("position_id")) or {}
+                    if str(r.get("status") or "").upper() != "OPEN" and ci.get("action"):
+                        r["close_action"] = ci["action"]
+                        r["close_action_label"] = _ledger_label(ci["action"])
                     st_open = str(r.get("status") or "").upper() == "OPEN"
                     pnl = float(r.get("unrealized_pnl") or 0.0) if st_open else float(r.get("net_pnl") or 0.0)
                     summary["total_pnl"] += pnl

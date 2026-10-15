@@ -2136,7 +2136,7 @@
                 };
             }
 
-            // 5. Projeção ao vivo da posição selecionada (ENTRY, SL, TP1, TP2, liquidação + marcador de entrada)
+            // 5. Projeção ao vivo da posição selecionada (ENTRY, SL, TP1, TP2, TP3, TRAILING, liquidação + marcador de entrada)
             const shapes = [];
             const annotations = [];
 
@@ -2148,16 +2148,26 @@
                 const pnlTxt = Number.isFinite(ov.unrealizedPnl) ? ` | PnL ${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)}` : "";
                 const levTxt = ov.leverage > 0 ? ` | ${Number.isInteger(ov.leverage) ? ov.leverage : ov.leverage.toFixed(1)}x` : "";
                 const marTxt = Number.isFinite(ov.margin) ? ` | margem $${ov.margin.toFixed(2)}` : "";
+                const hit = (b) => b ? '✔ ' : '';
+                const slLabel = ov.tp1Hit ? `SL→BREAKEVEN: $${fmtP(ov.stopLoss)}` : `SL: $${fmtP(ov.stopLoss)}`;
                 const lines = [
                     { v: ov.entryPrice, label: `ENTRY ${side}: $${fmtP(ov.entryPrice)}${pnlTxt}${levTxt}${marTxt}`, color: '#CBD5E1', dash: 'dash', w: 2, anchor: 'bottom' },
-                    { v: ov.stopLoss, label: `SL: $${fmtP(ov.stopLoss)}`, color: '#EF4444', dash: 'dashdot', w: 2, anchor: isLong ? 'top' : 'bottom' },
-                    { v: ov.tp1Price, label: `TP1: $${fmtP(ov.tp1Price)}`, color: '#34D399', dash: 'dot', w: 1.5, anchor: isLong ? 'bottom' : 'top' },
-                    { v: ov.tp2Price > 0 ? ov.tp2Price : ov.takeProfit, label: `TP2: $${fmtP(ov.tp2Price > 0 ? ov.tp2Price : ov.takeProfit)}`, color: '#10B981', dash: 'dash', w: 2, anchor: isLong ? 'bottom' : 'top' },
-                    { v: ov.liquidationPrice, label: `LIQ: $${fmtP(ov.liquidationPrice || 0)}`, color: '#F59E0B', dash: 'longdash', w: 1.5, anchor: isLong ? 'top' : 'bottom' }
+                    { v: ov.stopLoss, label: slLabel, color: ov.tp1Hit ? '#38BDF8' : '#EF4444', dash: 'dashdot', w: 2, anchor: isLong ? 'top' : 'bottom' },
+                    { v: ov.tp1Price, label: `${hit(ov.tp1Hit)}TP1${ov.tp1Hit ? ' atingido' : ''}: $${fmtP(ov.tp1Price)}`, color: '#34D399', dash: ov.tp1Hit ? 'solid' : 'dot', w: ov.tp1Hit ? 1 : 1.5, op: ov.tp1Hit ? 0.55 : 1, anchor: isLong ? 'bottom' : 'top' }
                 ];
+                if (ov.ladder) {
+                    lines.push({ v: ov.tp2Price, label: `${hit(ov.tp2Hit)}TP2${ov.tp2Hit ? ' atingido' : ''}: $${fmtP(ov.tp2Price)}`, color: '#10B981', dash: ov.tp2Hit ? 'solid' : 'dash', w: ov.tp2Hit ? 1 : 2, op: ov.tp2Hit ? 0.55 : 1, anchor: isLong ? 'bottom' : 'top' });
+                    lines.push({ v: ov.tp3Price, label: `TP3: $${fmtP(ov.tp3Price)}`, color: '#A3E635', dash: 'longdash', w: 2, anchor: isLong ? 'bottom' : 'top' });
+                    if (ov.trailingStopPrice > 0) {
+                        lines.push({ v: ov.trailingStopPrice, label: `TRAILING STOP${ov.trailingActive ? ' (ativo)' : ''}: $${fmtP(ov.trailingStopPrice)}`, color: ov.trailingActive ? '#E879F9' : '#7C6A8A', dash: ov.trailingActive ? 'solid' : 'dot', w: ov.trailingActive ? 3 : 1, anchor: isLong ? 'top' : 'bottom' });
+                    }
+                } else {
+                    lines.push({ v: ov.tp2Price > 0 ? ov.tp2Price : ov.takeProfit, label: `TP2: $${fmtP(ov.tp2Price > 0 ? ov.tp2Price : ov.takeProfit)}`, color: '#10B981', dash: 'dash', w: 2, anchor: isLong ? 'bottom' : 'top' });
+                }
+                lines.push({ v: ov.liquidationPrice, label: `LIQ: $${fmtP(ov.liquidationPrice || 0)}`, color: '#F59E0B', dash: 'longdash', w: 1.5, anchor: isLong ? 'top' : 'bottom' });
                 lines.forEach(l => {
                     if (!(l.v > 0)) return;
-                    shapes.push({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y1', y0: l.v, y1: l.v, line: { color: l.color, width: l.w, dash: l.dash } });
+                    shapes.push({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y1', y0: l.v, y1: l.v, line: { color: l.color, width: l.w, dash: l.dash }, opacity: l.op || 1 });
                     annotations.push({
                         xref: 'paper', x: 0.01, yref: 'y1', y: l.v, text: l.label, showarrow: false,
                         font: { color: l.color, size: 9, family: 'JetBrains Mono, monospace' },
@@ -2229,6 +2239,12 @@
                 takeProfit: Number(pos.take_profit || 0),
                 tp1Price: Number(pos.tp1_price || 0),
                 tp2Price: Number(pos.tp2_price || 0),
+                tp3Price: Number(pos.tp3_price || pos.tp3 || 0),
+                ladder: Number(pos.tp3_price || pos.tp3 || 0) > 0 && Number(pos.tp1_price || 0) > 0,
+                tp1Hit: !!pos.tp1_hit,
+                tp2Hit: !!pos.tp2_hit,
+                trailingActive: !!pos.trailing_active,
+                trailingStopPrice: Number(pos.trailing_stop_price || 0),
                 liquidationPrice: Number.isFinite(liq) ? liq : 0,
                 entryTimestamp: Number(pos.entry_timestamp || 0),
                 unrealizedPnl: numOrNaN(pos.unrealized_pnl),
@@ -2452,6 +2468,42 @@
             if (!Number.isFinite(n) || n <= 0) return "—";
             return `${Number.isInteger(n) ? n : n.toFixed(1)}x`;
         }
+        const LEDGER_LABELS = {
+            OPEN: "Abertura", OPEN_LONG: "Abertura LONG", OPEN_SHORT: "Abertura SHORT",
+            TP1_PARTIAL: "TP1 parcial", TP2_PARTIAL: "TP2 parcial (trailing ativado)",
+            TAKE_PROFIT_3: "TP3 (runner encerrado)", TAKE_PROFIT: "Take profit",
+            TRAILING_STOP: "Trailing stop", BREAKEVEN_STOP: "Stop no breakeven",
+            STOP_LOSS: "Stop loss", LIQUIDATION: "Liquidação"
+        };
+        function ledgerLabel(a) {
+            const k = String(a || "").toUpperCase();
+            return k ? (LEDGER_LABELS[k] || k.replace(/_/g, " ")) : "—";
+        }
+        function fracPct(v) {
+            const n = Number(v);
+            return (v === null || v === undefined || v === "" || !Number.isFinite(n)) ? null : `${Math.round(n * 100)}%`;
+        }
+        function fmtLadderFractions(pos) {
+            const a = fracPct(pos.tp1_fraction), b = fracPct(pos.tp2_fraction), c = fracPct(pos.runner_fraction);
+            if (!a || !b || !c) return "—";
+            return `TP1 ${a} / TP2 ${b} / runner ${c}`;
+        }
+        function fmtPx(v) {
+            const n = Number(v);
+            return (v === null || v === undefined || v === "" || !Number.isFinite(n) || n <= 0) ? "—" : `$${n.toFixed(n < 1 ? 4 : 2)}`;
+        }
+        function fmtTrailing(pos) {
+            if (pos.trailing_active) return `ATIVO @ ${fmtPx(pos.trailing_stop_price)}`;
+            return pos.exit_ladder ? "inativo (aguarda TP2)" : "—";
+        }
+        function fmtCurrentSL(pos) {
+            const lbl = pos.tp1_hit ? " (BE)" : "";
+            return `${fmtPx(pos.stop_loss)}${lbl}`;
+        }
+        function fmtEvents(pos) {
+            const ev = Array.isArray(pos.events) ? pos.events.filter(e => !String(e.action || "").toUpperCase().startsWith("OPEN")) : [];
+            return ev.length ? ev.map(e => escapeHtml(e.label || ledgerLabel(e.action))).join(" → ") : "—";
+        }
         function cardKV(label, valueHtml, title) {
             return `<div class="min-w-0"${title ? ` title="${escapeHtml(title)}"` : ""}><div class="text-[9px] uppercase text-slate-500">${label}</div><div class="num-font text-[11px] text-slate-200 truncate">${valueHtml}</div></div>`;
         }
@@ -2501,7 +2553,7 @@
                 return `
                     <tr class="${activeClass} cursor-pointer transition-colors group" data-position-id="${escapeHtml(pos.position_id || '')}"
                         onclick="viewPositionOnChart(this.dataset.positionId)"
-                        title="Clique para acompanhar esta posição ao vivo no gráfico (Entrada, SL, TP1, TP2)">
+                        title="Clique para acompanhar esta posição ao vivo no gráfico (Entrada, SL, TP1, TP2, TP3, Trailing)">
                         <td colspan="9" class="py-2 px-2 sm:px-3">
                             <div class="flex items-center justify-between gap-2 flex-wrap">
                                 <div class="flex items-center gap-1.5 flex-wrap min-w-0">
@@ -2522,6 +2574,11 @@
                                 ${cardKV("Aberta há", fmtDuration(pos.open_for_s))}
                                 ${cardKV("Entrada → Atual", `$${Number(pos.entry_price || 0).toFixed(2)} → $${Number(pos.current_price || 0).toFixed(2)}`)}
                                 ${cardKV("Qtd / Nocional", `${Number(pos.quantity || 0).toFixed(4)} ($${Number(pos.notional || 0).toFixed(1)})`)}
+                                ${cardKV("Saída (frações)", escapeHtml(fmtLadderFractions(pos)))}
+                                ${cardKV("Restante", fracPct(pos.remaining_fraction) || "—")}
+                                ${cardKV("SL atual", fmtCurrentSL(pos))}
+                                ${cardKV("Trailing", escapeHtml(fmtTrailing(pos)))}
+                                ${cardKV("TP1 / TP2 / TP3", `${pos.tp1_hit ? "✔" : ""}${fmtPx(pos.tp1)} / ${pos.tp2_hit ? "✔" : ""}${fmtPx(pos.tp2)} / ${fmtPx(pos.tp3)}`)}
                             </div>
                         </td>
                     </tr>
@@ -2571,6 +2628,9 @@
                                 ${cardKV("Fechamento", fmtLocalDT(pos.closed_at_ms), fmtFullDT(pos.closed_at_ms))}
                                 ${cardKV("Duração", fmtDuration(pos.duration_s))}
                                 ${cardKV("Entrada → Saída", `$${Number(pos.entry_price || 0).toFixed(2)} → $${Number(pos.exit_price || pos.current_price || 0).toFixed(2)}`)}
+                                ${cardKV("Motivo final", escapeHtml(pos.close_action_label || ledgerLabel(pos.close_action)))}
+                                ${cardKV("Saída (frações)", escapeHtml(fmtLadderFractions(pos)))}
+                                ${cardKV("Eventos", fmtEvents(pos))}
                             </div>
                         </td>
                     </tr>

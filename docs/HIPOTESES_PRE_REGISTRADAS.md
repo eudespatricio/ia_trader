@@ -282,3 +282,42 @@ Mudanças de regra (GP v2), de universo (E5.4) e de tamanho/alavancagem (E5.6) r
 - Amostra esperada: baixa. O A/B de consenso e o prior (alfa nulo após custos) permanecem; a hipótese nula do E4.3 e os critérios de refutação do E4.6 valem sem alteração.
 
 **Congelamento.** Commit de referência do código: `b65c0a1`. Proibido alterar esses parâmetros durante a janela (E4.7); qualquer alteração reinicia a contagem de dias limpos (critério A11 do `pilot_report.py`).
+
+
+---
+
+# ADDENDUM E7 — Comitê obrigatório + Smart Trade Exit Ladder comum (2026-10-15)
+
+**Contexto.** Diretriz do usuário: SCALP, GOLDEN POT e DAY TRADE (fluxo 1h `DIRECTIONAL`) passam **obrigatoriamente** pelo comitê (`core.evaluate_market_async`/`evaluate_market_deterministic`: agentes + consenso + veto do RiskSentinel + SignalGenerator). Mudam apenas o **tipo de oportunidade** (gatilho/candidato) e o perfil de alvos; a gestão de saída/risco é **comum**. Este addendum prevalece sobre E4/E5/E6 onde conflitar (E6: "SCALP não passa pelo comitê" fica **revogado**; E5: gatilho VWAP/RSI/sweep+POI do GOLDEN_POT fica **substituído**; E4/E5: "TP1 50% + TP2" e alvo único do direcional ficam **substituídos** pela escada abaixo). Os valores de `simulation_settings` do SCALP (E6) **não foram alterados**. **O piloto é reiniciado** (relógio de dias limpos zerado; ledger anterior segue contando para refutação, E4.6). `trial_log.csv` +1 (novas versões de SCALP, GOLDEN_POT e DIRECTIONAL).
+
+## E7.1 Regra de entrada por estratégia (porta do comitê comum)
+Condição comum a todas: comitê na **mesma direção** do gatilho, **sem veto**, `confidence >= 0.70` (constante por perfil, `STRATEGY_PROFILES[*].min_committee_confidence`); `confidence/consensus/risk_dollars/rationale` são os do sinal real; alavancagem = `decide_leverage(confiança real, ATR%, regime)` (máx 5x); lote = margem `paper_lot_usd`; SL sempre antes da liquidação (reduz alavancagem se preciso); cotas/cooldown/limite por vela.
+
+| Estratégia | Candidato / gatilho | Dados | Cota / cooldown |
+|---|---|---|---|
+| **SCALP** (BTC/ETH/SOL, 15m) | Setup atual: `dist_vwap_pct <= -scalp_vwap_dev_pct` & `rsi <= scalp_rsi_oversold` & `volume_z >= scalp_volume_z` (BUY); simétrico (SELL). Valores de E6, inalterados. | 400 velas 15m **fechadas**, `sma_200` válida | `max_daily_scalps`; cooldown 4 barras (`SCALP_COOLDOWN_BARS`); 1 entrada/vela |
+| **GOLDEN_POT v3** (candidatos do scanner volume/volatilidade, sem tokenizados) | **Momentum com volatilidade extraordinária** na última vela fechada (todas): ATR atual / mediana(ATR das 96 barras anteriores) `>= 1.8`; range da vela `>= 1.5×ATR`; `volume_zscore_20 >= 2.0`; fecha `>= 75%` (BUY) / `<= 25%` (SELL) da vela, vela na direção; `close` rompe a máxima (mín.) das 20 barras anteriores. Direção = a do momentum. Sweep/POI = apenas confluência no rationale. Gatilho de fade (VWAP+RSI) e sweep+POI independente **removidos**. Filtro de faca-caindo **não** é mais aplicado (era do fade). | 400 velas 15m fechadas, `sma_200` válida; liquidez 24h `< 50M` ⇒ 1x | 3/dia; cooldown 16 barras; 1/vela |
+| **DAY TRADE / DIRECTIONAL** (1h) | Sinal do comitê (SignalGenerator, regra E3/E4 inalterada); SL = o do sinal | 400 velas 1h, `sma_200` válida | — |
+
+Limiares nomeados em `scripts/run_paper_simulation.py` (`GP_*`, `SCALP_*`, `SWING_*`). Janelas de mediana/rompimento excluem a barra atual (sem lookahead).
+
+## E7.2 Smart Trade Exit Ladder (comum a SCALP, GOLDEN_POT, DIRECTIONAL)
+- **TP1** (40% da qtd. inicial, maker) ⇒ SL vai a **breakeven** (entrada ±0,04%).
+- **TP2** (30%, maker) ⇒ **ativa o trailing stop** no runner.
+- **Runner** (30%) sai em **TP3** (maker) ou no **trailing** (taker), o que vier antes.
+- **Trailing:** distância = `trail_atr_mult × ATR_de_entrada` (congelado); o stop é atualizado **somente com extremos de barras já fechadas** (a barra corrente só alimenta o trailing quando chega a seguinte; ticks repetidos da mesma barra só acumulam), **nunca afrouxa**. Ordem intra-barra conservadora: stop vigente antes de qualquer TP; BE tocado na mesma barra do TP1 sai em BE. Stops não preenchem fora do range da barra.
+- **Taxas:** TP1/TP2/TP3 maker (0,02%); SL/BREAKEVEN_STOP/TRAILING_STOP/MANUAL_CLOSE/LIQUIDATION taker (0,06% + slippage). Entrada: SCALP/GP maker; DIRECTIONAL taker (como antes). PnL e taxa por parcial no ledger (`TP1_PARTIAL`, `TP2_PARTIAL`, depois `TAKE_PROFIT_3`/`TRAILING_STOP`/…).
+- **Perfis ATR** (`smart_trade.STRATEGY_PROFILES`, entrada = preço de execução):
+
+| Perfil | SL | TP1 | TP2 | TP3 | Trailing |
+|---|---|---|---|---|---|
+| SCALP (alvos curtos) | 0,9 | 1,0 | 1,8 | 3,0 | 0,8 |
+| DIRECTIONAL / day trade (médios) | 1,0 (usa o SL do comitê) | 1,5 | 2,5 | 4,0 | 1,2 |
+| GOLDEN_POT (maiores) | 1,0 | 1,2 | 2,5 | 6,0 | 1,5 |
+
+Posições abertas antes do E7 (sem `tp3_price`) mantêm o comportamento legado (migração `ADD COLUMN` com defaults legados).
+
+## E7.3 Ressalvas honestas
+- **Sem evidência de alfa.** Nada disto demonstra vantagem estatística; o prior (alfa nulo após custos), a hipótese nula do E4.3 e os critérios de refutação do E4.6 valem sem alteração. Os multiplicadores, frações e limiares do gatilho GP foram escolhidos por julgamento, **sem otimização em dados** — mas também sem validação fora da amostra; contam como tentativas no DSR.
+- **Premissas do simulador:** execução a limite sempre preenchida ao tocar o nível (sem fila/rejeição), slippage fixo, ordem intra-barra assumida (stop primeiro), ATR de entrada congelado no trailing, gaps não modelados além do clamp ao range da barra, funding ignorado em direcionais. Escada com parciais aumenta a taxa de acerto aparente sem aumentar, por si só, a expectância.
+- A porta do comitê reduz a amostra (SCALP e GP serão mais raros que em E5/E6); N mínimo de E4 tende a levar mais dias.

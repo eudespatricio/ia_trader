@@ -885,3 +885,5 @@ Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:
 - **Status:** [Concluído / Em Revisão / Revertido]
 - **Próximo Passo:** [Próxima etapa programada]
 ```
+
+- **2026-10-15 — E7:** comitê obrigatório para SCALP/GOLDEN_POT/DAY TRADE; GOLDEN_POT v3 (momentum + volatilidade extraordinária); Smart Trade Exit Ladder comum (TP1 40%+BE, TP2 30%+trailing sem lookahead, TP3/trailing); colunas novas em `paper_positions` (migração segura); `tests/test_exit_ladder_e7.py`. Piloto reiniciado; sem evidência de alfa.

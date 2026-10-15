@@ -47,6 +47,81 @@ PAPER_LOT_MIN_USD = 10.0
 PAPER_LOT_MAX_USD = 1000.0
 MAINTENANCE_MARGIN_PCT = 0.005   # 0.5% de margem de manutenção (preço de liquidação aproximado)
 
+# ----------------------------------------------------------------------------
+# SMART TRADE EXIT LADDER (ADDENDUM E7, 2026-10-15) - COMUM a SCALP, GOLDEN_POT e DIRECTIONAL.
+#   TP1 (EXIT_TP1_FRACTION)  -> parcial maker; SL vai a breakeven (+BREAKEVEN_FEE_BUFFER_PCT).
+#   TP2 (EXIT_TP2_FRACTION)  -> parcial maker; ATIVA o trailing stop no runner restante.
+#   Runner (1 - TP1 - TP2)   -> sai em TP3 (maker) OU no trailing stop (taker), o que vier antes.
+# Trailing: distância = trailing_atr_mult x ATR_de_entrada (congelado); o stop só é atualizado a partir de
+# barras JÁ FECHADAS (extremos da barra corrente só entram quando chega a barra seguinte) e nunca afrouxa.
+# As estratégias diferem SOMENTE pelos multiplicadores abaixo (e pelo gatilho de oportunidade).
+# ----------------------------------------------------------------------------
+EXIT_TP1_FRACTION = 0.40
+EXIT_TP2_FRACTION = 0.30
+EXIT_RUNNER_FRACTION = round(1.0 - EXIT_TP1_FRACTION - EXIT_TP2_FRACTION, 10)   # 0.30
+BREAKEVEN_FEE_BUFFER_PCT = 0.0004   # SL pós-TP1 = entrada +/- 0.04% (cobre taxas)
+PARTIAL_TRADE_ACTIONS = frozenset({"TP1_PARTIAL", "TP2_PARTIAL"})   # saídas parciais (não fecham a posição)
+# Saídas por ordem limite (maker). SL/BREAKEVEN_STOP/TRAILING_STOP/MANUAL_CLOSE/LIQUIDATION = taker.
+MAKER_EXIT_REASONS = frozenset({"TAKE_PROFIT_1", "TAKE_PROFIT_2", "TAKE_PROFIT_3"})
+
+
+# ----------------------------------------------------------------------------
+# PARIDADE BACKTEST x PILOTO (docs/PARIDADE_BACKTEST_PILOTO.md) - convenções únicas
+# ----------------------------------------------------------------------------
+# P2 ENTRADA: o chamador informa o timestamp (abertura) da vela de DECISÃO t, já FECHADA. Em cripto 24/7,
+#   close(t) == open(t+1); o piloto entra a mercado nesse instante ao preço close(t) (+ slippage) e registra
+#   entry_timestamp = ts(t) + bar_ms == ts(t+1), exatamente a convenção do BacktestEngine (entrada no open t+1).
+#   A vela t+1 é, portanto, a primeira vela pós-entrada e é processada com high/low completos.
+# P4 TIMEOUT: posição aberta há >= max_holding_bars barras do timeframe de decisão é fechada a mercado
+#   (taker + slippage, motivo HORIZON_TIMEOUT) no open da barra seguinte ao prazo. Mesmo valor do A/B/backtest
+#   (48 barras) no DIRECTIONAL 1h (=48h). SCALP/GP decidem em 15m: mantém-se o MESMO nº de barras (48 x 15m = 12h),
+#   i.e. o horizonte é definido em barras do timeframe de decisão, como no backtest (max_holding_bars).
+DIRECTIONAL_BAR_MS = 60 * 60 * 1000
+INTRADAY_BAR_MS = 15 * 60 * 1000
+DIRECTIONAL_MAX_HOLDING_BARS = 48
+SCALP_MAX_HOLDING_BARS = 48
+GOLDEN_POT_MAX_HOLDING_BARS = 48
+# SLIPPAGE de ordens a MERCADO (entrada taker, SL/BE/TRAILING/TIMEOUT/MANUAL): único valor, simétrico long/short,
+# igual ao BacktestEngine (0.02% por fill). Ordens limite (maker) mantêm 0.01%. (slippage_spot/perp ficam só no carry.)
+MARKET_SLIPPAGE_PCT = 0.0002
+MAKER_SLIPPAGE_PCT = 0.0001
+# P5 FUNDING: liquidação a cada 8h DECORRIDAS desde a entrada (entry + k*8h) - mesma regra do BacktestEngine
+# (bars_held % bars_per_funding == 0, i.e. por tempo e independente do timeframe). funding>0: long paga / short
+# recebe; <0 inverso. Taxa REAL = último registro da tabela `funding_rates` do cache SQLite (sem rede) vigente
+# naquele instante (<= 8h de idade); ausente -> FUNDING_FALLBACK_RATE_8H (mesmo 0.01%/8h do BacktestEngine).
+# (A bolsa liquida em 00/08/16h UTC; o nº esperado de liquidações por posição é o mesmo - convenção de paridade.)
+FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000
+FUNDING_FALLBACK_RATE_8H = 0.0001
+FUNDING_RATE_MATCH_TOLERANCE_MS = 10 * 60 * 1000   # tolerância de jitter do timestamp da taxa
+FUNDING_MAX_SETTLEMENTS_PER_TICK = 12
+NON_CLOSING_TRADE_ACTIONS = PARTIAL_TRADE_ACTIONS | frozenset({"FUNDING"})   # linhas de ledger que NÃO fecham a posição
+
+
+@dataclass(frozen=True)
+class StrategyProfile:
+    """Multiplicadores de ATR (sobre o preço de entrada) de uma estratégia. Mesma mecânica para todas."""
+    sl_atr_mult: float
+    tp1_atr_mult: float
+    tp2_atr_mult: float
+    tp3_atr_mult: float
+    trail_atr_mult: float
+    min_committee_confidence: float = 0.70
+    bar_ms: int = DIRECTIONAL_BAR_MS                       # duração da barra de decisão (P2/P4)
+    max_holding_bars: int = DIRECTIONAL_MAX_HOLDING_BARS   # timeout por nº de barras (P4)
+
+
+STRATEGY_PROFILES: Dict[str, StrategyProfile] = {
+    # alvos curtos
+    "SCALP": StrategyProfile(sl_atr_mult=0.9, tp1_atr_mult=1.0, tp2_atr_mult=1.8, tp3_atr_mult=3.0, trail_atr_mult=0.8,
+                             bar_ms=INTRADAY_BAR_MS, max_holding_bars=SCALP_MAX_HOLDING_BARS),
+    # day trade 1h (SL efetivo = o do comitê/SignalGenerator; sl_atr_mult é o fallback)
+    "DIRECTIONAL": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=4.0, trail_atr_mult=1.2,
+                                   bar_ms=DIRECTIONAL_BAR_MS, max_holding_bars=DIRECTIONAL_MAX_HOLDING_BARS),
+    # maior potencial: TP3 bem mais longo e trailing mais largo
+    "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.2, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
+                                  bar_ms=INTRADAY_BAR_MS, max_holding_bars=GOLDEN_POT_MAX_HOLDING_BARS),
+}
+
 logger = logging.getLogger("ia_trader.smart_trade")
 if not logger.handlers:
     handler = logging.StreamHandler(sys.stdout)
@@ -85,6 +160,32 @@ class PaperPosition:
     tp2_price: float = 0.0
     initial_quantity: float = 0.0
     leverage: float = 1.0
+    # --- Smart Trade Exit Ladder (E7) ---
+    tp3_price: float = 0.0
+    tp2_hit: bool = False
+    tp1_fraction: float = EXIT_TP1_FRACTION     # fração da quantidade inicial realizada no TP1
+    tp2_fraction: float = EXIT_TP2_FRACTION     # fração da quantidade inicial realizada no TP2
+    trailing_active: bool = False
+    trailing_stop_price: float = 0.0            # 0.0 = ainda sem nível calculado
+    trailing_atr_mult: float = 0.0
+    entry_atr: float = 0.0                      # ATR congelado na entrada (base do trailing)
+    # estado em memória do trailing (barras fechadas); reconstruído em restore_state a partir do stop
+    trail_ref_extreme: float = 0.0
+    trail_bar_ts: float = 0.0
+    trail_bar_high: float = 0.0
+    trail_bar_low: float = 0.0
+    # estado em memória de funding/timeout (P4/P5); reconstruído em restore_state
+    funding_cursor_ms: float = 0.0    # última liquidação de funding já aplicada (0 = usa entry_timestamp)
+    last_bar_close: float = 0.0       # close da última barra FECHADA processada (== open da seguinte em 24/7)
+
+    @property
+    def runner_fraction(self) -> float:
+        return max(0.0, 1.0 - self.tp1_fraction - self.tp2_fraction)
+
+    @property
+    def remaining_fraction(self) -> float:
+        base = self.initial_quantity if self.initial_quantity > 0 else self.quantity
+        return (self.quantity / base) if base > 0 else 0.0
 
     @property
     def margin(self) -> float:
@@ -107,8 +208,14 @@ class PaperPosition:
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
+        for k in ("trail_ref_extreme", "trail_bar_ts", "trail_bar_high", "trail_bar_low",
+                  "funding_cursor_ms", "last_bar_close"):
+            d.pop(k, None)   # estado interno de barras, não é contrato público
         d["margin"] = self.margin
         d["liquidation_price"] = self.liquidation_price
+        d["tp1"], d["tp2"], d["tp3"] = self.tp1_price, self.tp2_price, self.tp3_price
+        d["runner_fraction"] = self.runner_fraction
+        d["remaining_fraction"] = self.remaining_fraction
         return d
 
 
@@ -147,12 +254,13 @@ class PaperTradingEngine:
         taker_fee: float = 0.0006,       # 0.06% taker fee
         maker_fee: float = 0.0002,       # 0.02% maker fee
         slippage_spot: float = 0.0002,   # 0.02% slippage spot
-        slippage_perp: float = 0.0003,   # 0.03% slippage perp
+        slippage_perp: float = 0.0003,   # 0.03% slippage perp (somente pernas do carry)
         simulation_mode: bool = True,
         core: Optional[TradingCore] = None,
         max_concurrent_positions: Optional[int] = None,
         max_margin_utilization_pct: Optional[float] = None,
         restore: bool = True,
+        slippage_market: Optional[float] = None,
     ):
         # TRAVA DE SEGURANÇA DA REGRA DE OURO
         if not simulation_mode:
@@ -165,6 +273,9 @@ class PaperTradingEngine:
         self.maker_fee = maker_fee
         self.slippage_spot = slippage_spot
         self.slippage_perp = slippage_perp
+        # Slippage único (long == short) das ordens a mercado direcionais/scalp/GP = BacktestEngine (P-slip).
+        self.slippage_market = MARKET_SLIPPAGE_PCT if slippage_market is None else float(slippage_market)
+        self.default_funding_rate_8h = FUNDING_FALLBACK_RATE_8H
 
         self.db_path = db_path or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "datasets", "market_cache.db"
@@ -268,6 +379,15 @@ class PaperTradingEngine:
                 ("tp2_price", "REAL DEFAULT 0.0"),
                 ("initial_quantity", "REAL DEFAULT 0.0"),
                 ("leverage", "REAL DEFAULT 1.0"),
+                # Smart Trade Exit Ladder (E7). Defaults = comportamento legado (TP1 50% + TP2 fecha o restante).
+                ("tp3_price", "REAL DEFAULT 0.0"),
+                ("tp2_hit", "INTEGER DEFAULT 0"),
+                ("tp1_fraction", "REAL DEFAULT 0.5"),
+                ("tp2_fraction", "REAL DEFAULT 0.0"),
+                ("trailing_active", "INTEGER DEFAULT 0"),
+                ("trailing_stop_price", "REAL DEFAULT 0.0"),
+                ("trailing_atr_mult", "REAL DEFAULT 0.0"),
+                ("entry_atr", "REAL DEFAULT 0.0"),
             ]:
                 try:
                     con.execute(f"ALTER TABLE paper_positions ADD COLUMN {col} {col_type}")
@@ -409,7 +529,10 @@ class PaperTradingEngine:
                 cur.execute(
                     "SELECT position_id, symbol, side, entry_price, current_price, quantity, notional, stop_loss, "
                     "take_profit, unrealized_pnl, realized_pnl, funding_collected, fees_paid, entry_timestamp, "
-                    "strategy_type, status, tp1_price, tp1_hit, tp2_price, initial_quantity, COALESCE(leverage, 1.0) "
+                    "strategy_type, status, tp1_price, tp1_hit, tp2_price, initial_quantity, COALESCE(leverage, 1.0), "
+                    "COALESCE(tp3_price, 0.0), COALESCE(tp2_hit, 0), COALESCE(tp1_fraction, 0.5), "
+                    "COALESCE(tp2_fraction, 0.0), COALESCE(trailing_active, 0), COALESCE(trailing_stop_price, 0.0), "
+                    "COALESCE(trailing_atr_mult, 0.0), COALESCE(entry_atr, 0.0) "
                     "FROM paper_positions WHERE rowid > ? ORDER BY rowid", (p_epoch,))
                 pos_rows = cur.fetchall()
 
@@ -447,11 +570,26 @@ class PaperTradingEngine:
                     fees_paid=f(r[12]), entry_timestamp=int(r[13] or 0), strategy_type=r[14] or "DIRECTIONAL",
                     status=r[15], tp1_price=f(r[16]), tp1_hit=bool(r[17]), tp2_price=f(r[18]),
                     initial_quantity=f(r[19]), leverage=max(1.0, f(r[20])),
+                    tp3_price=f(r[21]), tp2_hit=bool(r[22]), tp1_fraction=f(r[23]), tp2_fraction=f(r[24]),
+                    trailing_active=bool(r[25]), trailing_stop_price=f(r[26]), trailing_atr_mult=f(r[27]),
+                    entry_atr=f(r[28]),
                 )
+                if pos.trailing_active and pos.trailing_stop_price > 0 and pos.trailing_atr_mult > 0:
+                    # referência = extremo das barras fechadas que gerou o stop (stop +/- distância).
+                    # A barra em formação no momento do restart é descartada (só afrouxa informação, nunca vaza).
+                    d_trail = pos.trailing_atr_mult * pos.entry_atr
+                    pos.trail_ref_extreme = (pos.trailing_stop_price + d_trail if pos.side == "LONG"
+                                             else pos.trailing_stop_price - d_trail)
                 if pos.status == "OPEN":
                     open_pos[pos.position_id] = pos
                 else:
                     closed_pos.append(pos)
+
+            # P5: cursor de funding = último FUNDING já lançado no ledger (não reaplica após restart)
+            for h in history:
+                if h.action == "FUNDING" and h.position_id in open_pos:
+                    pp = open_pos[h.position_id]
+                    pp.funding_cursor_ms = max(pp.funding_cursor_ms, self._ts_ms(h.timestamp))
 
             self.balance = balance
             self.total_fees_paid = fees
@@ -703,6 +841,15 @@ class PaperTradingEngine:
             return True, "OK"
 
 
+    def can_execute_directional(self, timestamp: int, notional: float = 0.0) -> Tuple[bool, str]:
+        """P6a: RollbackGuard/circuit breaker também no DIRECIONAL (sem cota diária: o day trade não tem cota)."""
+        with self._lock:
+            if getattr(self, "rollback_guard", None):
+                allowed, reason = self.rollback_guard.can_open_new_position("DIRECTIONAL", strategy="DIRECTIONAL")
+                if not allowed:
+                    return False, f"Bloqueado pelo Circuit Breaker (Fase 7): {reason}"
+            return True, "OK"
+
     def get_daily_scalp_status(self) -> Dict[str, Any]:
         """Retorna telemetria da cota diária de scalps (mínimo 2, máximo 5)."""
         with self._lock:
@@ -787,6 +934,14 @@ class PaperTradingEngine:
     # ROTEAMENTO E EXECUÇÃO DE ORDENS SIMULADAS
     # =========================================================================
 
+    @staticmethod
+    def entry_timestamp_for(decision_ts: Union[int, float], strategy_type: str) -> Union[int, float]:
+        """P2: ts(t) da vela de decisão -> ts(t+1) = instante da entrada (preserva a unidade s/ms do chamador)."""
+        bar_ms = STRATEGY_PROFILES[strategy_type].bar_ms
+        if decision_ts > 1e11:
+            return int(decision_ts + bar_ms)
+        return int(decision_ts + bar_ms // 1000)
+
     def _resolve_leverage(self, side: str, exec_price: float, sl_price: float, requested: float) -> float:
         """Clamp 1..MAX_LEVERAGE (passos de 0.5) e garante SL ANTES da liquidação (senão reduz a alavancagem)."""
         lev = clamp_leverage(requested, MAX_LEVERAGE)
@@ -806,350 +961,211 @@ class PaperTradingEngine:
                      signal.position_size / lev_req)
         return margin, free_margin
 
+    # Metadados de entrada por tipo de oportunidade. A MECÂNICA de saída (ladder) é idêntica para todos.
+    _ENTRY_META: Dict[str, Dict[str, Any]] = {
+        # DIRECTIONAL (day trade 1h): entrada a mercado (taker + slippage), como antes; saídas = ladder comum.
+        "DIRECTIONAL": {"label": "Ordem Direcional", "cap": 0.5, "maker_entry": False, "atr_fallback_pct": 0.01},
+        "SCALP": {"label": "Scalp", "cap": 0.25, "maker_entry": True, "atr_fallback_pct": 0.005},
+        "GOLDEN_POT": {"label": "Golden Pot", "cap": 0.20, "maker_entry": True, "atr_fallback_pct": 0.008},
+    }
+
+    def _open_ladder_position(
+        self,
+        signal: TradeSignal,
+        current_price: float,
+        timestamp: int,
+        strategy_type: str,
+        leverage: float = 1.0,
+        tp1_atr_mult: Optional[float] = None,
+        tp2_atr_mult: Optional[float] = None,
+        tp3_atr_mult: Optional[float] = None,
+        sl_atr_mult: Optional[float] = None,
+        trail_atr_mult: Optional[float] = None,
+    ) -> Optional[PaperPosition]:
+        """Abre posição LONG/SHORT de qualquer estratégia com a Smart Trade Exit Ladder comum.
+
+        Multiplicadores não informados vêm de STRATEGY_PROFILES[strategy_type]. Para DIRECTIONAL o SL é o
+        do comitê (signal.stop_loss) quando válido; TP1/TP2/TP3 sempre derivam de ATR x multiplicador
+        (signal.take_profit do SignalGenerator não é mais usado como alvo único).
+        """
+        prof = STRATEGY_PROFILES[strategy_type]
+        meta = self._ENTRY_META[strategy_type]
+        label = meta["label"]
+        with self._lock:
+            if signal.direction not in ["BUY", "SELL"] or signal.is_vetoed:
+                return None
+
+            symbol = signal.symbol
+            if any(p.symbol == symbol and p.strategy_type == strategy_type and p.status == "OPEN"
+                   for p in self.positions.values()):
+                return None
+
+            if self.max_concurrent_positions is not None and self.max_concurrent_positions > 0:
+                open_count = len([p for p in self.positions.values() if p.status == "OPEN"])
+                if open_count >= self.max_concurrent_positions:
+                    logger.info(f"[{symbol}] {label} Rejeitado: Teto de posições simultâneas atingido ({open_count}/{self.max_concurrent_positions}).")
+                    return None
+
+            # P2: `timestamp` = abertura da vela de decisão t (fechada). Entrada a mercado em close(t) == open(t+1);
+            # o registro usa ts(t+1) = ts(t) + bar_ms (mesma convenção do BacktestEngine).
+            decision_ts = timestamp
+            timestamp = self.entry_timestamp_for(decision_ts, strategy_type)
+
+            # Dimensionamento: lote = margem (limitada pela margem livre); notional = margem x alavancagem
+            max_margin = self.balance * self.max_margin_utilization_pct
+            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
+            margin, free_margin = self._lot_margin(signal, lev_req, meta["cap"])
+            if margin < 10.0:  # Mínimo de $10 USD de margem
+                logger.info(f"[{symbol}] {label} Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
+                return None
+
+            if strategy_type == "SCALP":
+                can_exec, reason = self.can_execute_scalp(timestamp, notional=margin)
+            elif strategy_type == "GOLDEN_POT":
+                can_exec, reason = self.can_execute_golden_pot(timestamp, notional=margin)
+            else:
+                can_exec, reason = self.can_execute_directional(timestamp, notional=margin)   # P6a
+            if not can_exec:
+                logger.info(f"[{symbol}] {label} Rejeitado: {reason}")
+                return None
+
+            side = "LONG" if signal.direction == "BUY" else "SHORT"
+            if meta["maker_entry"]:
+                slip, fee_rate = MAKER_SLIPPAGE_PCT, self.maker_fee   # limit order: slippage mínimo + taxa maker
+            else:
+                slip, fee_rate = self.slippage_market, self.taker_fee   # mercado: slippage simétrico long/short
+            exec_price = current_price * (1.0 + slip) if side == "LONG" else current_price * (1.0 - slip)
+
+            atr = signal.atr if signal.atr and signal.atr > 0 else current_price * meta["atr_fallback_pct"]
+            m_tp1 = prof.tp1_atr_mult if tp1_atr_mult is None else tp1_atr_mult
+            m_tp2 = prof.tp2_atr_mult if tp2_atr_mult is None else tp2_atr_mult
+            m_tp3 = prof.tp3_atr_mult if tp3_atr_mult is None else tp3_atr_mult
+            m_trail = prof.trail_atr_mult if trail_atr_mult is None else trail_atr_mult
+            sgn = 1.0 if side == "LONG" else -1.0
+            sl_price = exec_price - sgn * (prof.sl_atr_mult if sl_atr_mult is None else sl_atr_mult) * atr
+            if strategy_type == "DIRECTIONAL" and sl_atr_mult is None:
+                sig_sl = float(signal.stop_loss or 0.0)
+                if sig_sl > 0 and ((side == "LONG" and sig_sl < exec_price) or (side == "SHORT" and sig_sl > exec_price)):
+                    sl_price = sig_sl
+            tp1_p = exec_price + sgn * m_tp1 * atr
+            tp2_p = exec_price + sgn * m_tp2 * atr
+            tp3_p = exec_price + sgn * m_tp3 * atr
+
+            lev = self._resolve_leverage(side, exec_price, sl_price, lev_req)   # SL sempre antes da liquidação
+            notional = margin * lev
+            qty = notional / exec_price
+            fee = notional * fee_rate
+
+            if (self.margin_used + margin + fee) > max_margin:
+                logger.info(f"[{symbol}] {label} Rejeitado: Excede margem máxima permitida.")
+                return None
+
+            pos_id = str(uuid.uuid4())[:8]
+            pos = PaperPosition(
+                position_id=pos_id, symbol=symbol, side=side, entry_price=exec_price, current_price=exec_price,
+                quantity=qty, notional=notional, stop_loss=sl_price, take_profit=tp3_p,
+                highest_price=exec_price, lowest_price=exec_price, fees_paid=fee, entry_timestamp=timestamp,
+                strategy_type=strategy_type, status="OPEN",
+                tp1_price=tp1_p, tp1_hit=False, tp2_price=tp2_p, initial_quantity=qty, leverage=lev,
+                tp3_price=tp3_p, tp2_hit=False, tp1_fraction=EXIT_TP1_FRACTION, tp2_fraction=EXIT_TP2_FRACTION,
+                trailing_active=False, trailing_stop_price=0.0, trailing_atr_mult=m_trail, entry_atr=atr,
+                funding_cursor_ms=self._ts_ms(timestamp), last_bar_close=current_price,
+            )
+
+            if strategy_type == "SCALP":
+                action = f"OPEN_SCALP_{side}"
+                rationale = f"Scalp Diário ({self.daily_scalps_count + 1}/{self.max_daily_scalps}) | {signal.rationale}"
+            elif strategy_type == "GOLDEN_POT":
+                action = f"OPEN_GOLDEN_POT_{side}"
+                rationale = f"Golden Pot ({self.daily_golden_pots_count + 1}/{self.max_daily_golden_pots}) | {signal.rationale}"
+            else:
+                action = f"OPEN_{side}"
+                rationale = signal.rationale
+            trade = PaperTrade(
+                trade_id=str(uuid.uuid4())[:8], position_id=pos_id, symbol=symbol, action=action,
+                price=exec_price, quantity=qty, fee=fee, pnl=0.0, timestamp=timestamp, rationale=rationale,
+            )
+
+            # Persistência atômica no SQLite com integridade e rollback garantidos
+            try:
+                self._save_position(pos)
+                self._save_trade(trade)
+            except Exception as exc:
+                logger.error(f"Falha ao persistir {label} no SQLite: {exc}. Rollback do estado em memória.")
+                return None
+
+            self.balance -= fee
+            self.total_fees_paid += fee
+            if strategy_type == "SCALP":
+                self.daily_scalps_count += 1
+            elif strategy_type == "GOLDEN_POT":
+                self.daily_golden_pots_count += 1
+            self.positions[pos_id] = pos
+            self.trade_history.append(trade)
+
+            logger.info(
+                f"[{symbol}] {label} {side} ABERTO @ ${exec_price:,.2f} | Lev: {lev:g}x | Margem: ${margin:,.2f} | "
+                f"SL: ${sl_price:,.2f} | TP1: ${tp1_p:,.2f} | TP2: ${tp2_p:,.2f} | TP3: ${tp3_p:,.2f} | "
+                f"Trail: {m_trail:g}xATR | Risco: ${signal.risk_dollars:.2f}"
+            )
+            return pos
+
     def execute_directional_signal(
         self,
         signal: TradeSignal,
         current_price: float,
         timestamp: int,
         leverage: float = 1.0,
+        **ladder_overrides: Optional[float],
     ) -> Optional[PaperPosition]:
-        """Abre ou gerencia uma posição direcional a partir de um sinal do comitê.
+        """Abre posição DIRECTIONAL (day trade 1h) a partir de um sinal do comitê, com a ladder comum.
 
         `leverage` é decidida pelo Smart Trader (leverage_policy); aqui só é clampada (1..5) e
         reduzida se o SL ficar além do preço de liquidação. margem = lote; notional = margem x lev.
+        Entrada taker (+slippage); TP1/TP2/TP3 maker; SL/BE/trailing taker.
         """
-        with self._lock:
-            if signal.direction not in ["BUY", "SELL"] or signal.is_vetoed:
-                return None
-
-            symbol = signal.symbol
-            # Verifica se já há posição aberta no par
-            existing = [p for p in self.positions.values() if p.symbol == symbol and p.strategy_type == "DIRECTIONAL" and p.status == "OPEN"]
-            if existing:
-                return None
-
-            if self.max_concurrent_positions is not None and self.max_concurrent_positions > 0:
-                open_count = len([p for p in self.positions.values() if p.status == "OPEN"])
-                if open_count >= self.max_concurrent_positions:
-                    logger.info(f"[{symbol}] Ordem Direcional Rejeitada: Teto de posições simultâneas atingido ({open_count}/{self.max_concurrent_positions}).")
-                    return None
-
-            # Dimensionamento de lote com limite estrito de margem livre
-            max_margin = self.balance * self.max_margin_utilization_pct
-            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
-            margin, free_margin = self._lot_margin(signal, lev_req, 0.5)
-            if margin < 10.0:  # Mínimo de $10 USD de margem
-                logger.info(f"[{symbol}] Ordem Direcional Rejeitada: Margem livre insuficiente (${free_margin:,.2f}).")
-                return None
-
-            side = "LONG" if signal.direction == "BUY" else "SHORT"
-            slip = self.slippage_perp if side == "SHORT" else self.slippage_spot
-            exec_price = current_price * (1.0 + slip) if side == "LONG" else current_price * (1.0 - slip)
-            lev = self._resolve_leverage(side, exec_price, signal.stop_loss, lev_req)
-            notional = margin * lev
-            qty = notional / exec_price
-            fee = notional * self.taker_fee
-
-            if (self.margin_used + margin + fee) > max_margin:
-                logger.info(f"[{symbol}] Ordem Direcional Rejeitada: Excede margem máxima permitida.")
-                return None
-
-            pos_id = str(uuid.uuid4())[:8]
-            pos = PaperPosition(
-                position_id=pos_id,
-                symbol=symbol,
-                side=side,
-                entry_price=exec_price,
-                current_price=exec_price,
-                quantity=qty,
-                notional=notional,
-                stop_loss=signal.stop_loss,
-                take_profit=signal.take_profit,
-                highest_price=exec_price,
-                lowest_price=exec_price,
-                fees_paid=fee,
-                entry_timestamp=timestamp,
-                strategy_type="DIRECTIONAL",
-                status="OPEN",
-                leverage=lev,
-            )
-
-            trade = PaperTrade(
-                trade_id=str(uuid.uuid4())[:8],
-                position_id=pos_id,
-                symbol=symbol,
-                action=f"OPEN_{side}",
-                price=exec_price,
-                quantity=qty,
-                fee=fee,
-                pnl=0.0,
-                timestamp=timestamp,
-                rationale=signal.rationale,
-            )
-
-            try:
-                self._save_position(pos)
-                self._save_trade(trade)
-            except Exception as exc:
-                logger.error(f"Falha ao persistir ordem direcional no SQLite: {exc}. Rollback executado.")
-                return None
-
-            self.balance -= fee
-            self.total_fees_paid += fee
-            self.positions[pos_id] = pos
-            self.trade_history.append(trade)
-
-            logger.info(f"[{symbol}] Ordem Simulada {side} ABERTA @ ${exec_price:,.2f} | Qtd: {qty:.4f} | Lev: {lev:g}x | Margem: ${margin:,.2f} | Risco: ${signal.risk_dollars:.2f}")
-            return pos
+        return self._open_ladder_position(signal, current_price, timestamp, "DIRECTIONAL", leverage, **ladder_overrides)
 
     def execute_scalp_signal(
         self,
         signal: TradeSignal,
         current_price: float,
         timestamp: int,
-        tp1_atr_mult: float = 1.0,
-        tp2_atr_mult: float = 1.8,
-        sl_atr_mult: float = 0.9,
+        tp1_atr_mult: Optional[float] = None,
+        tp2_atr_mult: Optional[float] = None,
+        sl_atr_mult: Optional[float] = None,
         leverage: float = 1.0,
+        tp3_atr_mult: Optional[float] = None,
+        trail_atr_mult: Optional[float] = None,
     ) -> Optional[PaperPosition]:
+        """Scalp intradiário (15m) - cota diária estrita; entrada maker; saídas = ladder comum (perfil SCALP).
+
+        Só deve ser chamado com sinal APROVADO pelo comitê (ver run_paper_simulation.evaluate_scalp_opportunities).
         """
-        Executa um scalp intradiário cirúrgico (15m) com cota estrita de 2 a 5 trades por dia.
-        Usa taxas de ordem Maker (0.02%) e saída em múltiplos estágios (TP1 50% + SL Breakeven).
-        Thread-safe com proteção de lock e garantia de integridade transacional.
-        """
-        with self._lock:
-            if self.max_concurrent_positions is not None and self.max_concurrent_positions > 0:
-                open_count = len([p for p in self.positions.values() if p.status == "OPEN"])
-                if open_count >= self.max_concurrent_positions:
-                    logger.info(f"[{signal.symbol}] Scalp Rejeitado: Teto de posições simultâneas atingido ({open_count}/{self.max_concurrent_positions}).")
-                    return None
-
-            # Dimensionamento de lote para scalp (máx 25% do saldo e respeitando margem livre)
-            max_margin = self.balance * self.max_margin_utilization_pct
-            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
-            margin, free_margin = self._lot_margin(signal, lev_req, 0.25)
-            if margin < 10.0:
-                logger.info(f"[{signal.symbol}] Scalp Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
-                return None
-
-            can_exec, reason = self.can_execute_scalp(timestamp, notional=margin)
-            if not can_exec:
-                logger.info(f"[{signal.symbol}] Scalp Rejeitado: {reason}")
-                return None
-
-            if signal.direction not in ["BUY", "SELL"] or signal.is_vetoed:
-                return None
-
-            symbol = signal.symbol
-            # Verifica se já há scalp aberto no par
-            existing = [p for p in self.positions.values() if p.symbol == symbol and p.strategy_type == "SCALP" and p.status == "OPEN"]
-            if existing:
-                return None
-
-            side = "LONG" if signal.direction == "BUY" else "SHORT"
-            
-            # Execução Maker para Day Trade (slippage mínimo 0.01%)
-            maker_slip = 0.0001
-            exec_price = current_price * (1.0 + maker_slip) if side == "LONG" else current_price * (1.0 - maker_slip)
-
-            atr = signal.atr if signal.atr > 0 else (current_price * 0.005)
-            if side == "LONG":
-                sl_price = exec_price - (sl_atr_mult * atr)
-                tp1_p = exec_price + (tp1_atr_mult * atr)
-                tp2_p = exec_price + (tp2_atr_mult * atr)
-            else:
-                sl_price = exec_price + (sl_atr_mult * atr)
-                tp1_p = exec_price - (tp1_atr_mult * atr)
-                tp2_p = exec_price - (tp2_atr_mult * atr)
-
-            lev = self._resolve_leverage(side, exec_price, sl_price, lev_req)
-            notional = margin * lev
-            qty = notional / exec_price
-            fee = notional * self.maker_fee  # Taxa Maker de 0.02%
-
-            if (self.margin_used + margin + fee) > max_margin:
-                logger.info(f"[{symbol}] Scalp Rejeitado: Excede margem máxima permitida.")
-                return None
-
-            pos_id = str(uuid.uuid4())[:8]
-            pos = PaperPosition(
-                position_id=pos_id,
-                symbol=symbol,
-                side=side,
-                entry_price=exec_price,
-                current_price=exec_price,
-                quantity=qty,
-                notional=notional,
-                stop_loss=sl_price,
-                take_profit=tp2_p,
-                highest_price=exec_price,
-                lowest_price=exec_price,
-                fees_paid=fee,
-                entry_timestamp=timestamp,
-                strategy_type="SCALP",
-                status="OPEN",
-                tp1_price=tp1_p,
-                tp1_hit=False,
-                tp2_price=tp2_p,
-                initial_quantity=qty,
-                leverage=lev,
-            )
-
-            next_quota_num = self.daily_scalps_count + 1
-            trade = PaperTrade(
-                trade_id=str(uuid.uuid4())[:8],
-                position_id=pos_id,
-                symbol=symbol,
-                action=f"OPEN_SCALP_{side}",
-                price=exec_price,
-                quantity=qty,
-                fee=fee,
-                pnl=0.0,
-                timestamp=timestamp,
-                rationale=f"Scalp Diário ({next_quota_num}/{self.max_daily_scalps}) | {signal.rationale}",
-            )
-
-            # Persistência atômica no SQLite com integridade e rollback garantidos
-            try:
-                self._save_position(pos)
-                self._save_trade(trade)
-            except Exception as exc:
-                logger.error(f"Falha ao persistir scalp no SQLite: {exc}. Rollback do estado em memória.")
-                return None
-
-            self.balance -= fee
-            self.total_fees_paid += fee
-            self.daily_scalps_count += 1
-            self.positions[pos_id] = pos
-            self.trade_history.append(trade)
-
-            logger.info(f"[{symbol}] Scalp {side} #{self.daily_scalps_count} ABERTO @ ${exec_price:,.2f} | TP1: ${tp1_p:,.2f} | TP2: ${tp2_p:,.2f} | SL: ${sl_price:,.2f}")
-            return pos
+        return self._open_ladder_position(
+            signal, current_price, timestamp, "SCALP", leverage,
+            tp1_atr_mult=tp1_atr_mult, tp2_atr_mult=tp2_atr_mult, tp3_atr_mult=tp3_atr_mult,
+            sl_atr_mult=sl_atr_mult, trail_atr_mult=trail_atr_mult,
+        )
 
     def execute_golden_pot_signal(
         self,
         signal: TradeSignal,
         current_price: float,
         timestamp: int,
-        tp1_atr_mult: float = 1.2,
-        tp2_atr_mult: float = 2.5,
-        sl_atr_mult: float = 1.0,
+        tp1_atr_mult: Optional[float] = None,
+        tp2_atr_mult: Optional[float] = None,
+        sl_atr_mult: Optional[float] = None,
         leverage: float = 1.0,
+        tp3_atr_mult: Optional[float] = None,
+        trail_atr_mult: Optional[float] = None,
     ) -> Optional[PaperPosition]:
-        """
-        Executa operação originada de detecção do GoldenPotAgent (Golden Pot de Alta Convicção).
-        Possui cota independente (máx 3/dia) que NÃO consome a cota de scalps diários padrões!
-        Utiliza microestrutura Maker (0.02%) e saídas parciais (TP1 50% + Breakeven stop + TP2).
-        Thread-safe com proteção de lock.
-        """
-        with self._lock:
-            if self.max_concurrent_positions is not None and self.max_concurrent_positions > 0:
-                open_count = len([p for p in self.positions.values() if p.status == "OPEN"])
-                if open_count >= self.max_concurrent_positions:
-                    logger.info(f"[{signal.symbol}] Golden Pot Rejeitado: Teto de posições simultâneas atingido ({open_count}/{self.max_concurrent_positions}).")
-                    return None
-
-            # Dimensionamento de lote para Golden Pot (máx 20% do saldo e respeitando margem livre)
-            max_margin = self.balance * self.max_margin_utilization_pct
-            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
-            margin, free_margin = self._lot_margin(signal, lev_req, 0.20)
-            if margin < 10.0:
-                logger.info(f"[{signal.symbol}] Golden Pot Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
-                return None
-
-            can_exec, reason = self.can_execute_golden_pot(timestamp, notional=margin)
-            if not can_exec:
-                logger.info(f"[{signal.symbol}] Golden Pot Rejeitado: {reason}")
-                return None
-
-            if signal.direction not in ["BUY", "SELL"] or signal.is_vetoed:
-                return None
-
-            symbol = signal.symbol
-            # Verifica se já há golden pot aberto no par
-            existing = [p for p in self.positions.values() if p.symbol == symbol and p.strategy_type == "GOLDEN_POT" and p.status == "OPEN"]
-            if existing:
-                return None
-
-            side = "LONG" if signal.direction == "BUY" else "SHORT"
-            
-            # Execução Maker para Golden Pot (slippage mínimo 0.01%)
-            maker_slip = 0.0001
-            exec_price = current_price * (1.0 + maker_slip) if side == "LONG" else current_price * (1.0 - maker_slip)
-
-            atr = signal.atr if signal.atr > 0 else (current_price * 0.008)
-            if side == "LONG":
-                sl_price = exec_price - (sl_atr_mult * atr)
-                tp1_p = exec_price + (tp1_atr_mult * atr)
-                tp2_p = exec_price + (tp2_atr_mult * atr)
-            else:
-                sl_price = exec_price + (sl_atr_mult * atr)
-                tp1_p = exec_price - (tp1_atr_mult * atr)
-                tp2_p = exec_price - (tp2_atr_mult * atr)
-
-            lev = self._resolve_leverage(side, exec_price, sl_price, lev_req)
-            notional = margin * lev
-            qty = notional / exec_price
-            fee = notional * self.maker_fee  # Taxa Maker 0.02%
-
-            if (self.margin_used + margin + fee) > max_margin:
-                logger.info(f"[{symbol}] Golden Pot Rejeitado: Excede margem máxima permitida.")
-                return None
-
-            pos_id = str(uuid.uuid4())[:8]
-            pos = PaperPosition(
-                position_id=pos_id,
-                symbol=symbol,
-                side=side,
-                entry_price=exec_price,
-                current_price=exec_price,
-                quantity=qty,
-                notional=notional,
-                stop_loss=sl_price,
-                take_profit=tp2_p,
-                highest_price=exec_price,
-                lowest_price=exec_price,
-                fees_paid=fee,
-                entry_timestamp=timestamp,
-                strategy_type="GOLDEN_POT",
-                status="OPEN",
-                tp1_price=tp1_p,
-                tp1_hit=False,
-                tp2_price=tp2_p,
-                initial_quantity=qty,
-                leverage=lev,
-            )
-
-            next_quota_num = self.daily_golden_pots_count + 1
-            trade = PaperTrade(
-                trade_id=str(uuid.uuid4())[:8],
-                position_id=pos_id,
-                symbol=symbol,
-                action=f"OPEN_GOLDEN_POT_{side}",
-                price=exec_price,
-                quantity=qty,
-                fee=fee,
-                pnl=0.0,
-                timestamp=timestamp,
-                rationale=f"Golden Pot ({next_quota_num}/{self.max_daily_golden_pots}) | {signal.rationale}",
-            )
-
-            # Persistência atômica no SQLite com integridade e rollback garantidos
-            try:
-                self._save_position(pos)
-                self._save_trade(trade)
-            except Exception as exc:
-                logger.error(f"Falha ao persistir Golden Pot no SQLite: {exc}. Rollback do estado em memória.")
-                return None
-
-            self.balance -= fee
-            self.total_fees_paid += fee
-            self.daily_golden_pots_count += 1
-            self.positions[pos_id] = pos
-            self.trade_history.append(trade)
-
-            logger.info(f"[{symbol}] Golden Pot {side} #{self.daily_golden_pots_count} ABERTO @ ${exec_price:,.2f} | TP1: ${tp1_p:,.2f} | TP2: ${tp2_p:,.2f} | SL: ${sl_price:,.2f}")
-            return pos
+        """Golden Pot (momentum + volatilidade extraordinária) - cota própria (máx 3/dia); ladder comum (perfil GOLDEN_POT)."""
+        return self._open_ladder_position(
+            signal, current_price, timestamp, "GOLDEN_POT", leverage,
+            tp1_atr_mult=tp1_atr_mult, tp2_atr_mult=tp2_atr_mult, tp3_atr_mult=tp3_atr_mult,
+            sl_atr_mult=sl_atr_mult, trail_atr_mult=trail_atr_mult,
+        )
 
     def execute_carry_allocation(
         self,
@@ -1250,17 +1266,13 @@ class PaperTradingEngine:
             if pos.status != "OPEN":
                 return None
 
-            # A1: apenas TP2 (limit order) de SCALP/GOLDEN_POT é maker. SL, BREAKEVEN_STOP e
-            # MANUAL são ordens a mercado: taker + slippage perp.
-            is_scalp_like = pos.strategy_type in ["SCALP", "GOLDEN_POT"]
-            is_maker_exit = is_scalp_like and reason == "TAKE_PROFIT_2"
+            # A1/E7: apenas TP1/TP2/TP3 (ordens limite) são maker, em QUALQUER estratégia de ladder. SL,
+            # BREAKEVEN_STOP, TRAILING_STOP, MANUAL_CLOSE e LIQUIDATION são a mercado: taker + slippage.
+            # (reason legado "TAKE_PROFIT" de posições direcionais pré-E7 continua taker.)
+            is_maker_exit = reason in MAKER_EXIT_REASONS and pos.side in ("LONG", "SHORT")
             fee_rate = self.maker_fee if is_maker_exit else self.taker_fee
-            if is_maker_exit:
-                slip = 0.0001
-            elif is_scalp_like:
-                slip = self.slippage_perp
-            else:
-                slip = self.slippage_perp if pos.side == "SHORT" else self.slippage_spot
+            # slippage único e simétrico (long == short) para ordens a mercado; limite = maker
+            slip = MAKER_SLIPPAGE_PCT if is_maker_exit else self.slippage_market
 
             if pos.side == "LONG":
                 exec_price = exit_price * (1.0 - slip)
@@ -1345,6 +1357,227 @@ class PaperTradingEngine:
     # ATUALIZAÇÃO INTRA-BARRA E ROLAGEM DE MERCADO
     # =========================================================================
 
+    # =========================================================================
+    # SMART TRADE EXIT LADDER (E7): TP1 -> BE, TP2 -> trailing, TP3/trailing no runner
+    # =========================================================================
+
+    @staticmethod
+    def _uses_ladder(pos: PaperPosition) -> bool:
+        """Posições SCALP/GOLDEN_POT/DIRECTIONAL LONG/SHORT usam a ladder. Direcional pré-E7 (sem tp1) segue legado."""
+        if pos.side not in ("LONG", "SHORT"):
+            return False
+        if pos.strategy_type in ("SCALP", "GOLDEN_POT"):
+            return True
+        return pos.strategy_type == "DIRECTIONAL" and pos.tp1_price > 0.0
+
+    def _ladder_partial(self, pos: PaperPosition, price: float, fraction: float, action: str,
+                        timestamp: int, label: str, note: str, triggered: List[PaperTrade]) -> PaperTrade:
+        """Realiza uma saída parcial a limite (maker, sem slippage no preço do alvo). PnL/fee/ledger por parcial."""
+        sgn = 1.0 if pos.side == "LONG" else -1.0
+        base = pos.initial_quantity if pos.initial_quantity > 0 else pos.quantity
+        qty = min(base * fraction, pos.quantity)
+        gross = sgn * (price - pos.entry_price) * qty
+        fee = price * qty * self.maker_fee
+        net = gross - fee
+        pos.quantity -= qty
+        pos.realized_pnl += net
+        pos.fees_paid += fee
+        self.balance += net                     # net já deduz a taxa da parcial
+        self.total_fees_paid += fee
+        self.total_realized_pnl += net
+        trade = PaperTrade(
+            trade_id=str(uuid.uuid4())[:8], position_id=pos.position_id, symbol=pos.symbol, action=action,
+            price=price, quantity=qty, fee=fee, pnl=net, timestamp=timestamp,
+            rationale=f"{label} Parcial ({fraction:.0%}) atingido @ ${price:,.2f} | {note}",
+        )
+        self.trade_history.append(trade)
+        self._save_trade(trade)
+        triggered.append(trade)
+        logger.info(f"[{pos.symbol}] {action} ({label}, {fraction:.0%}) @ ${price:,.2f} | PnL: ${net:+.2f} | {note}")
+        return trade
+
+    def _ratchet_trailing(self, pos: PaperPosition, bar_high: float, bar_low: float) -> None:
+        """Incorpora extremos de uma barra FECHADA ao trailing. Nunca afrouxa (só sobe p/ LONG, só desce p/ SHORT)."""
+        dist = pos.trailing_atr_mult * pos.entry_atr
+        if dist <= 0.0:
+            return
+        if pos.side == "LONG":
+            pos.trail_ref_extreme = max(pos.trail_ref_extreme, bar_high)
+            cand = pos.trail_ref_extreme - dist
+            if cand > pos.trailing_stop_price:
+                pos.trailing_stop_price = cand
+            if pos.trailing_stop_price > pos.stop_loss:
+                pos.stop_loss = pos.trailing_stop_price
+        else:
+            pos.trail_ref_extreme = bar_low if pos.trail_ref_extreme <= 0.0 else min(pos.trail_ref_extreme, bar_low)
+            cand = pos.trail_ref_extreme + dist
+            if pos.trailing_stop_price <= 0.0 or cand < pos.trailing_stop_price:
+                pos.trailing_stop_price = cand
+            if pos.trailing_stop_price > 0.0 and (pos.stop_loss <= 0.0 or pos.trailing_stop_price < pos.stop_loss):
+                pos.stop_loss = pos.trailing_stop_price
+
+    def _close_ladder_on_stop(self, pos: PaperPosition, high: float, low: float, timestamp: int,
+                              triggered: List[PaperTrade], open_price: Optional[float] = None) -> None:
+        if not pos.tp1_hit:
+            reason = "STOP_LOSS"
+        elif pos.trailing_active and pos.trailing_stop_price > 0.0 and pos.stop_loss == pos.trailing_stop_price:
+            reason = "TRAILING_STOP"
+        else:
+            reason = "BREAKEVEN_STOP"
+        # um stop não pode preencher fora do range da barra (gap): LONG vende <= high, SHORT compra >= low.
+        # Gap de abertura (igual ao BacktestEngine): se a barra ABRE além do stop vigente, o fill é o PIOR entre
+        # stop e open (LONG: min(sl, open); SHORT: max(sl, open)). `open_price` só é informado para o stop que já
+        # existia ANTES da barra (stop pós-TP1 na mesma barra não sofre o gap do open).
+        if pos.side == "LONG":
+            fill = min(pos.stop_loss, high)
+            if open_price is not None and open_price > 0.0:
+                fill = min(fill, open_price)
+        else:
+            fill = max(pos.stop_loss, low)
+            if open_price is not None and open_price > 0.0:
+                fill = max(fill, open_price)
+        t = self.close_position(pos.position_id, fill, timestamp, reason=reason)
+        if t:
+            triggered.append(t)
+
+    def _process_ladder_bar(self, pos: PaperPosition, high: float, low: float, close: float,
+                            timestamp: int, triggered: List[PaperTrade], open_price: Optional[float] = None) -> None:
+        """Processa UMA barra para posição com ladder. Ordem conservadora e sem lookahead:
+
+        0. barra anterior (já fechada) é incorporada ao trailing -> stop efetivo desta barra;
+        1. stop vigente (SL/BE/trailing, definido ANTES desta barra) tem prioridade sobre qualquer TP;
+        2. TP1 (maker) -> SL = breakeven; se a mesma barra toca o BE, assume BE depois do TP1 (conservador);
+        3. TP2 (maker) -> ativa trailing (efetivo só a partir da próxima barra);
+        4. TP3 (maker) fecha o runner. Extremos desta barra só alimentam o trailing na barra seguinte.
+        Ticks repetidos da mesma barra em formação (daemon, 15s) apenas acumulam extremos.
+        """
+        long = pos.side == "LONG"
+        sgn = 1.0 if long else -1.0
+        ts = self._ts_ms(timestamp)
+        pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
+
+        if pos.trailing_active and pos.trail_bar_ts > 0.0 and ts > pos.trail_bar_ts:
+            self._ratchet_trailing(pos, pos.trail_bar_high, pos.trail_bar_low)   # barra anterior fechou
+            pos.trail_bar_ts = 0.0
+
+        def stop_hit() -> bool:
+            return (low <= pos.stop_loss) if long else (high >= pos.stop_loss)
+
+        def reached(level: float) -> bool:
+            return level > 0.0 and ((high >= level) if long else (low <= level))
+
+        if stop_hit():
+            self._close_ladder_on_stop(pos, high, low, timestamp, triggered, open_price=open_price)
+            return
+
+        label = {"GOLDEN_POT": "Golden Pot", "SCALP": "Scalp"}.get(pos.strategy_type, "Direcional")
+        if not pos.tp1_hit and reached(pos.tp1_price):
+            pos.tp1_hit = True
+            be = pos.entry_price * (1.0 + sgn * BREAKEVEN_FEE_BUFFER_PCT)
+            pos.stop_loss = max(pos.stop_loss, be) if long else min(pos.stop_loss, be)   # nunca afrouxa
+            self._ladder_partial(pos, pos.tp1_price, pos.tp1_fraction, "TP1_PARTIAL", timestamp,
+                                 f"TP1 {label}", "SL elevado para Breakeven", triggered)
+            pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
+            if stop_hit():
+                self._close_ladder_on_stop(pos, high, low, timestamp, triggered)
+                return
+
+        if pos.tp1_hit and not pos.tp2_hit and reached(pos.tp2_price):
+            if pos.tp3_price <= 0.0:   # posição legada (pré-E7): TP2 encerra o restante
+                t = self.close_position(pos.position_id, pos.tp2_price, timestamp, reason="TAKE_PROFIT_2")
+                if t:
+                    triggered.append(t)
+                return
+            pos.tp2_hit = True
+            self._ladder_partial(pos, pos.tp2_price, pos.tp2_fraction, "TP2_PARTIAL", timestamp,
+                                 f"TP2 {label}", "trailing stop ativado no runner", triggered)
+            if pos.trailing_atr_mult > 0.0 and pos.entry_atr > 0.0:
+                pos.trailing_active = True
+                pos.trail_ref_extreme = pos.tp2_price   # TP2 foi negociado -> extremo já observado
+                pos.trail_bar_ts = 0.0
+                self._ratchet_trailing(pos, pos.tp2_price, pos.tp2_price)
+            pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
+
+        if pos.tp2_hit and reached(pos.tp3_price):
+            t = self.close_position(pos.position_id, pos.tp3_price, timestamp, reason="TAKE_PROFIT_3")
+            if t:
+                triggered.append(t)
+            return
+
+        if pos.trailing_active:   # acumula esta barra; só vira stop quando a barra seguinte chegar
+            if pos.trail_bar_ts <= 0.0 or ts > pos.trail_bar_ts:
+                pos.trail_bar_ts, pos.trail_bar_high, pos.trail_bar_low = ts, high, low
+            elif ts == pos.trail_bar_ts:
+                pos.trail_bar_high = max(pos.trail_bar_high, high)
+                pos.trail_bar_low = min(pos.trail_bar_low, low)
+        self._save_position(pos)
+
+    # =========================================================================
+    # P5: FUNDING real em posições direcionais/scalp/GP
+    # =========================================================================
+
+    def _funding_rate_at(self, symbol: str, at_ms: float) -> Tuple[float, str]:
+        """Taxa de funding vigente em `at_ms`: último registro (<= at_ms) de `funding_rates` com <= 8h de idade
+        (SQLite, SEM rede). Retorna (taxa, fonte). Sem registro -> (default_funding_rate_8h, 'FALLBACK')."""
+        try:
+            with self._get_connection() as con:
+                row = con.execute(
+                    "SELECT funding_rate FROM funding_rates WHERE exchange='binance' AND symbol=? "
+                    "AND timestamp <= ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT 1",
+                    (symbol, int(at_ms + FUNDING_RATE_MATCH_TOLERANCE_MS),
+                     int(at_ms - FUNDING_INTERVAL_MS - FUNDING_RATE_MATCH_TOLERANCE_MS))).fetchone()
+            if row is not None and row[0] is not None:
+                return float(row[0]), "CACHE"
+        except Exception:
+            pass   # tabela ausente/DB indisponível -> fallback documentado
+        return float(self.default_funding_rate_8h), "FALLBACK"
+
+    def has_funding_rate(self, symbol: str, at_ms: float) -> bool:
+        return self._funding_rate_at(symbol, at_ms)[1] == "CACHE"
+
+    def _apply_funding(self, pos: PaperPosition, timestamp: int, mark: float, triggered: List[PaperTrade]) -> None:
+        """Aplica as liquidações de funding (entry + k*8h) em (cursor, ts_da_barra]. Lança linha FUNDING no
+        ledger (pnl<0 = paga) -> saldo/restore consistentes. notional = quantidade restante x mark."""
+        now_ms = self._ts_ms(timestamp)
+        cursor = pos.funding_cursor_ms if pos.funding_cursor_ms > 0.0 else self._ts_ms(pos.entry_timestamp)
+        settle = int(cursor) + FUNDING_INTERVAL_MS
+        n = 0
+        last_applied = cursor
+        sgn = 1.0 if pos.side == "LONG" else -1.0
+        while settle <= now_ms and n < FUNDING_MAX_SETTLEMENTS_PER_TICK:
+            rate, src = self._funding_rate_at(pos.symbol, settle)
+            amount = -sgn * rate * pos.quantity * mark
+            pos.funding_collected += amount
+            pos.realized_pnl += amount
+            self.balance += amount
+            self.total_realized_pnl += amount
+            trade = PaperTrade(
+                trade_id=str(uuid.uuid4())[:8], position_id=pos.position_id, symbol=pos.symbol, action="FUNDING",
+                price=mark, quantity=pos.quantity, fee=0.0, pnl=amount, timestamp=int(settle),
+                rationale=f"Funding {rate:+.4%} ({src}) {'paga' if amount < 0 else 'recebe'} ${abs(amount):.4f}",
+            )
+            self.trade_history.append(trade)
+            self._save_trade(trade)
+            last_applied = float(settle)
+            n += 1
+            settle += FUNDING_INTERVAL_MS
+        pos.funding_cursor_ms = last_applied
+        if settle <= now_ms:                    # gap enorme (dados faltantes): descarta o excedente
+            pos.funding_cursor_ms = now_ms
+
+    def mark_to_market(self, symbol: str, price: float) -> None:
+        """Marca a mercado (UI) com o preço da barra em formação SEM disparar SL/TP/trailing/funding/timeout
+        (gatilhos só em barras FECHADAS - paridade com o backtest)."""
+        if not price or price <= 0.0:
+            return
+        with self._lock:
+            for pos in self.positions.values():
+                if pos.symbol != symbol or pos.status != "OPEN" or pos.side not in ("LONG", "SHORT"):
+                    continue
+                sgn = 1.0 if pos.side == "LONG" else -1.0
+                pos.current_price = price
+                pos.unrealized_pnl = sgn * (price - pos.entry_price) * pos.quantity
+
     def update_market_tick(
         self,
         symbol: str,
@@ -1353,12 +1586,14 @@ class PaperTradingEngine:
         close: float,
         timestamp: int,
         funding_rate_period: float = 0.0,
+        open_price: Optional[float] = None,
     ) -> List[PaperTrade]:
         # Todo o ciclo de leitura/mutação roda sob RLock (reentrante com close_position),
         # evitando "dict changed size during iteration" e leituras inconsistentes de
         # equity/margin em threads concorrentes (Flask, supervisor).
         with self._lock:
-            return self._update_market_tick_locked(symbol, high, low, close, timestamp, funding_rate_period)
+            return self._update_market_tick_locked(symbol, high, low, close, timestamp, funding_rate_period,
+                                                   open_price=open_price)
 
     def _update_market_tick_locked(
         self,
@@ -1368,12 +1603,18 @@ class PaperTradingEngine:
         close: float,
         timestamp: int,
         funding_rate_period: float = 0.0,
+        open_price: Optional[float] = None,
     ) -> List[PaperTrade]:
         """
         Atualiza posições com a vela de mercado e verifica SL/TP intra-barra.
         Aplica o funding rate se for momento de liquidação (a cada 8h).
-        Suporta saídas parciais (TP1 50% + SL Breakeven) para Scalps Intradiários.
+        Ladder comum (TP1/TP2 parciais + BE + trailing + TP3) para SCALP/GOLDEN_POT/DIRECTIONAL: ver _process_ladder_bar.
         Thread-safe com proteção de lock.
+
+        `timestamp` = abertura da barra; a barra DEVE estar fechada (o daemon só alimenta barras fechadas; use
+        `mark_to_market` para o preço da barra em formação). `open_price` (opcional) habilita o fill de SL com gap
+        de abertura e o preço do timeout; sem ele usa-se o close da barra anterior (== open em cripto 24/7).
+        Ordem por barra (igual ao BacktestEngine): funding -> timeout -> stops/TPs.
         """
         with self._lock:
             triggered_trades: List[PaperTrade] = []
@@ -1386,16 +1627,36 @@ class PaperTradingEngine:
             if pos.symbol != symbol or pos.status != "OPEN":
                 continue
 
-            # A3: vela anterior/simultânea à entrada não pode disparar SL/TP com extremos
-            # que ocorreram antes da posição existir -> usa apenas o close.
-            if self._ts_ms(timestamp) <= self._ts_ms(pos.entry_timestamp):
+            # A3 (convenção P2): entry_timestamp = ts(t+1) = abertura da 1ª barra PÓS-entrada, que é processada com
+            # high/low completos (como o BacktestEngine). Barras que abriram ANTES da entrada (ts < entry) não
+            # podem disparar SL/TP com extremos anteriores à posição -> usa apenas o close.
+            pre_entry = self._ts_ms(timestamp) < self._ts_ms(pos.entry_timestamp)
+            if pre_entry:
                 high = low = close
+                bar_open = close
             else:
                 high, low = bar_high, bar_low
+                bar_open = open_price if (open_price is not None and open_price > 0.0) else None
+            prev_bar_close = pos.last_bar_close if pos.last_bar_close > 0.0 else pos.current_price
 
             pos.current_price = close
+            pos.last_bar_close = close
             pos.highest_price = max(pos.highest_price, high)
             pos.lowest_price = min(pos.lowest_price, low)
+
+            if pos.side in ("LONG", "SHORT") and not pre_entry:
+                # P5: funding real a cada 8h (long paga / short recebe quando funding > 0)
+                self._apply_funding(pos, timestamp, close, triggered_trades)
+                # P4: timeout por nº de barras do timeframe de decisão -> fecha a mercado (taker + slippage) no
+                # open da barra (== close da anterior), antes de qualquer SL/TP desta barra (ordem do backtest).
+                prof = STRATEGY_PROFILES.get(pos.strategy_type)
+                if prof is not None and prof.max_holding_bars > 0 and \
+                        self._ts_ms(timestamp) >= self._ts_ms(pos.entry_timestamp) + prof.max_holding_bars * prof.bar_ms:
+                    px = bar_open if bar_open else prev_bar_close
+                    t = self.close_position(pos_id, px, timestamp, reason="HORIZON_TIMEOUT")
+                    if t:
+                        triggered_trades.append(t)
+                    continue
 
             # Liquidação (alavancagem > 1x): só ocorre antes do SL se o SL estiver além da liquidação
             # (o engine garante SL antes da liquidação na abertura; defesa em profundidade).
@@ -1408,115 +1669,12 @@ class PaperTradingEngine:
                         triggered_trades.append(t)
                     continue
 
-            # 1. Estratégia SCALP ou GOLDEN_POT (Saídas Parciais TP1 50% + Breakeven Protegido + TP2)
-            if pos.strategy_type in ["SCALP", "GOLDEN_POT"]:
-                strat_name = "Golden Pot" if pos.strategy_type == "GOLDEN_POT" else "Scalp"
-                if pos.side == "LONG":
-                    pos.unrealized_pnl = (close - pos.entry_price) * pos.quantity
-                    # Gatilho TP1 Parcial (50%)
-                    if not pos.tp1_hit and high >= pos.tp1_price:
-                        pos.tp1_hit = True
-                        partial_qty = pos.initial_quantity * 0.5
-                        pnl_partial = (pos.tp1_price - pos.entry_price) * partial_qty
-                        fee_partial = (pos.tp1_price * partial_qty) * self.maker_fee
-                        net_partial = pnl_partial - fee_partial
-
-                        pos.quantity -= partial_qty
-                        pos.realized_pnl += net_partial
-                        pos.fees_paid += fee_partial
-                        self.balance += net_partial  # net_partial já deduz fee_partial
-                        self.total_fees_paid += fee_partial
-                        self.total_realized_pnl += net_partial
-
-                        # Move SL para Breakeven protegido (+0.04% para cobrir taxas)
-                        pos.stop_loss = pos.entry_price * 1.0004
-
-                        t_tp1 = PaperTrade(
-                            trade_id=str(uuid.uuid4())[:8],
-                            position_id=pos.position_id,
-                            symbol=pos.symbol,
-                            action="TP1_PARTIAL",
-                            price=pos.tp1_price,
-                            quantity=partial_qty,
-                            fee=fee_partial,
-                            pnl=net_partial,
-                            timestamp=timestamp,
-                            rationale=f"TP1 {strat_name} Parcial (50%) atingido @ ${pos.tp1_price:,.2f} | SL elevado para Breakeven",
-                        )
-                        self.trade_history.append(t_tp1)
-                        self._save_trade(t_tp1)
-                        triggered_trades.append(t_tp1)
-                        logger.info(f"[{pos.symbol}] TP1 {strat_name} (50%) EXECUTADO @ ${pos.tp1_price:,.2f} | PnL: ${net_partial:+.2f} | SL -> Breakeven")
-                        pos.unrealized_pnl = (close - pos.entry_price) * pos.quantity  # recalcula com qtd remanescente
-
-                    # Gatilho TP2 (encerra os 50% restantes)
-                    if pos.tp1_hit and high >= pos.tp2_price:
-                        t = self.close_position(pos_id, pos.tp2_price, timestamp, reason="TAKE_PROFIT_2")
-                        if t: triggered_trades.append(t)
-                        continue
-
-                    # Gatilho Stop Loss (ou Breakeven se TP1 já bateu)
-                    if low <= pos.stop_loss:
-                        reason = "BREAKEVEN_STOP" if pos.tp1_hit else "STOP_LOSS"
-                        t = self.close_position(pos_id, pos.stop_loss, timestamp, reason=reason)
-                        if t: triggered_trades.append(t)
-                        continue
-
-                elif pos.side == "SHORT":
-                    pos.unrealized_pnl = (pos.entry_price - close) * pos.quantity
-                    # Gatilho TP1 Parcial (50%)
-                    if not pos.tp1_hit and low <= pos.tp1_price:
-                        pos.tp1_hit = True
-                        partial_qty = pos.initial_quantity * 0.5
-                        pnl_partial = (pos.entry_price - pos.tp1_price) * partial_qty
-                        fee_partial = (pos.tp1_price * partial_qty) * self.maker_fee
-                        net_partial = pnl_partial - fee_partial
-
-                        pos.quantity -= partial_qty
-                        pos.realized_pnl += net_partial
-                        pos.fees_paid += fee_partial
-                        self.balance += net_partial  # net_partial já deduz fee_partial
-                        self.total_fees_paid += fee_partial
-                        self.total_realized_pnl += net_partial
-
-                        # Move SL para Breakeven protegido (-0.04% para cobrir taxas)
-                        pos.stop_loss = pos.entry_price * 0.9996
-
-                        t_tp1 = PaperTrade(
-                            trade_id=str(uuid.uuid4())[:8],
-                            position_id=pos.position_id,
-                            symbol=pos.symbol,
-                            action="TP1_PARTIAL",
-                            price=pos.tp1_price,
-                            quantity=partial_qty,
-                            fee=fee_partial,
-                            pnl=net_partial,
-                            timestamp=timestamp,
-                            rationale=f"TP1 {strat_name} Parcial (50%) atingido @ ${pos.tp1_price:,.2f} | SL reduzido para Breakeven",
-                        )
-                        self.trade_history.append(t_tp1)
-                        self._save_trade(t_tp1)
-                        triggered_trades.append(t_tp1)
-                        logger.info(f"[{pos.symbol}] TP1 {strat_name} (50%) EXECUTADO @ ${pos.tp1_price:,.2f} | PnL: ${net_partial:+.2f} | SL -> Breakeven")
-                        pos.unrealized_pnl = (pos.entry_price - close) * pos.quantity  # recalcula com qtd remanescente
-
-                    # Gatilho TP2 (encerra os 50% restantes)
-                    if pos.tp1_hit and low <= pos.tp2_price:
-                        t = self.close_position(pos_id, pos.tp2_price, timestamp, reason="TAKE_PROFIT_2")
-                        if t: triggered_trades.append(t)
-                        continue
-
-                    # Gatilho Stop Loss (ou Breakeven se TP1 já bateu)
-                    if high >= pos.stop_loss:
-                        reason = "BREAKEVEN_STOP" if pos.tp1_hit else "STOP_LOSS"
-                        t = self.close_position(pos_id, pos.stop_loss, timestamp, reason=reason)
-                        if t: triggered_trades.append(t)
-                        continue
-
-                self._save_position(pos)
+            # 1. LADDER comum (SCALP / GOLDEN_POT / DIRECTIONAL): TP1 40% + BE, TP2 30% + trailing, TP3/trailing no runner
+            if self._uses_ladder(pos):
+                self._process_ladder_bar(pos, high, low, close, timestamp, triggered_trades, open_price=bar_open)
                 continue
 
-            # 2. Estratégia DIRECTIONAL Padrão
+            # 2. DIRECTIONAL LEGADO (posição aberta antes do E7, sem tp1_price): SL/TP único, taker
             elif pos.side == "LONG":
                 pos.unrealized_pnl = (close - pos.entry_price) * pos.quantity
                 # Checagem de Stop Loss intra-barra
@@ -1570,14 +1728,18 @@ class PaperTradingEngine:
                     position_id, symbol, side, entry_price, current_price, quantity,
                     notional, stop_loss, take_profit, unrealized_pnl, realized_pnl,
                     funding_collected, fees_paid, entry_timestamp, strategy_type, status,
-                    tp1_price, tp1_hit, tp2_price, initial_quantity, leverage
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tp1_price, tp1_hit, tp2_price, initial_quantity, leverage,
+                    tp3_price, tp2_hit, tp1_fraction, tp2_fraction, trailing_active,
+                    trailing_stop_price, trailing_atr_mult, entry_atr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 pos.position_id, pos.symbol, pos.side, pos.entry_price, pos.current_price,
                 pos.quantity, pos.notional, pos.stop_loss, pos.take_profit,
                 pos.unrealized_pnl, pos.realized_pnl, pos.funding_collected,
                 pos.fees_paid, pos.entry_timestamp, pos.strategy_type, pos.status,
-                pos.tp1_price, 1 if pos.tp1_hit else 0, pos.tp2_price, pos.initial_quantity, pos.leverage
+                pos.tp1_price, 1 if pos.tp1_hit else 0, pos.tp2_price, pos.initial_quantity, pos.leverage,
+                pos.tp3_price, 1 if pos.tp2_hit else 0, pos.tp1_fraction, pos.tp2_fraction,
+                1 if pos.trailing_active else 0, pos.trailing_stop_price, pos.trailing_atr_mult, pos.entry_atr,
             ))
             con.commit()
 

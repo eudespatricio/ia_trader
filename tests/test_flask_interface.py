@@ -398,3 +398,48 @@ class TestPositionsEnrichment:
     def test_trades_endpoint_has_timestamp_ms(self, client, rich_db):
         t = client.get("/api/paper-trading/trades").get_json()["trades"]
         assert all(x["timestamp_ms"] >= 1700000000000 for x in t)
+
+
+class TestExitLadderApi:
+    @pytest.fixture
+    def ladder_db(self, tmp_path, monkeypatch):
+        import flask_interface
+        db = str(tmp_path / "ladder.db")
+        con = sqlite3.connect(db)
+        con.execute("""CREATE TABLE paper_positions (position_id TEXT PRIMARY KEY, symbol TEXT, side TEXT,
+            entry_price REAL, current_price REAL, quantity REAL, notional REAL, stop_loss REAL, take_profit REAL,
+            unrealized_pnl REAL, realized_pnl REAL, entry_timestamp INTEGER, strategy_type TEXT, status TEXT,
+            tp1_price REAL, tp1_hit INTEGER, tp2_price REAL, initial_quantity REAL, leverage REAL,
+            tp3_price REAL, tp2_hit INTEGER, tp1_fraction REAL, tp2_fraction REAL, trailing_active INTEGER,
+            trailing_stop_price REAL)""")
+        con.execute("""CREATE TABLE paper_trades (trade_id TEXT PRIMARY KEY, position_id TEXT, symbol TEXT, action TEXT,
+            price REAL, quantity REAL, fee REAL, pnl REAL, timestamp INTEGER, rationale TEXT)""")
+        con.execute("INSERT INTO paper_positions VALUES ('L','BTCUSDT','LONG',100,112,0.3,30,100,120,1,5,1700000000000,'SCALP','OPEN',105,1,110,1,3,120,1,0.4,0.3,1,108)")
+        con.execute("INSERT INTO paper_positions VALUES ('G','BTCUSDT','LONG',100,101,1,100,95,110,1,0,1700000000000,'SCALP','OPEN',0,0,0,1,3,0,0,0.5,0.0,0,0)")
+        con.execute("INSERT INTO paper_positions VALUES ('X','ETHUSDT','LONG',100,118,0,0,100,120,0,9,1700000000000,'SCALP','CLOSED',105,1,110,1,3,120,1,0.4,0.3,1,108)")
+        for i, (a, ts) in enumerate([("OPEN_SCALP_LONG", 0), ("TP1_PARTIAL", 1), ("TP2_PARTIAL", 2), ("TRAILING_STOP", 3)]):
+            con.execute("INSERT INTO paper_trades VALUES (?,?,?,?,?,?,?,?,?,?)", (f"t{i}", "X", "ETHUSDT", a, 100 + i, 0.3, 0, 1, 1700000000000 + ts * 1000, ""))
+        con.commit(); con.close()
+        monkeypatch.setattr(flask_interface, "DB_PATH", db)
+
+    def test_ladder_fields_exposed(self, client, ladder_db):
+        pos = {p["position_id"]: p for p in client.get("/api/paper-trading/positions/open").get_json()["positions"]}
+        l = pos["L"]
+        assert (l["tp1"], l["tp2"], l["tp3"]) == (105, 110, 120)
+        assert (l["tp1_fraction"], l["tp2_fraction"]) == (0.4, 0.3) and abs(l["runner_fraction"] - 0.3) < 1e-9
+        assert l["remaining_fraction"] == 0.3 and l["trailing_active"] is True and l["trailing_stop_price"] == 108
+        assert l["tp1_hit"] is True and l["tp2_hit"] is True
+
+    def test_legacy_missing_values_are_none(self, client, ladder_db):
+        pos = {p["position_id"]: p for p in client.get("/api/paper-trading/positions/open").get_json()["positions"]}
+        g = pos["G"]
+        assert g["tp1"] is None and g["tp3"] is None and g["trailing_stop_price"] is None
+        assert g["tp1_fraction"] is None and g["runner_fraction"] is None and g["trailing_active"] is False
+
+    def test_ledger_labels_and_close_action(self, client, ladder_db):
+        x = client.get("/api/paper-trading/positions/closed").get_json()
+        assert x["total"] == 1 and x["summary"]["wins"] == 1 and x["summary"]["win_rate_pct"] == 100.0
+        p = x["positions"][0]
+        assert p["close_action"] == "TRAILING_STOP" and p["close_action_label"] == "Trailing stop"
+        labels = [e["label"] for e in p["events"]]
+        assert "TP1 parcial" in labels and "TP2 parcial (trailing ativado)" in labels

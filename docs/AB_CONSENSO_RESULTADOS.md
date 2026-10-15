@@ -3,7 +3,36 @@
 **Autor:** quant_developer · **Data:** 2026-10-15 · **Escopo:** 100% offline; piloto congelado e produção intocada.
 **Reprodução:** `.venv/bin/python scripts/ab_consensus_experiment.py` (≈70 s) · testes: `tests/test_ab_consensus_experiment.py` · dados brutos: `docs/ab_consenso_resultados.json`.
 
-## 0. RECOMENDAÇÃO (leia primeiro)
+## 0.0 ATUALIZAÇÃO 2026-10-15 — re-execução com `BacktestEngine(pilot_parity=True)` (mesmo engine do piloto)
+
+**Reprodução:** `.venv/bin/python scripts/ab_consensus_experiment.py --exec pilot` (≈60 s) · tabelas completas: `docs/_ab_consenso_tabelas_pilot.md` · bruto: `docs/ab_consenso_resultados_pilot.json`. O modo antigo continua em `--exec legacy` (seções abaixo = bracket único SL1,0/TP1,5, mantidas só como referência histórica). Nada aplicado em produção.
+
+**O que mudou na execução (iguais ao piloto):** ladder TP1 40% (1,5×ATR)→SL=BE(+0,04%), TP2 30% (2,5×ATR)→trailing 1,2×ATR de entrada (só barras fechadas, nunca afrouxa), runner 30% em TP3 (4,0×ATR) ou trailing; SL 1,0×ATR; entrada em close(t)==open(t+1); taxas maker (TP) / taker (SL, BE, trailing, timeout, liquidação), slippage de mercado 0,02%; lote = margem $100; alavancagem `decide_leverage(confiança do sinal)` ≤5×; liquidação; **saldo único** de $10k com margem agregada ≤85% e ≤5 posições; timeout 48 barras; funding UTC 8h com taxa real do cache. Retorno = % do notional.
+
+| Baseline (PROD, holdout 2024-02→2026-10) | Legado (bracket único) | **Pilot parity (ladder)** |
+|---|---:|---:|
+| Trades | 4.389 | 4.313 |
+| Hit rate (líquido > 0) | 39,8% | 39,6% |
+| Expectância bruta/trade | −0,054% | **−0,163%** |
+| Expectância líquida/trade | −0,175% | **−0,276%** (IC95 [−0,316; −0,235]%) |
+| Sharpe | −4,97 | −6,86 |
+
+Saídas do baseline (amostra toda, 10.800 trades): STOP_LOSS 60,4% · BREAKEVEN_STOP 24,0% · TRAILING 10,3% · TP3 4,9% · timeout 0,4%. Mundo FULL: −0,262%/trade (holdout), IC [−0,309; −0,213]%.
+
+**Conclusão honesta:**
+1. **A ladder muda o resultado — para pior.** A expectância líquida por trade piora ≈ 0,10 p.p. (−0,175% → −0,276%). Só ~5% dos trades chegam ao TP3; 60% saem no SL cheio e 24% no breakeven (que paga taxa taker + slippage e devolve o ganho parcial). A ladder corta vencedores e mantém os perdedores; sem edge de entrada isso só adiciona atrito (maker/taker, 3 pernas, funding durante mais tempo).
+2. **Não há edge líquido em nenhuma variante.** Nenhuma tem IC95 inferior da expectância > 0 (`net_alpha` = não em todas); hit 39,6% e expectância *bruta* já negativa (−0,163%) → o problema é a entrada, não o custo.
+3. **Os "ganhos" de P1a/P1b/P5 viram artefato.** No mundo pilot as diferenças vs baseline são ≤ 0,04% do capital/dia e nenhuma passa o critério completo (DSR=0 pois Sharpe<0; treino não melhora; 2–3/6 blocos). P1a tem aparente Δ positivo no holdout porque **opera 305 trades** (a conta $10k é zerada antes pelo excesso de operações: retorno total −99% no ALL) e ALL_a chega ao holdout com saldo ≈ 0 → **0 trades** (resultado não comparável). Com saldo único e lote fixo a sequência é *path-dependent*: a ruína de uma variante muda os trades das demais janelas. Usar P-values aqui apenas como indicativo.
+4. P2/P3/P6 seguem ≈ inertes; P4 (+0,001%/dia, IC Bonferroni inclui 0) e P5 (+0,005%/dia, 6/6 blocos mas DSR 0 e −0,003 p.p. de expectância) não são alfa.
+5. **Implicação para o piloto:** o piloto roda uma estratégia que, replicada com a mesma semântica, tem expectância líquida ≈ −0,28% do notional por trade (a 3–5× de alavancagem ≈ −0,8% a −1,4% da margem por trade). Esperar perda líquida no paper trading; é um *teste de que o pipeline funciona*, não de lucratividade.
+
+**Diferenças que sobram por design / limitações:** (a) RollbackGuard/circuit breaker **não** modelado (usa relógio de parede + DB do piloto; no replay histórico bloquearia tudo); (b) `position_size` do SignalGenerator não limita a margem (lote $100 domina); (c) stop sem gap só no stop criado na mesma barra (como o piloto); o harness `parity_audit.py` não passa `open_price` ao piloto → saída por timeout/gap usa close anterior (≈ open em cripto 24/7); (d) cotas diárias/cooldown (SCALP 5/dia·4 barras, GP 3/dia·16 barras) existem como opções do engine mas **não** são usadas aqui (DIRECTIONAL do piloto não tem); scalp/GP em 15m com comitê seguem **sem backtest de gatilho** (só a mecânica de saída está replicada); (e) mundo FULL/ML continuam inexistentes no piloto; (f) features em histórico completo vs janela de 400 barras do piloto; (g) uma única corrida (sem sweep de parâmetros); sensibilidade `--entry next_open` disponível, não executada nesta rodada.
+
+**Paridade engine × engine (harness `scripts/parity_audit.py`, forced, BTC, 500 barras, `pilot_parity=True`):** EXIT_REASON, EXIT_TIMING, EXIT_FEE_MODEL, ENTRY_TIMING, ENTRY_PRICE, PNL_PCT, UNMATCHED = **0** (antes: 86/59/85/175/72/106/11 em 1.200 barras). Também idêntico trade a trade com alavancagem 4× (`tests/test_backtest_pilot_parity.py`). A categoria FUNDING do harness persiste por limitação do próprio harness (registra funding=0 do lado piloto); o PnL líquido, que inclui o funding, bate.
+
+---
+
+## 0. RECOMENDAÇÃO (leia primeiro — números do modo LEGADO, anteriores à paridade)
 
 | Proposta | Efeito medido | Decisão |
 |---|---|---|

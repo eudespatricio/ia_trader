@@ -473,3 +473,43 @@ def test_position_cards_no_horizontal_overflow(make_page, name):
     p.page.evaluate("switchPaperTab('trades')")
     p.page.wait_for_selector("#paperTradesTableBody tr[data-symbol]")
     assert not p.page.evaluate("document.documentElement.scrollWidth > innerWidth")
+
+
+def _ladder_state():
+    st = _state()
+    st["open"][0].update(tp3_price=67000.0, tp1=65500.0, tp2=66000.0, tp3=67000.0, tp1_hit=True, tp2_hit=False,
+                         tp1_fraction=0.4, tp2_fraction=0.3, runner_fraction=0.3, remaining_fraction=0.6,
+                         trailing_active=True, trailing_stop_price=65300.0, exit_ladder=True, stop_loss=65000.0)
+    st["closed"][0].update(close_action="TRAILING_STOP", close_action_label="Trailing stop", tp1_fraction=0.4,
+                           tp2_fraction=0.3, runner_fraction=0.3,
+                           events=[{"action": "TP1_PARTIAL", "label": "TP1 parcial"},
+                                   {"action": "TAKE_PROFIT_3", "label": "TP3 (runner encerrado)"}])
+    return st
+
+
+def test_ladder_chart_lines_and_cards(make_page):
+    p = make_page(routes=_pos_routes(_ladder_state()))
+    p.page.wait_for_selector("#paperPositionsTableBody tr[data-position-id='P1']")
+    txt = p.page.inner_text("#paperPositionsTableBody tr[data-position-id='P1']")
+    assert "TP1 40% / TP2 30% / runner 30%" in txt and "60%" in txt and "ATIVO" in txt and "(BE)" in txt
+    assert "TP1 50%" not in p.page.inner_text("#paperPositionsTableBody")
+    # legado (P2): '—' sem erro
+    t2 = p.page.inner_text("#paperPositionsTableBody tr[data-position-id='P2']")
+    assert "—" in t2 and "undefined" not in t2 and "NaN" not in t2
+    p.page.click("#paperPositionsTableBody tr[data-position-id='P1']")
+    p.page.wait_for_function("(document.getElementById('chartContainer').layout.annotations||[]).length >= 6", timeout=15000)
+    ann = " ".join(p.page.evaluate("document.getElementById('chartContainer').layout.annotations.map(a => a.text)"))
+    for k in ("TP3:", "TRAILING STOP (ativo)", "SL→BREAKEVEN", "✔ TP1 atingido", "TP2:"):
+        assert k in ann, ann
+    assert p.page_errors == [] and p.console_errors == []
+
+
+def test_ledger_friendly_labels_in_history(make_page):
+    p = make_page(routes=_pos_routes(_ladder_state()))
+    p.page.evaluate("switchPaperTab('trades')")
+    p.page.wait_for_selector("#paperTradesTableBody tr[data-symbol]")
+    txt = p.page.inner_text("#paperTradesTableBody")
+    assert "Trailing stop" in txt and "TP1 parcial" in txt and "TP3 (runner encerrado)" in txt
+    assert p.page.evaluate("ledgerLabel('TP2_PARTIAL')").startswith("TP2 parcial")
+    assert p.page.evaluate("ledgerLabel('LIQUIDATION')") == "Liquidação"
+    assert p.page_errors == []

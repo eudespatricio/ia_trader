@@ -192,7 +192,7 @@ flowchart LR
 4. **Fase 3: Treinamento de Modelos & Validação Temporal (🟢 Homologado - 10/10 testes):** Validação temporal purgada com embargo, LightGBM / Random Forest e triple-barrier labeling.
 5. **Fase 4: Comitê de Agentes & Orquestrador (🟢 Homologado - 26/26 testes):** 6 agentes especialistas independentes, juiz de consenso ponderado com precedência de veto do Sentinela de Risco e relações assimétricas R:R $\ge 2.5:1$.
 6. **Fase 5: Backtesting Institucional com Custos (🟢 Homologado - 16/16 testes):** Modelagem estrita de taxas maker (0.02%), taker (0.06%), slippage, Deflated Sharpe Ratio (DSR), PBO e carry delta-neutro.
-7. **Fase 6: Motor de Execução Smart Trade (🟢 Homologado - 20/20 testes):** Operação estrita em Paper Trading (zero risco real), cotas diárias independentes (Scalp 5/dia e Golden Pots 3/dia) e saídas parciais escalonadas (TP1 50% + Breakeven + TP2).
+7. **Fase 6: Motor de Execução Smart Trade (🟢 Homologado - 20/20 testes):** Operação estrita em Paper Trading (zero risco real), cotas diárias independentes (Scalp 5/dia e Golden Pots 3/dia) e Smart Trade Exit Ladder comum a SCALP/GOLDEN_POT/DAY TRADE (TP1 40% + Breakeven, TP2 30% + trailing ATR, TP3/trailing no runner; E7).
 8. **Fase 7: Telemetria, Aprendizado & Guardião (🟢 Homologado - 15/15 testes):** Rastreio de PnL único, Circuit Breakers de Drawdown (10%) e Cooldown de perdas (4 stops), Memória Episódica, Calibração Dinâmica de Pesos por Regime e Re-treinamento Diário Champion-Challenger.
 9. **Fase 8: Painel Web, Autenticação & Legal (🟢 Homologado - 38/38 testes):** Interface Plotly desacoplada (read-only), JWT, telemetria em tempo real, monitoramento de regimes e termos de uso.
 10. **Fase 9: Módulos de Apoio & Governança (🟢 Homologado - 21/21 testes):** Scanner de volatilidade e delistagens (`pair_scanner.py`), controle de voz local (`voice_commands.py`), explicações didáticas de sinais (`educational_module.py`) e RBAC com planos de assinatura (`auth_module.py`).
@@ -248,3 +248,4 @@ git push -u origin <branch>
 # ou: git remote set-url origin https://<USUARIO>:<TOKEN>@github.com/eudespatricio/ia_trader.git
 # (não comite o token; prefira credential helper ou variável de ambiente)
 ```
+- **E7 (2026-10-15):** SCALP, GOLDEN_POT (agora momentum + volatilidade extraordinária) e DAY TRADE passam obrigatoriamente pelo comitê e compartilham a Smart Trade Exit Ladder (perfis ATR em `smart_trade.STRATEGY_PROFILES`); piloto reiniciado; sem evidência de alfa (ADDENDUM E7 em `docs/HIPOTESES_PRE_REGISTRADAS.md`).

@@ -233,3 +233,36 @@ def test_build_variants_has_unique_names_and_two_baselines():
     names = [v.name for v in vs]
     assert len(names) == len(set(names))
     assert sum(v.is_baseline() for v in vs) == 2
+
+
+def _pilot_sym(n=80, price=100.0):
+    s = _sym(n, price)
+    s["sma"] = np.full(n, price * 0.9)
+    s["dec"] = {"V": {**_dec(n, 5), "conf": np.full(n, 0.95)}}
+    return s
+
+
+def _zero_funding(n_hours=200):
+    ts = np.arange(0, n_hours * H, 8 * H, dtype=np.int64)
+    return {"X": (ts, np.zeros(len(ts) + 1))}
+
+
+def test_pilot_exec_uses_pilot_engine_entry_ts_leverage_and_timeout():
+    s = _pilot_sym()
+    tr = ab.simulate_trades_pilot([s], "V", _zero_funding())
+    assert len(tr) == 1
+    t = tr.iloc[0]
+    assert t["entry_ts"] == s["ts"][6]               # entrada em close(t) registrada em ts(t+1), nunca antes
+    assert t["reason"] == "HORIZON_TIMEOUT"          # 48 barras (piloto)
+    assert t["leverage"] == 5.0                      # decide_leverage(0.95, regime a favor) = 5x
+    # preço plano: entrada taker (fee+slip) e saída timeout taker (fee+slip)
+    assert t["ret_notional"] == pytest.approx(-2 * (ab.SLIPPAGE + ab.TAKER_FEE), abs=2e-4)
+
+
+def test_pilot_exec_ladder_changes_exit_vs_single_bracket():
+    s = _pilot_sym()
+    s["high"][7] = 100.0 + 1.6        # toca TP1 (1.5 ATR) mas não TP2: BE pós-TP1 e depois timeout/BE
+    s["low"][7] = 99.95
+    s["high"][8:] = 100.0
+    tr = ab.simulate_trades_pilot([s], "V", _zero_funding())
+    assert tr.iloc[0]["legs"] >= 2 and tr.iloc[0]["gross_ret_notional"] > 0   # TP1 parcial realizado

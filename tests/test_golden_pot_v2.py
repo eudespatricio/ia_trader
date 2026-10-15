@@ -73,6 +73,30 @@ def _feat(ts_last, side="BUY", close=100.0, sma=90.0, rsi=30.0, rsi_prev=29.0, o
     return df
 
 
+def _mfeat(ts_last, side="BUY", close=100.0, sma=90.0, atr=1.0, n=130, vol_z=3.0, **_ignored):
+    """Features sintéticas COM gatilho de momentum + volatilidade extraordinária (GP v3) na última vela.
+
+    Barras anteriores: calmas (ATR = atr/3, range pequeno, abaixo do rompimento). Última: ATR = atr (expansão 3x),
+    range 2.6 ATR, volume_z alto, fecha perto da extrema na direção e rompe a máxima/mínima das 20 anteriores.
+    """
+    sgn = 1.0 if side == "BUY" else -1.0
+    ts = ts_last - BAR * np.arange(n)[::-1]
+    base = close - sgn * 3.0
+    df = pd.DataFrame({
+        "timestamp": ts, "open": base, "high": base + 0.5, "low": base - 0.5, "close": base, "volume": 1.0,
+        "sma_200": sma, "rsi_14": 50.0, "atr_14": atr / 3.0, "volume_zscore_20": 0.0,
+        "dist_vwap_pct": 0.0, "liquidity_sweep_bull": 0, "liquidity_sweep_bear": 0,
+        "at_bullish_poi": 0, "at_bearish_poi": 0,
+    })
+    i = df.index[-1]
+    df.loc[i, ["open", "close"]] = [close - sgn * 2.4, close]
+    df.loc[i, "high"] = close + 0.1 if side == "BUY" else close + 2.5
+    df.loc[i, "low"] = close - 2.5 if side == "BUY" else close - 0.1
+    df.loc[i, "atr_14"] = atr
+    df.loc[i, "volume_zscore_20"] = vol_z
+    return df
+
+
 def _committee(direction="BUY", conf=0.82, score=0.47, veto=False, sym="AAAUSDT"):
     def _f(context, symbol=sym, current_price=0.0, atr=0.0, timestamp=0, use_llm=False):
         return TradeSignal(
@@ -109,31 +133,31 @@ def gp_opens(engine):
 
 # ---------------------------------------------------------------------------
 def test_committee_disagrees_no_entry(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("SELL"))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("SELL"))
     run(d.evaluate_golden_pot_opportunities())
     assert gp_opens(d.engine) == []
 
 
 def test_committee_hold_no_entry(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("HOLD"))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("HOLD"))
     run(d.evaluate_golden_pot_opportunities())
     assert gp_opens(d.engine) == []
 
 
 def test_risk_sentinel_veto_no_entry(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("BUY", veto=True))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("BUY", veto=True))
     run(d.evaluate_golden_pot_opportunities())
     assert gp_opens(d.engine) == []
 
 
 def test_low_committee_confidence_no_entry(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("BUY", conf=0.55))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("BUY", conf=0.55))
     run(d.evaluate_golden_pot_opportunities())
     assert gp_opens(d.engine) == []
 
 
 def test_agreement_enters_with_real_signal_values_not_constants(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("BUY", conf=0.82, score=0.47))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("BUY", conf=0.82, score=0.47))
     captured = {}
     orig = d.engine.execute_golden_pot_signal
 
@@ -154,14 +178,14 @@ def test_agreement_enters_with_real_signal_values_not_constants(temp_db):
 
 
 def test_two_candidates_same_bar_only_one_enters(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT", "BBBUSDT"], _feat(_bar_ts()), _committee("BUY"))
+    d = make_daemon(temp_db, ["AAAUSDT", "BBBUSDT"], _mfeat(_bar_ts()), _committee("BUY"))
     run(d.evaluate_golden_pot_opportunities())
     run(d.evaluate_golden_pot_opportunities())  # novo ciclo na mesma vela
     assert len(gp_opens(d.engine)) == 1
 
 
 def test_bar_limit_survives_restart(temp_db):
-    feat = _feat(_bar_ts())
+    feat = _mfeat(_bar_ts())
     d = make_daemon(temp_db, ["AAAUSDT"], feat, _committee("BUY"))
     run(d.evaluate_golden_pot_opportunities())
     assert len(gp_opens(d.engine)) == 1
@@ -172,33 +196,33 @@ def test_bar_limit_survives_restart(temp_db):
 
 def test_cooldown_respected_after_close_and_restart(temp_db):
     ts = _bar_ts()
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(ts), _committee("BUY"))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(ts), _committee("BUY"))
     run(d.evaluate_golden_pot_opportunities())
     pos = next(iter(d.engine.positions.values()))
     d.engine.close_position(pos.position_id, pos.entry_price * 0.99, ts + 1000, reason="STOP_LOSS")
 
     # 1 barra depois, mesmo engine: cooldown ativo
     d.engine.daily_golden_pots_count = 0
-    feat_next = _feat(ts + BAR)
+    feat_next = _mfeat(ts + BAR)
     d._compute_swing_features = lambda df: feat_next.copy()
     run(d.evaluate_golden_pot_opportunities())
     assert len(gp_opens(d.engine)) == 1
 
     # restart: ledger restaura trade_history -> cooldown continua
-    d2 = make_daemon(temp_db, ["AAAUSDT"], _feat(ts + 5 * BAR), _committee("BUY"))
+    d2 = make_daemon(temp_db, ["AAAUSDT"], _mfeat(ts + 5 * BAR), _committee("BUY"))
     d2.engine.daily_golden_pots_count = 0
     run(d2.evaluate_golden_pot_opportunities())
     assert len(gp_opens(d2.engine)) == 1
 
     # após N barras: liberado
-    d3 = make_daemon(temp_db, ["AAAUSDT"], _feat(ts + (rps.GP_COOLDOWN_BARS + 1) * BAR), _committee("BUY"))
+    d3 = make_daemon(temp_db, ["AAAUSDT"], _mfeat(ts + (rps.GP_COOLDOWN_BARS + 1) * BAR), _committee("BUY"))
     d3.engine.daily_golden_pots_count = 0
     run(d3.evaluate_golden_pot_opportunities())
     assert len(gp_opens(d3.engine)) == 2
 
 
 def test_tp1_partial_is_not_a_close_for_cooldown(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("BUY"))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("BUY"))
     assert d._gp_in_cooldown("AAAUSDT", _bar_ts() // BAR) is False
 
 
@@ -206,7 +230,7 @@ def test_tp1_partial_is_not_a_close_for_cooldown(temp_db):
                                  "TSLAUSDT", "NVDAUSDT", "SKHYUSDT"])
 def test_excluded_symbols_ignored(temp_db, sym):
     assert PaperTradingDaemon.is_gp_excluded_symbol(sym)
-    d = make_daemon(temp_db, [sym], _feat(_bar_ts()), _committee("BUY"))
+    d = make_daemon(temp_db, [sym], _mfeat(_bar_ts()), _committee("BUY"))
     run(d.evaluate_golden_pot_opportunities())
     assert gp_opens(d.engine) == []
 
@@ -217,7 +241,7 @@ def test_non_excluded_symbol_not_matched():
 
 
 def test_no_sma200_warmup_skipped(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("BUY"))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("BUY"))
     d._compute_swing_features = lambda df: pd.DataFrame()  # sem warmup válido
     run(d.evaluate_golden_pot_opportunities())
     assert gp_opens(d.engine) == []
@@ -278,11 +302,12 @@ def test_knife_symmetric_short():
     assert PaperTradingDaemon.gp_falling_knife_blocked("SELL", f2) is None
 
 
-def test_knife_filter_blocks_entry_in_daemon(temp_db):
-    f = _feat(_bar_ts(), close=80.0, sma=100.0, rsi=15.0, rsi_prev=16.0, o=-0.2)
+def test_knife_filter_not_applied_to_momentum_trigger_v3(temp_db):
+    # E7: o gatilho GP é momentum (não fade); o filtro de faca-caindo (legado do fade) não bloqueia mais a entrada.
+    f = _mfeat(_bar_ts(), sma=130.0)  # fecha abaixo da sma_200: regime contra, mas o comitê concorda
     d = make_daemon(temp_db, ["AAAUSDT"], f, _committee("BUY"))
     run(d.evaluate_golden_pot_opportunities())
-    assert gp_opens(d.engine) == []
+    assert len(gp_opens(d.engine)) == 1
 
 
 # --- lote = margem, alavancagem ---------------------------------------------
@@ -391,7 +416,7 @@ def test_paper_lot_runtime_change_and_validation(temp_db):
 
 
 def test_gp_daemon_uses_policy_leverage_from_real_confidence(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts(), close=100.0, atr=1.0), _committee("BUY", conf=0.85))
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts(), close=100.0, atr=1.0), _committee("BUY", conf=0.85))
     run(d.evaluate_golden_pot_opportunities())
     pos = next(iter(d.engine.positions.values()))
     assert pos.leverage == 4.0  # conf 0.80-0.90 -> 4x, a favor da tendência, ATR% baixo
@@ -399,6 +424,6 @@ def test_gp_daemon_uses_policy_leverage_from_real_confidence(temp_db):
 
 
 def test_gp_low_liquidity_forces_1x(temp_db):
-    d = make_daemon(temp_db, ["AAAUSDT"], _feat(_bar_ts()), _committee("BUY", conf=0.95), volume=30e6)
+    d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts()), _committee("BUY", conf=0.95), volume=30e6)
     run(d.evaluate_golden_pot_opportunities())
     assert next(iter(d.engine.positions.values())).leverage == 1.0

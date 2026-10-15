@@ -139,20 +139,21 @@ class TestPreEntryCandle:
     def test_pre_entry_extremes_do_not_trigger_sl(self, temp_db):
         e = make_engine(temp_db)
         p = e.execute_directional_signal(sig("BTCUSDT", "BUY", 1000), 50000.0, NOW_MS)
-        # vela com timestamp <= entrada e low muito abaixo do SL
+        # P2: entry_timestamp = ts(t+1) = decisão + 1h. Vela que abriu ANTES da entrada: extremos ignorados
+        assert p.entry_timestamp == NOW_MS + 3_600_000
         trig = e.update_market_tick("BTCUSDT", 50100.0, 40000.0, 50050.0, NOW_MS)
         assert trig == [] and p.position_id in e.positions
         assert e.positions[p.position_id].lowest_price >= 49000.0
         trig = e.update_market_tick("BTCUSDT", 50100.0, 40000.0, 50050.0, NOW_MS - 1000)
         assert trig == []
-        # vela posterior usa os extremos normalmente
-        trig = e.update_market_tick("BTCUSDT", 50100.0, 40000.0, 50050.0, NOW_MS + 1)
+        # 1ª vela pós-entrada (abre em ts(t+1)) usa os extremos completos, como o backtest
+        trig = e.update_market_tick("BTCUSDT", 50100.0, 40000.0, 50050.0, p.entry_timestamp)
         assert [t.action for t in trig] == ["STOP_LOSS"]
 
     def test_pre_entry_candle_does_not_trigger_tp_short_scalp(self, temp_db):
         e = make_engine(temp_db)
         p = e.execute_scalp_signal(sig("ETHUSDT", "SELL", 800, atr=10, price=3000), 3000.0, NOW_MS)
-        trig = e.update_market_tick("ETHUSDT", 3100.0, 2000.0, 3000.0, NOW_MS)
+        trig = e.update_market_tick("ETHUSDT", 3100.0, 2000.0, 3000.0, NOW_MS)   # abriu antes da entrada (ts(t+1)=NOW+15m)
         assert trig == [] and not e.positions[p.position_id].tp1_hit
 
 
@@ -169,13 +170,13 @@ class TestExitFees:
         p = self._scalp(e, side)
         qty, sl = p.quantity, p.stop_loss
         t = e.close_position(p.position_id, sl, NOW_MS + 1000, reason="STOP_LOSS")
-        exec_px = sl * (1 - 0.0003) if side == "BUY" else sl * (1 + 0.0003)
+        exec_px = sl * (1 - 0.0002) if side == "BUY" else sl * (1 + 0.0002)   # slippage de mercado simétrico
         assert t.price == pytest.approx(exec_px)
         assert t.fee == pytest.approx(qty * exec_px * 0.0006)
 
     def test_breakeven_and_manual_taker_tp2_maker(self, temp_db):
         e = make_engine(temp_db)
-        for reason, fee_rate, slip in [("BREAKEVEN_STOP", 0.0006, 0.0003), ("MANUAL", 0.0006, 0.0003),
+        for reason, fee_rate, slip in [("BREAKEVEN_STOP", 0.0006, 0.0002), ("MANUAL", 0.0006, 0.0002),
                                        ("TAKE_PROFIT_2", 0.0002, 0.0001)]:
             p = self._scalp(e)
             qty = p.quantity
@@ -186,7 +187,7 @@ class TestExitFees:
     def test_tick_driven_stop_uses_taker(self, temp_db):
         e = make_engine(temp_db)
         p = self._scalp(e)
-        trig = e.update_market_tick("ETHUSDT", 3000.0, p.stop_loss - 1, p.stop_loss, NOW_MS + 1000)
+        trig = e.update_market_tick("ETHUSDT", 3000.0, p.stop_loss - 1, p.stop_loss, p.entry_timestamp + 1000)
         assert trig[0].action == "STOP_LOSS"
         assert trig[0].fee == pytest.approx(trig[0].quantity * trig[0].price * 0.0006)
 
@@ -199,7 +200,7 @@ class TestWinRateByPosition:
         e = make_engine(temp_db)
         # Posição A: TP1 positivo + saída final negativa, soma líquida negativa => 1 loss
         a = e.execute_scalp_signal(sig("ETHUSDT", "BUY", 2000, atr=10, price=3000), 3000.0, NOW_MS)
-        e.update_market_tick("ETHUSDT", a.tp1_price + 0.5, a.tp1_price - 1.0, a.tp1_price - 1.0, NOW_MS + 1000)
+        e.update_market_tick("ETHUSDT", a.tp1_price + 0.5, a.tp1_price - 1.0, a.tp1_price - 1.0, a.entry_timestamp + 1000)
         e.close_position(a.position_id, a.entry_price - 300.0, NOW_MS + 2000, reason="MANUAL")
         # Posição B: ganho simples
         b = e.execute_directional_signal(sig("BTCUSDT", "BUY", 1000), 50000.0, NOW_MS)
@@ -212,7 +213,7 @@ class TestWinRateByPosition:
     def test_open_position_with_partial_not_counted(self, temp_db):
         e = make_engine(temp_db)
         a = e.execute_scalp_signal(sig("ETHUSDT", "BUY", 2000, atr=10, price=3000), 3000.0, NOW_MS)
-        e.update_market_tick("ETHUSDT", a.tp1_price + 0.5, a.tp1_price - 1.0, a.tp1_price - 1.0, NOW_MS + 1000)
+        e.update_market_tick("ETHUSDT", a.tp1_price + 0.5, a.tp1_price - 1.0, a.tp1_price - 1.0, a.entry_timestamp + 1000)
         assert e.get_summary_metrics()["win_rate_pct"] == 0.0
 
 
