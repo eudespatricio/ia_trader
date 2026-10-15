@@ -1858,7 +1858,8 @@
                                 const fx = (v, nd, sg) => {
                                     if (v === undefined || v === null || isNaN(Number(v))) return "n/d";
                                     let n = Number(v), d = nd;
-                                    if (Math.abs(n) > 0 && Math.abs(n) < 0.095 && d < 3) d = 3;
+                                    if (Math.abs(n) > 0 && Math.abs(n) < 0.0095 && d < 4) d = 4;
+                                    else if (Math.abs(n) > 0 && Math.abs(n) < 0.095 && d < 3) d = 3;
                                     return (sg && n > 0 ? "+" : "") + n.toFixed(d);
                                 };
                                 tapeTip = `Taker 5m: ${fx(f.taker_imb_5m, 2, true)} | Book 10: ${fx(f.book_imb_10, 2, true)} | Microprice: ${fx(f.microprice_dev, 1, true)} bps | Spread: ${fx(f.spread_bps, 1, false)} bps`;

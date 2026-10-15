@@ -493,7 +493,9 @@ def _make_tape_agent():
 def _fmt_signed(v: Any, nd: int = 2) -> str:
     try:
         val = float(v)
-        if 0.0 < abs(val) < 0.095 and nd < 3:
+        if 0.0 < abs(val) < 0.0095 and nd < 4:
+            nd = 4
+        elif 0.0 < abs(val) < 0.095 and nd < 3:
             nd = 3
         return f"{val:+.{nd}f}"
     except (TypeError, ValueError):
