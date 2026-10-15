@@ -37,6 +37,7 @@ DB_PATH = os.path.join(BASE_DIR, "datasets", "market_cache.db")
 STATE_FILE = os.path.join(BASE_DIR, "datasets", "supervisor_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "datasets", "supervisor.log")
 FLASK_LOG_FILE = os.path.join(BASE_DIR, "logs", "flask.log")
+PAPER_LOG_FILE = os.path.join(BASE_DIR, "logs", "paper_daemon.log")
 SOCKET_TIMEOUT = 5.0
 HEAL_FAILURE_THRESHOLD = 3
 
@@ -255,7 +256,8 @@ class SystemSupervisor:
         self.paper_service = ServiceManager(
             name="paper_trading_daemon",
             cmd=[PYTHON_BIN, os.path.join(BASE_DIR, "scripts", "run_paper_simulation.py"), "0", "15"],
-            check_type="process"
+            check_type="process",
+            log_file=PAPER_LOG_FILE
         )
 
         # 3. Serviço Cloudflare Tunnel
