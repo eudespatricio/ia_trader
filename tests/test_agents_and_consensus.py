@@ -546,3 +546,65 @@ class TestInstitutionalAgentRefinements:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Regressões da auditoria de lógica de decisão (ajuste fino)
+# ---------------------------------------------------------------------------
+class TestDecisionAuditRegressions:
+    def test_agent_signal_nan_confidence_is_zero_not_one(self):
+        from agents.base_agent import AgentSignal
+        sig = AgentSignal("X", "BUY", float("nan"), float("nan"), "r")
+        assert sig.confidence == 0.0
+        assert sig.weight == 0.0
+
+    def test_technical_nan_sma_does_not_force_bear_regime(self):
+        from agents.technical_agent import TechnicalAgent
+        sig = TechnicalAgent().evaluate({"close": 100.0, "sma_200": float("nan"), "rsi_14": 30.0})
+        assert sig.metrics["macro_bull"] is None
+        sig = TechnicalAgent().evaluate({"proba_buy": float("nan"), "proba_sell": 0.7})
+        assert 0.0 <= sig.confidence <= 1.0
+
+    def test_onchain_zero_tvl_7d_does_not_fall_back_to_24h(self):
+        from agents.onchain_agent import OnChainAgent
+        sig = OnChainAgent().evaluate({"tvl_growth_pct_7d": 0.0, "tvl_change_24h": 0.05})
+        assert sig.metrics["tvl_growth_pct_7d"] == 0.0
+        assert sig.direction == "HOLD"
+
+    def test_judge_ignores_zero_weight_failed_agent(self):
+        from agents.base_agent import AgentSignal
+        from consensus_judge import ConsensusJudge
+        buy = lambda n, c: AgentSignal(n, "BUY", c, 1.0, "r")
+        sigs = [buy("TechnicalAgent", 0.9), buy("OrderFlowAgent", 0.9)]
+        base = ConsensusJudge().judge_deterministic(list(sigs)).aggregated_score
+        failed = AgentSignal("MacroAgent", "HOLD", 0.5, 0.0, "falha")
+        d = ConsensusJudge().judge_deterministic(sigs + [failed])
+        assert d.aggregated_score == pytest.approx(base)
+        assert any(s.agent_name == "MacroAgent" for s in d.agent_signals)
+
+    def test_signal_generator_invalid_price_or_atr_returns_hold(self):
+        from consensus_judge import ConsensusDecision
+        from signal_generator import SignalGenerator
+        dec = ConsensusDecision(direction="BUY", confidence=0.8, aggregated_score=0.5)
+        for price, atr in ((0.0, 10.0), (100.0, 0.0), (100.0, float("nan"))):
+            s = SignalGenerator().generate(dec, "BTCUSDT", price, atr, 1)
+            assert s.direction == "HOLD" and s.position_size == 0.0
+
+    def test_signal_generator_effective_risk_and_rationale_multiples(self):
+        from consensus_judge import ConsensusDecision
+        from signal_generator import SignalGenerator
+        dec = ConsensusDecision(direction="BUY", confidence=0.8, aggregated_score=0.5)
+        # SL muito curto + leverage 1 => teto de alavancagem limita o tamanho
+        s = SignalGenerator(capital=10000.0).generate(dec, "BTCUSDT", 100.0, 0.1, 1)
+        assert s.risk_dollars == pytest.approx(s.position_size * abs(s.entry_price - s.stop_loss))
+        assert s.risk_dollars < 100.0
+        s2 = SignalGenerator().generate(
+            dec, "BTCUSDT", 100.0, 1.0, 1, structure_context={"liquidity_sweep_bull": 1})
+        assert "2.1x ATR" in s2.rationale and "0.7x ATR" in s2.rationale
+
+    def test_signal_generator_capital_override_zero_respected(self):
+        from consensus_judge import ConsensusDecision
+        from signal_generator import SignalGenerator
+        dec = ConsensusDecision(direction="BUY", confidence=0.8, aggregated_score=0.5)
+        s = SignalGenerator().generate(dec, "BTCUSDT", 100.0, 1.0, 1, capital_override=0.0)
+        assert s.position_size == 0.0

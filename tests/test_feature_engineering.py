@@ -156,8 +156,10 @@ class TestMicrostructureAndMacroIntegration:
         )
 
         feat = FeatureEngineer.compute_all_features(df, order_book=ob, drop_na=True)
-        assert (feat["ob_spread"] == 5.0).all()
-        assert (feat["ob_imbalance"] == 0.35).all()
+        # V8: snapshot do book só na última barra
+        assert feat["ob_spread"].iloc[-1] == 5.0
+        assert feat["ob_imbalance"].iloc[-1] == 0.35
+        assert (feat["ob_spread"].iloc[:-1] == 0.0).all()
 
     def test_macro_anti_lookahead_rigor(self):
         """
@@ -221,12 +223,15 @@ class TestMicrostructureAndMacroIntegration:
         }
 
         feat = FeatureEngineer.compute_all_features(df, macro_df=macro_dict, drop_na=True)
-        assert (feat["macro_cpi"] == 318.5).all()
-        assert (feat["macro_fedfunds"] == 5.25).all()
-        assert (feat["macro_vix"] == 26.5).all()
-        assert (feat["macro_dxy"] == 106.0).all()
-        assert (feat["macro_sp500"] == 5100.0).all()
-        assert (feat["macro_regime_risk_off"] == 1.0).all()
+        # V4: snapshot só na última barra (inferência); histórico neutro
+        last = feat.iloc[-1]
+        assert last["macro_cpi"] == 318.5
+        assert last["macro_fedfunds"] == 5.25
+        assert last["macro_vix"] == 26.5
+        assert last["macro_dxy"] == 106.0
+        assert last["macro_sp500"] == 5100.0
+        assert last["macro_regime_risk_off"] == 1.0
+        assert (feat["macro_cpi"].iloc[:-1] != 318.5).all()
 
 
 class TestInstitutionalFeatures:

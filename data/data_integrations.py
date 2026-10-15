@@ -355,6 +355,31 @@ class AsyncHttpClient:
             await self._session.close()
 
 
+_TF_MS: Dict[str, int] = {
+    "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+    "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000,
+    "8h": 28_800_000, "12h": 43_200_000, "1d": 86_400_000, "3d": 259_200_000,
+    "1w": 604_800_000,
+}
+
+
+def timeframe_to_ms(timeframe: str) -> int:
+    """Duração do timeframe em ms (0 se desconhecido)."""
+    return _TF_MS.get(str(timeframe).lower(), 0)
+
+
+def drop_open_candles(candles: List[CandleData], timeframe: str, now_ms: Optional[int] = None) -> List[CandleData]:
+    """
+    V7 (anti-lookahead): descarta a vela em formação (timestamp + intervalo > agora).
+    Uma vela só é consumível quando fechada; sua OHLCV parcial mudaria depois.
+    """
+    tf_ms = timeframe_to_ms(timeframe)
+    if tf_ms <= 0:
+        return candles
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    return [c for c in candles if c.timestamp + tf_ms <= now]
+
+
 # =====================================================================
 # 1. BITGET API CONNECTOR (FUTUROS & SPOT PÚBLICO)
 # =====================================================================
@@ -432,7 +457,7 @@ class BitgetConnector:
 
         # Ordenação temporal estrita ascendente (mais antigo para mais recente)
         candles.sort(key=lambda x: x.timestamp)
-        return candles
+        return drop_open_candles(candles, timeframe)
 
     async def get_order_book(
         self,
@@ -668,7 +693,7 @@ class BinanceConnector:
 
         # Ordenação temporal estrita ascendente
         candles.sort(key=lambda x: x.timestamp)
-        return candles
+        return drop_open_candles(candles, timeframe)
 
     async def get_funding_rate_history(
         self,
@@ -1255,10 +1280,15 @@ class FredConnector:
             obs_dt = datetime.strptime(observation_date_str, "%Y-%m-%d")
             # Para CPI (mensal): divulgado tipicamente por volta do dia 12-15 do mês subsequente
             if series_id.upper().startswith("CPI"):
-                next_month = (obs_dt.replace(day=1) + timedelta(days=32)).replace(day=14)
+                # V1: margem conservadora -> dia 20 do mês seguinte (BLS publica ~10-15; revisões/atrasos)
+                next_month = (obs_dt.replace(day=1) + timedelta(days=32)).replace(day=20)
                 return next_month.strftime("%Y-%m-%d")
-            # Para Taxa de Juros Diária (FEDFUNDS, DGS10): divulgada no dia útil seguinte (+1 dia)
-            elif series_id.upper() in ("FEDFUNDS", "DGS10", "T10Y2Y"):
+            # V1: FEDFUNDS é MÉDIA MENSAL (observation_date = 1º dia do mês): só é conhecida
+            # após o fim do mês -> release = último dia do mês + 1 dia (= 1º dia do mês seguinte).
+            elif series_id.upper() == "FEDFUNDS":
+                return (obs_dt.replace(day=1) + timedelta(days=32)).replace(day=1).strftime("%Y-%m-%d")
+            # Séries diárias (DGS10, T10Y2Y): divulgadas no dia seguinte (+1 dia)
+            elif series_id.upper() in ("DGS10", "T10Y2Y"):
                 return (obs_dt + timedelta(days=1)).strftime("%Y-%m-%d")
             # Regra padrão para séries mensais gerais: +30 dias
             return (obs_dt + timedelta(days=30)).strftime("%Y-%m-%d")

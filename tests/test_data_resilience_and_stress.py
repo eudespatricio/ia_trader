@@ -424,7 +424,8 @@ class TestAntiLookaheadBiasRigor:
     def test_interest_rate_effective_d1_rule(self):
         """A taxa de juros diária FEDFUNDS deve ter D+1 estrito como release_date."""
         fred = FredConnector()
-        assert fred._calculate_effective_release_date("FEDFUNDS", "2024-05-10") == "2024-05-11"
+        # V1: FEDFUNDS é média mensal -> release = fim do mês + 1 dia
+        assert fred._calculate_effective_release_date("FEDFUNDS", "2024-05-01") == "2024-06-01"
         assert fred._calculate_effective_release_date("DGS10", "2024-05-10") == "2024-05-11"
 
 

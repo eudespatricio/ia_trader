@@ -33,6 +33,9 @@ CLOUDFLARED_BIN = os.path.join(BASE_DIR, "bin", "cloudflared")
 DB_PATH = os.path.join(BASE_DIR, "datasets", "market_cache.db")
 STATE_FILE = os.path.join(BASE_DIR, "datasets", "supervisor_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "datasets", "supervisor.log")
+FLASK_LOG_FILE = os.path.join(BASE_DIR, "logs", "flask.log")
+SOCKET_TIMEOUT = 5.0
+HEAL_FAILURE_THRESHOLD = 3
 
 os.makedirs(os.path.join(BASE_DIR, "datasets"), exist_ok=True)
 
@@ -50,7 +53,8 @@ logger.addHandler(stream_handler)
 class ServiceManager:
     """Gerencia o ciclo de vida e monitoramento de um serviço individual."""
 
-    def __init__(self, name: str, cmd: list, env_vars: Optional[dict] = None, check_type: str = "process", port: Optional[int] = None):
+    def __init__(self, name: str, cmd: list, env_vars: Optional[dict] = None, check_type: str = "process", port: Optional[int] = None, log_file: Optional[str] = None):
+        self.log_file = log_file
         self.name = name
         self.cmd = cmd
         self.env_vars = env_vars or {}
@@ -74,13 +78,19 @@ class ServiceManager:
         env.update(self.env_vars)
         env["PYTHONPATH"] = BASE_DIR
 
+        log_fh = None
         try:
+            out_target = subprocess.DEVNULL
+            if self.log_file:
+                os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+                log_fh = open(self.log_file, "ab")
+                out_target = log_fh
             self.process = subprocess.Popen(
                 self.cmd,
                 cwd=BASE_DIR,
                 env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=out_target,
+                stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
                 preexec_fn=os.setsid if hasattr(os, "setsid") else None
             )
             self.pid = self.process.pid
@@ -90,6 +100,9 @@ class ServiceManager:
         except Exception as e:
             self.last_error = str(e)
             logger.error(f"❌ [{self.name}] Erro fatal ao iniciar: {e}")
+        finally:
+            if log_fh:
+                log_fh.close()
 
     def stop(self, timeout: float = 3.0):
         """Finaliza o processo de forma graciosa."""
@@ -137,20 +150,66 @@ class ServiceManager:
     def check_health(self) -> bool:
         """Verifica a saúde funcional do serviço."""
         if not self.is_running():
+            logger.warning(f"⚠️ [{self.name}] Processo não está em execução (PID={self.pid}).")
             return False
 
         if self.check_type == "http_port" and self.port:
             # Testa abertura e resposta rápida de socket na porta
             try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=2.0) as sock:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=SOCKET_TIMEOUT) as sock:
                     return True
-            except (socket.timeout, ConnectionRefusedError, OSError):
+            except (socket.timeout, ConnectionRefusedError, OSError) as e:
+                logger.warning(f"⚠️ [{self.name}] Falha no socket porta {self.port} "
+                               f"(PID={self.pid}): {type(e).__name__}: {e}")
                 return False
 
         return True
 
+    def find_port_pid(self) -> Optional[int]:
+        """Retorna o PID que escuta na porta do serviço (lsof/ss/psutil), ou None."""
+        if not self.port:
+            return None
+        try:
+            out = subprocess.check_output(["lsof", "-t", f"-iTCP:{self.port}", "-sTCP:LISTEN"],
+                                          text=True, stderr=subprocess.DEVNULL, timeout=5)
+            pids = [int(p) for p in out.split() if p.isdigit()]
+            if pids:
+                return pids[0]
+        except Exception:
+            pass
+        try:
+            import re
+            out = subprocess.check_output(["ss", "-ltnpH", f"sport = :{self.port}"],
+                                          text=True, stderr=subprocess.DEVNULL, timeout=5)
+            m = re.search(r"pid=(\d+)", out)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+        try:
+            import psutil  # opcional
+            for c in psutil.net_connections(kind="tcp"):
+                if c.status == "LISTEN" and c.laddr and c.laddr.port == self.port and c.pid:
+                    return c.pid
+        except Exception:
+            pass
+        return None
+
     def auto_heal(self):
-        """Reinicia o serviço caso esteja inoperante ou travado."""
+        """Reinicia o serviço caso esteja inoperante ou travado.
+
+        Se a porta já é atendida por outro PID vivo, re-adota esse PID em vez de reiniciar.
+        """
+        if self.check_type == "http_port" and self.port:
+            port_pid = self.find_port_pid()
+            if port_pid and port_pid != self.pid:
+                self.process = None
+                self.pid = port_pid
+                self.start_time = time.time()
+                self.consecutive_failures = 0
+                logger.info(f"🔗 [{self.name}] Porta {self.port} atendida por PID={port_pid}; "
+                            f"re-adotado sem reiniciar.")
+                return
         self.restart_count += 1
         self.last_restart_time = time.time()
         logger.warning(f"⚠️ [{self.name}] Auto-Healing acionado! Reiniciando serviço (Reinício #{self.restart_count})...")
@@ -185,7 +244,8 @@ class SystemSupervisor:
             name="flask_dashboard",
             cmd=[PYTHON_BIN, os.path.join(BASE_DIR, "flask_interface.py"), "5000"],
             check_type="http_port",
-            port=5000
+            port=5000,
+            log_file=FLASK_LOG_FILE
         )
 
         # 2. Serviço de Simulação Paper Trading
@@ -294,12 +354,32 @@ class SystemSupervisor:
             if not svc.check_health():
                 svc.consecutive_failures += 1
                 logger.warning(f"⚠️ [{svc.name}] Falha detectada (Contagem={svc.consecutive_failures}).")
-                if svc.consecutive_failures >= 2:
+                if svc.consecutive_failures >= HEAL_FAILURE_THRESHOLD:
                     svc.auto_heal()
             else:
                 svc.consecutive_failures = 0
 
+        self.maybe_checkpoint_wal()
         self.dump_state_file()
+
+    def maybe_checkpoint_wal(self, interval_seconds: float = 300.0, threshold_bytes: int = 16 * 1024 * 1024) -> Optional[Dict[str, Any]]:
+        """Checkpoint WAL (TRUNCATE→PASSIVE, tolerante a busy) quando o WAL excede o limiar."""
+        now = time.time()
+        if now - getattr(self, "_last_wal_checkpoint", 0.0) < interval_seconds:
+            return None
+        self._last_wal_checkpoint = now
+        try:
+            if BASE_DIR not in sys.path:
+                sys.path.insert(0, BASE_DIR)
+            from data.db_maintenance import wal_checkpoint
+            res = wal_checkpoint(DB_PATH, busy_timeout_ms=500, truncate_threshold_bytes=threshold_bytes)
+            if res.get("mode") not in (None, "SKIPPED"):
+                logger.info(f"🧹 WAL checkpoint {res['mode']} busy={res['busy']} "
+                            f"{res['wal_before']/1e6:.1f}MB -> {res['wal_after']/1e6:.1f}MB")
+            return res
+        except Exception as e:
+            logger.debug(f"Aviso no checkpoint WAL: {e}")
+            return None
 
     def run_forever(self):
         """Loop contínuo de supervisão."""

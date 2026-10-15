@@ -28,8 +28,11 @@ class AgentSignal:
         self.direction = self.direction.upper()
         if self.direction not in ["BUY", "SELL", "HOLD"]:
             raise ValueError(f"Direção inválida no AgentSignal: '{self.direction}'. Deve ser BUY, SELL ou HOLD.")
-        self.confidence = float(max(0.0, min(1.0, self.confidence)))
-        self.weight = float(max(0.0, self.weight))
+        # NaN-safe: max(0, min(1, nan)) devolveria 1.0 (confiança máxima) -> força 0.0
+        conf = float(self.confidence)
+        self.confidence = 0.0 if conf != conf else float(max(0.0, min(1.0, conf)))
+        w = float(self.weight)
+        self.weight = 0.0 if w != w else float(max(0.0, w))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

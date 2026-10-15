@@ -8,6 +8,7 @@ Transforma o resultado do Juiz de Consenso em uma ordem parametrizada e segura:
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
@@ -71,12 +72,16 @@ class SignalGenerator:
         Gera a estrutura formal do sinal operacional a partir da deliberação do comitê.
         Suporta parametrização assimétrica de SL/TP com confluência de POI e Liquidity Sweeps.
         """
-        capital = capital_override or self.capital
+        capital = capital_override if capital_override is not None else self.capital
         direction = decision.direction
-        atr_val = max(1e-6, float(atr))
         p0 = float(current_price)
+        atr_raw = float(atr)
+        atr_val = max(1e-6, atr_raw) if math.isfinite(atr_raw) else 1e-6
+        # Preço/ATR inválidos (0, NaN, negativo) tornariam SL/TP e sizing sem sentido
+        # (ZeroDivisionError em max_size ou stop colado na entrada): não opera.
+        invalid_inputs = (not math.isfinite(p0)) or p0 <= 0.0 or (not math.isfinite(atr_raw)) or atr_raw <= 0.0
 
-        if decision.is_vetoed or direction == "HOLD":
+        if decision.is_vetoed or direction == "HOLD" or invalid_inputs:
             return TradeSignal(
                 signal_id=str(uuid.uuid4())[:8],
                 timestamp=timestamp,
@@ -130,7 +135,8 @@ class SignalGenerator:
         desired_size = dollar_risk / max(1e-6, sl_distance)
         max_size = (capital * self.leverage) / p0
         size = min(desired_size, max_size)
-
+        # Risco efetivo: se o teto de alavancagem limitou o tamanho, o risco real é menor que o nominal
+        effective_risk = size * sl_distance
 
         # Construção da justificativa textual unificada
         agent_reasons = [
@@ -139,8 +145,8 @@ class SignalGenerator:
             if s.direction == direction
         ]
         full_rationale = (
-            f"{decision.consensus_summary} | TP={take_profit:.2f} (+{self.tp_atr_multiple}x ATR), "
-            f"SL={stop_loss:.2f} (-{self.sl_atr_multiple}x ATR). "
+            f"{decision.consensus_summary} | TP={take_profit:.2f} (+{eff_tp_mult}x ATR), "
+            f"SL={stop_loss:.2f} (-{eff_sl_mult}x ATR). "
             f"Evidências convergentes: {' // '.join(agent_reasons)}"
         )
 
@@ -156,7 +162,7 @@ class SignalGenerator:
             confidence=decision.confidence,
             consensus_score=decision.aggregated_score,
             position_size=size,
-            risk_dollars=dollar_risk,
+            risk_dollars=effective_risk,
             rationale=full_rationale,
             is_vetoed=False,
             contributing_agents=[s.to_dict() for s in decision.agent_signals],

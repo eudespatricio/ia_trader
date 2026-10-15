@@ -32,7 +32,9 @@ class OnChainAgent(BaseAgent):
         - `tvl_growth_pct_7d`: Crescimento do TVL em 7 dias
         """
         stbl_growth = context.get("stablecoin_growth_pct_30d")
-        tvl_growth = context.get("tvl_growth_pct_7d") or context.get("tvl_change_24h")
+        tvl_growth = context.get("tvl_growth_pct_7d")
+        if tvl_growth is None:
+            tvl_growth = context.get("tvl_change_24h")
 
         if stbl_growth is None and tvl_growth is not None:
             stbl_growth = float(tvl_growth) * 0.75

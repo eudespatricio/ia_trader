@@ -122,7 +122,12 @@ class MarketRegimeClassifier:
         rs = gain / loss.replace(0, np.nan)
         rsi = float(100 - (100 / (1 + rs)).iloc[-1])
         if np.isnan(rsi):
-            rsi = 50.0
+            g_last, l_last = float(gain.iloc[-1]), float(loss.iloc[-1])
+            # loss==0: só ganhos -> RSI=100 (antes virava 50 neutro); sem variação -> 50
+            if l_last == 0.0 and g_last > 0.0:
+                rsi = 100.0
+            else:
+                rsi = 50.0
 
         # ATR 14 e ATR ratio de volatilidade
         tr1 = high - low

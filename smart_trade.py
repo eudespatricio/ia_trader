@@ -119,6 +119,7 @@ class PaperTradingEngine:
         core: Optional[TradingCore] = None,
         max_concurrent_positions: Optional[int] = None,
         max_margin_utilization_pct: Optional[float] = None,
+        restore: bool = True,
     ):
         # TRAVA DE SEGURANÇA DA REGRA DE OURO
         if not simulation_mode:
@@ -181,6 +182,13 @@ class PaperTradingEngine:
 
 
         self._init_database_tables()
+
+        # A5: reinício do daemon não pode zerar saldo/posições
+        if restore:
+            try:
+                self.restore_state()
+            except Exception as e:
+                logger.error(f"Falha ao restaurar estado do SQLite (iniciando limpo): {e}")
 
         logger.info(f"PaperTradingEngine inicializado com capital de ${self.initial_capital:,.2f} USD em modo SIMULAÇÃO.")
 
@@ -281,6 +289,168 @@ class PaperTradingEngine:
                 cur.executemany("INSERT OR IGNORE INTO simulation_settings (key, value) VALUES (?, ?)", defaults)
             con.commit()
 
+    # =========================================================================
+    # RESTAURAÇÃO DE ESTADO (A5) E RESET MANUAL
+    # =========================================================================
+
+    @staticmethod
+    def _ts_ms(ts: Union[int, float]) -> float:
+        """Normaliza timestamp (s ou ms) para ms."""
+        ts = float(ts or 0)
+        return ts if ts > 1e11 else ts * 1000.0
+
+    @staticmethod
+    def _set_setting(cur: sqlite3.Cursor, key: str, value: str) -> None:
+        cur.execute("""
+            INSERT INTO simulation_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        """, (key, value))
+
+    @staticmethod
+    def _max_rowid(cur: sqlite3.Cursor, table: str) -> int:
+        cur.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {table}")
+        return int(cur.fetchone()[0])
+
+    def manual_reset(self) -> None:
+        """
+        Reset manual INTENCIONAL: volta ao capital inicial, sem posições/histórico em memória,
+        e grava um marco (rowid) no SQLite para que restart posterior NÃO ressuscite o passado.
+        Linhas antigas do DB são preservadas para auditoria.
+        """
+        with self._lock:
+            with self._get_connection() as con:
+                cur = con.cursor()
+                self._set_setting(cur, "ledger_epoch_trade_rowid", str(self._max_rowid(cur, "paper_trades")))
+                self._set_setting(cur, "ledger_epoch_pos_rowid", str(self._max_rowid(cur, "paper_positions")))
+                self._set_setting(cur, "quota_epoch_trade_rowid", str(self._max_rowid(cur, "paper_trades")))
+                self._set_setting(cur, "MANUAL_RESET", "0")
+                con.commit()
+            self.balance = self.initial_capital
+            self.positions = {}
+            self.closed_positions = []
+            self.trade_history = []
+            self.total_fees_paid = 0.0
+            self.total_realized_pnl = 0.0
+            self.daily_scalps_count = 0
+            self.daily_golden_pots_count = 0
+            self.current_day_utc = ""
+            logger.warning("[MANUAL_RESET] Estado de paper trading reiniciado intencionalmente.")
+
+    def restore_state(self) -> Dict[str, Any]:
+        """
+        Recarrega do SQLite: saldo (ledger paper_trades), posições OPEN, histórico, fees/PnL
+        acumulados e contadores de cota diária. Respeita:
+          - flag simulation_settings.MANUAL_RESET == '1' (reset intencional -> começa limpo);
+          - marco ledger_epoch_* (ignora tudo anterior a um reset manual prévio);
+          - marco quota_epoch_trade_rowid (reset manual de cotas no mesmo dia);
+          - virada de dia UTC (cotas só contam trades do último dia registrado).
+        Saldo = capital inicial - taxas de abertura (OPEN_*) + PnL líquido de saídas (inclui TP1_PARTIAL).
+        """
+        with self._lock:
+            with self._get_connection() as con:
+                cur = con.cursor()
+                cur.execute("SELECT key, value FROM simulation_settings")
+                st = dict(cur.fetchall())
+                flag = str(st.get("MANUAL_RESET", "0")).strip().lower()
+                if flag in ("1", "true", "yes"):
+                    con.commit()
+                    self.manual_reset()
+                    self.sync_settings_from_db()
+                    return {"restored": False, "reason": "MANUAL_RESET"}
+
+                t_epoch = int(float(st.get("ledger_epoch_trade_rowid", 0) or 0))
+                p_epoch = int(float(st.get("ledger_epoch_pos_rowid", 0) or 0))
+                q_epoch = int(float(st.get("quota_epoch_trade_rowid", 0) or 0))
+
+                cur.execute(
+                    "SELECT rowid, trade_id, position_id, symbol, action, price, quantity, fee, pnl, timestamp, rationale "
+                    "FROM paper_trades WHERE rowid > ? ORDER BY rowid", (t_epoch,))
+                trade_rows = cur.fetchall()
+
+                cur.execute(
+                    "SELECT position_id, symbol, side, entry_price, current_price, quantity, notional, stop_loss, "
+                    "take_profit, unrealized_pnl, realized_pnl, funding_collected, fees_paid, entry_timestamp, "
+                    "strategy_type, status, tp1_price, tp1_hit, tp2_price, initial_quantity "
+                    "FROM paper_positions WHERE rowid > ? ORDER BY rowid", (p_epoch,))
+                pos_rows = cur.fetchall()
+
+            if not trade_rows and not pos_rows:
+                return {"restored": False, "reason": "EMPTY_DB"}
+
+            history: List[PaperTrade] = []
+            balance = self.initial_capital
+            fees = 0.0
+            realized = 0.0
+            for r in trade_rows:
+                tr = PaperTrade(
+                    trade_id=r[1], position_id=r[2], symbol=r[3], action=r[4], price=float(r[5]),
+                    quantity=float(r[6]), fee=float(r[7]), pnl=float(r[8]), timestamp=int(r[9]),
+                    rationale=r[10] or "",
+                )
+                history.append(tr)
+                fees += tr.fee
+                if tr.action.startswith("OPEN_"):
+                    balance -= tr.fee
+                else:
+                    balance += tr.pnl
+                    realized += tr.pnl
+
+            open_pos: Dict[str, PaperPosition] = {}
+            closed_pos: List[PaperPosition] = []
+            for r in pos_rows:
+                f = lambda v: float(v) if v is not None else 0.0
+                entry, cur_px = f(r[3]), f(r[4])
+                pos = PaperPosition(
+                    position_id=r[0], symbol=r[1], side=r[2], entry_price=entry, current_price=cur_px,
+                    quantity=f(r[5]), notional=f(r[6]), stop_loss=f(r[7]), take_profit=f(r[8]),
+                    highest_price=max(entry, cur_px), lowest_price=min(entry, cur_px) if cur_px > 0 else entry,
+                    unrealized_pnl=f(r[9]), realized_pnl=f(r[10]), funding_collected=f(r[11]),
+                    fees_paid=f(r[12]), entry_timestamp=int(r[13] or 0), strategy_type=r[14] or "DIRECTIONAL",
+                    status=r[15], tp1_price=f(r[16]), tp1_hit=bool(r[17]), tp2_price=f(r[18]),
+                    initial_quantity=f(r[19]),
+                )
+                if pos.status == "OPEN":
+                    open_pos[pos.position_id] = pos
+                else:
+                    closed_pos.append(pos)
+
+            self.balance = balance
+            self.total_fees_paid = fees
+            self.total_realized_pnl = realized
+            self.trade_history = history
+            self.positions = open_pos
+            self.closed_positions = closed_pos
+
+            # Cotas diárias: conta aberturas do último dia UTC registrado, após o marco de reset de cotas
+            self.daily_scalps_count = 0
+            self.daily_golden_pots_count = 0
+            self.current_day_utc = ""
+            if history:
+                last_day = self._format_day_utc(max(self._ts_ms(t.timestamp) for t in history) / 1000.0)
+                self.current_day_utc = last_day
+                with self._get_connection() as con:
+                    cur = con.cursor()
+                    cur.execute(
+                        "SELECT action, timestamp FROM paper_trades WHERE rowid > ? AND rowid > ? "
+                        "AND (action LIKE 'OPEN_SCALP_%' OR action LIKE 'OPEN_GOLDEN_POT_%')",
+                        (t_epoch, q_epoch))
+                    for action, ts in cur.fetchall():
+                        if self._format_day_utc(self._ts_ms(ts) / 1000.0) != last_day:
+                            continue
+                        if action.startswith("OPEN_SCALP_"):
+                            self.daily_scalps_count += 1
+                        else:
+                            self.daily_golden_pots_count += 1
+
+            self.sync_settings_from_db()  # limites atuais + eventual reset de cotas pendente
+            logger.info(
+                f"[RESTORE] Saldo ${self.balance:,.2f} | {len(open_pos)} posições abertas | "
+                f"{len(history)} trades | cotas {self.daily_scalps_count}/{self.daily_golden_pots_count} ({self.current_day_utc})"
+            )
+            return {"restored": True, "balance": self.balance, "open_positions": len(open_pos),
+                    "trades": len(history)}
+
     def get_simulation_settings(self) -> Dict[str, Any]:
         """Recupera configurações e limites de simulação ativas do SQLite."""
         defaults = {
@@ -351,6 +521,8 @@ class PaperTradingEngine:
                         self.daily_scalps_count = 0
                         self.daily_golden_pots_count = 0
                         cur.execute("UPDATE simulation_settings SET value = '0' WHERE key = 'reset_daily_quotas'")
+                        # Persiste o marco do reset para que restore_state não recontabilize as cotas
+                        self._set_setting(cur, "quota_epoch_trade_rowid", str(self._max_rowid(cur, "paper_trades")))
                         con.commit()
                         logger.info("🔄 [RESET DE COTAS] Contadores diários zerados sob demanda do usuário.")
 
@@ -373,13 +545,15 @@ class PaperTradingEngine:
     @property
     def equity(self) -> float:
         """Patrimônio líquido total (saldo disponível + PnL não-realizado de posições abertas)."""
-        unrealized = sum(p.unrealized_pnl for p in self.positions.values() if p.status == "OPEN")
-        return self.balance + unrealized
+        with self._lock:
+            unrealized = sum(p.unrealized_pnl for p in self.positions.values() if p.status == "OPEN")
+            return self.balance + unrealized
 
     @property
     def margin_used(self) -> float:
         """Margem comprometida em posições abertas."""
-        return sum(p.notional for p in self.positions.values() if p.status == "OPEN")
+        with self._lock:
+            return sum(p.notional for p in self.positions.values() if p.status == "OPEN")
 
     @property
     def available_margin(self) -> float:
@@ -397,12 +571,14 @@ class PaperTradingEngine:
     def _check_or_reset_daily_quota(self, timestamp: int) -> str:
         """Verifica a virada do dia UTC e reseta a contagem de scalps diários e golden pots se necessário."""
         day_str = self._format_day_utc(timestamp)
-        if day_str != self.current_day_utc:
+        # Avança apenas para frente: timestamps de velas antigas (ex.: 23:45 do dia anterior)
+        # não podem reabrir o dia anterior e zerar a cota duas vezes na virada UTC.
+        if day_str > self.current_day_utc:
             self.current_day_utc = day_str
             self.daily_scalps_count = 0
             self.daily_golden_pots_count = 0
             logger.info(f"Virada de dia UTC detectada ({day_str}): Contadores de scalps diários e golden pots resetados para 0.")
-        return day_str
+        return self.current_day_utc
 
     def can_execute_scalp(self, timestamp: int, notional: float = 0.0) -> Tuple[bool, str]:
         """
@@ -509,8 +685,15 @@ class PaperTradingEngine:
             eq = self.equity
             ret_pct = ((eq - self.initial_capital) / self.initial_capital) * 100.0
             
-            closed_trades = [t for t in self.trade_history if t.pnl != 0.0]
-            winning = [t for t in closed_trades if t.pnl > 0.0]
+            # Win rate por position_id: TP1_PARTIAL + fechamento final = 1 único trade.
+            # Posições ainda abertas (só com parcial) não contam como trade finalizado.
+            pnl_by_pos: Dict[str, float] = {}
+            for t in self.trade_history:
+                if t.action.startswith("OPEN_") or t.position_id in self.positions:
+                    continue
+                pnl_by_pos[t.position_id] = pnl_by_pos.get(t.position_id, 0.0) + t.pnl
+            closed_trades = [v for v in pnl_by_pos.values() if v != 0.0]
+            winning = [v for v in closed_trades if v > 0.0]
             win_rate = (len(winning) / len(closed_trades) * 100.0) if closed_trades else 0.0
 
             return {
@@ -891,7 +1074,9 @@ class PaperTradingEngine:
             if existing:
                 return None
 
-            usable_alloc = min(allocation_usd, self.balance * 0.8)
+            # Respeita o teto global de margem (evita somar exposição acima do capital)
+            free_margin = max(0.0, self.balance * self.max_margin_utilization_pct - self.margin_used)
+            usable_alloc = min(allocation_usd, self.balance * 0.8, free_margin)
             if usable_alloc < 50.0:
                 return None
 
@@ -973,9 +1158,17 @@ class PaperTradingEngine:
             if pos.status != "OPEN":
                 return None
 
-            is_maker_exit = (pos.strategy_type in ["SCALP", "GOLDEN_POT"])
+            # A1: apenas TP2 (limit order) de SCALP/GOLDEN_POT é maker. SL, BREAKEVEN_STOP e
+            # MANUAL são ordens a mercado: taker + slippage perp.
+            is_scalp_like = pos.strategy_type in ["SCALP", "GOLDEN_POT"]
+            is_maker_exit = is_scalp_like and reason == "TAKE_PROFIT_2"
             fee_rate = self.maker_fee if is_maker_exit else self.taker_fee
-            slip = 0.0001 if is_maker_exit else (self.slippage_perp if pos.side == "SHORT" else self.slippage_spot)
+            if is_maker_exit:
+                slip = 0.0001
+            elif is_scalp_like:
+                slip = self.slippage_perp
+            else:
+                slip = self.slippage_perp if pos.side == "SHORT" else self.slippage_spot
 
             if pos.side == "LONG":
                 exec_price = exit_price * (1.0 - slip)
@@ -1025,7 +1218,8 @@ class PaperTradingEngine:
                 pos.current_price = prev_curr_price
                 return None
 
-            self.balance += net_pnl - exit_fee
+            # net_pnl já está líquido da taxa de saída: não subtrair exit_fee novamente
+            self.balance += net_pnl
             self.total_fees_paid += exit_fee
             self.total_realized_pnl += net_pnl
 
@@ -1068,6 +1262,21 @@ class PaperTradingEngine:
         timestamp: int,
         funding_rate_period: float = 0.0,
     ) -> List[PaperTrade]:
+        # Todo o ciclo de leitura/mutação roda sob RLock (reentrante com close_position),
+        # evitando "dict changed size during iteration" e leituras inconsistentes de
+        # equity/margin em threads concorrentes (Flask, supervisor).
+        with self._lock:
+            return self._update_market_tick_locked(symbol, high, low, close, timestamp, funding_rate_period)
+
+    def _update_market_tick_locked(
+        self,
+        symbol: str,
+        bar_high: float,
+        bar_low: float,
+        close: float,
+        timestamp: int,
+        funding_rate_period: float = 0.0,
+    ) -> List[PaperTrade]:
         """
         Atualiza posições com a vela de mercado e verifica SL/TP intra-barra.
         Aplica o funding rate se for momento de liquidação (a cada 8h).
@@ -1084,6 +1293,13 @@ class PaperTradingEngine:
             pos = self.positions[pos_id]
             if pos.symbol != symbol or pos.status != "OPEN":
                 continue
+
+            # A3: vela anterior/simultânea à entrada não pode disparar SL/TP com extremos
+            # que ocorreram antes da posição existir -> usa apenas o close.
+            if self._ts_ms(timestamp) <= self._ts_ms(pos.entry_timestamp):
+                high = low = close
+            else:
+                high, low = bar_high, bar_low
 
             pos.current_price = close
             pos.highest_price = max(pos.highest_price, high)
@@ -1105,7 +1321,7 @@ class PaperTradingEngine:
                         pos.quantity -= partial_qty
                         pos.realized_pnl += net_partial
                         pos.fees_paid += fee_partial
-                        self.balance += net_partial - fee_partial
+                        self.balance += net_partial  # net_partial já deduz fee_partial
                         self.total_fees_paid += fee_partial
                         self.total_realized_pnl += net_partial
 
@@ -1128,6 +1344,7 @@ class PaperTradingEngine:
                         self._save_trade(t_tp1)
                         triggered_trades.append(t_tp1)
                         logger.info(f"[{pos.symbol}] TP1 {strat_name} (50%) EXECUTADO @ ${pos.tp1_price:,.2f} | PnL: ${net_partial:+.2f} | SL -> Breakeven")
+                        pos.unrealized_pnl = (close - pos.entry_price) * pos.quantity  # recalcula com qtd remanescente
 
                     # Gatilho TP2 (encerra os 50% restantes)
                     if pos.tp1_hit and high >= pos.tp2_price:
@@ -1155,7 +1372,7 @@ class PaperTradingEngine:
                         pos.quantity -= partial_qty
                         pos.realized_pnl += net_partial
                         pos.fees_paid += fee_partial
-                        self.balance += net_partial - fee_partial
+                        self.balance += net_partial  # net_partial já deduz fee_partial
                         self.total_fees_paid += fee_partial
                         self.total_realized_pnl += net_partial
 
@@ -1178,6 +1395,7 @@ class PaperTradingEngine:
                         self._save_trade(t_tp1)
                         triggered_trades.append(t_tp1)
                         logger.info(f"[{pos.symbol}] TP1 {strat_name} (50%) EXECUTADO @ ${pos.tp1_price:,.2f} | PnL: ${net_partial:+.2f} | SL -> Breakeven")
+                        pos.unrealized_pnl = (pos.entry_price - close) * pos.quantity  # recalcula com qtd remanescente
 
                     # Gatilho TP2 (encerra os 50% restantes)
                     if pos.tp1_hit and low <= pos.tp2_price:

@@ -53,21 +53,31 @@ class TechnicalAgent(BaseAgent):
             proba_buy = float(probas[buy_idx[0]]) if len(buy_idx) > 0 else 0.0
             proba_sell = float(probas[sell_idx[0]]) if len(sell_idx) > 0 else 0.0
 
-        proba_buy = float(proba_buy or 0.0)
-        proba_sell = float(proba_sell or 0.0)
+        def _clean(v: Any) -> Optional[float]:
+            """None/NaN/inf -> None; caso contrário float."""
+            if v is None:
+                return None
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return None
+            return fv if np.isfinite(fv) else None
+
+        proba_buy = _clean(proba_buy) or 0.0
+        proba_sell = _clean(proba_sell) or 0.0
 
         # Filtro de Regime Estrutural Macro (SMA 200)
-        close = context.get("close")
-        sma_200 = context.get("sma_200")
-        dist_sma_200 = context.get("dist_sma_200")
-        rsi_14 = context.get("rsi_14")
-        dist_vwap = context.get("dist_vwap_pct")
+        close = _clean(context.get("close"))
+        sma_200 = _clean(context.get("sma_200"))
+        dist_sma_200 = _clean(context.get("dist_sma_200"))
+        rsi_14 = _clean(context.get("rsi_14"))
+        dist_vwap = _clean(context.get("dist_vwap_pct"))
 
         macro_bull = None
         if close is not None and sma_200 is not None:
-            macro_bull = float(close) >= float(sma_200)
+            macro_bull = close >= sma_200
         elif dist_sma_200 is not None:
-            macro_bull = float(dist_sma_200) >= 0.0
+            macro_bull = dist_sma_200 >= 0.0
 
         direction = "HOLD"
         confidence = max(proba_buy, proba_sell, 1.0 - proba_buy - proba_sell)

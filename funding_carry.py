@@ -250,6 +250,10 @@ class FundingCarrySimulator:
                     entry_fees = entry_spot_fee + entry_perp_fee
                     total_fees_paid += entry_fees
                     equity -= entry_fees
+                    # Taxas de entrada saem do colateral: o equity marcado a mercado
+                    # (spot_val + colateral) passa a refletir o custo (antes era omitido
+                    # e net_profit ficava superestimado em entry_fees por trade).
+                    pos_colateral -= entry_fees
 
                     in_position = True
                     accum_trade_funding = 0.0

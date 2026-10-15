@@ -224,7 +224,10 @@ class TradingCore:
         carry_exit_warning = funding_ann < 0.02 or funding_z < -2.0
 
         # Regime macro dominante (SMA 200)
-        macro_bull = float(context.get("dist_sma_200", 0.0)) >= 0.0
+        dist200 = float(context.get("dist_sma_200", 0.0) or 0.0)
+        if dist200 != dist200:  # NaN >= 0 é False -> classificaria BEAR espuriamente
+            dist200 = 0.0
+        macro_bull = dist200 >= 0.0
         regime_str = "BULL_TREND" if macro_bull else "BEAR_TREND"
 
         carry_rec = (

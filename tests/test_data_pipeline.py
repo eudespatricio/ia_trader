@@ -86,13 +86,13 @@ class TestDataIntegrations(unittest.TestCase):
         rel_date = fred._calculate_effective_release_date("CPIAUCSL", obs_date)
         
         self.assertTrue(rel_date > obs_date, f"release_date {rel_date} deve ser estritamente posterior a {obs_date}")
-        self.assertEqual(rel_date, "2024-02-14", "CPI de Jan deve ser divulgado em meados de Fev")
+        self.assertEqual(rel_date, "2024-02-20", "CPI de Jan: margem conservadora dia 20 de Fev (V1)")
 
         # Taxa FEDFUNDS de 2024-03-01
         ff_obs = "2024-03-01"
         ff_rel = fred._calculate_effective_release_date("FEDFUNDS", ff_obs)
         self.assertTrue(ff_rel > ff_obs)
-        self.assertEqual(ff_rel, "2024-03-02", "Taxa diária possui divulgação D+1")
+        self.assertEqual(ff_rel, "2024-04-01", "FEDFUNDS média mensal: fim do mês + 1 dia (V1)")
 
     def test_sentiment_score_logic(self):
         """Validação do algoritmo de cálculo de sentimento da CryptoPanic."""

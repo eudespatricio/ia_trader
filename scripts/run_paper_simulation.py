@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 
 from data.data_loader import DataLoader
@@ -35,6 +36,10 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] [paper_daemon] %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+
+SWING_CANDLE_LIMIT = 400          # velas 1h buscadas (sma_200 + folga após dropna)
+SWING_MIN_WARMUP_CANDLES = 250    # mínimo bruto para sma_200 válida em ao menos 50 linhas
 
 
 class PaperTradingDaemon:
@@ -60,6 +65,27 @@ class PaperTradingDaemon:
 
         # Pares fixos monitorados continuamente
         self.core_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+    def _compute_swing_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Features com warmup explícito: descarta as linhas em que sma_200 ainda não existia
+        (o fillna(0.0) de drop_na=False as marca com 0.0). Evita o dropna global de
+        compute_all_features(drop_na=True), que zera TODO o DataFrame em tendências
+        monotônicas (colunas de estrutura nearest_ssl/bsl ficam NaN em toda a janela).
+        """
+        feat = self.fe.compute_all_features(df, drop_na=False)
+        if feat.empty or "sma_200" not in feat.columns:
+            return pd.DataFrame()
+        valid = np.isfinite(feat["sma_200"].astype(float)) & (feat["sma_200"].astype(float) > 0.0)
+        return feat[valid].reset_index(drop=True)
+
+    @staticmethod
+    def _has_valid_swing_context(df_feat: pd.DataFrame) -> bool:
+        """True se a última linha tem sma_200 finita e > 0 (sem fallback 0.0 de séries curtas)."""
+        if df_feat is None or df_feat.empty or "sma_200" not in df_feat.columns:
+            return False
+        v = df_feat["sma_200"].iloc[-1]
+        return bool(np.isfinite(v) and float(v) > 0.0)
 
     async def update_active_positions(self) -> None:
         """Atualiza todas as posições abertas com os preços de mercado mais recentes em paralelo."""
@@ -307,14 +333,18 @@ class PaperTradingDaemon:
                 continue
 
             try:
-                df = await self.loader.get_candles(sym, "1h", limit=100, exchange="binance")
-                if len(df) < 50:
-                    df = await self.loader.get_candles(sym, "1h", limit=100, exchange="bitget")
-                if len(df) < 50:
+                # BIAS: sma_200 exige >=200 velas válidas após o dropna -> busca 400 candles e
+                # pula o símbolo se o warmup não for satisfeito (nunca opera com sma_200=0.0).
+                df = await self.loader.get_candles(sym, "1h", limit=SWING_CANDLE_LIMIT, exchange="binance")
+                if len(df) < SWING_MIN_WARMUP_CANDLES:
+                    df = await self.loader.get_candles(sym, "1h", limit=SWING_CANDLE_LIMIT, exchange="bitget")
+                if len(df) < SWING_MIN_WARMUP_CANDLES:
+                    logger.debug(f"[{sym}] Swing ignorado: {len(df)} velas < warmup {SWING_MIN_WARMUP_CANDLES}.")
                     continue
 
-                df_feat = self.fe.compute_all_features(df, drop_na=True)
-                if df_feat.empty:
+                df_feat = self._compute_swing_features(df)
+                if df_feat.empty or not self._has_valid_swing_context(df_feat):
+                    logger.debug(f"[{sym}] Swing ignorado: features inválidas (sma_200 ausente/zero).")
                     continue
 
                 latest = df_feat.iloc[-1]
@@ -333,6 +363,10 @@ class PaperTradingDaemon:
                 if dir_sig.get("direction") in ["BUY", "SELL"] and not dir_sig.get("is_vetoed", False):
                     # Exige confiança institucional (>= 0.70)
                     if dir_sig.get("confidence", 0.0) >= 0.70:
+                        # Contrato: TradeSignal.position_size vem do core em UNIDADES do ativo;
+                        # o engine interpreta como NOTIONAL em USD -> converte aqui (senão
+                        # BTC 0.55 virava $0.55 e a ordem era rejeitada por margem < $10).
+                        dir_sig = {**dir_sig, "position_size": float(dir_sig.get("position_size", 0.0)) * close}
                         sig = TradeSignal(**dir_sig)
                         pos = self.engine.execute_directional_signal(sig, current_price=close, timestamp=ts)
                         if pos:

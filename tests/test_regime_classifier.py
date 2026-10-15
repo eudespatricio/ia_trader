@@ -60,3 +60,14 @@ class TestMarketRegimeClassifier:
         assert res.regime == "HIGH_VOLATILITY_PANIC"
         assert res.bias == "RISK_OFF"
         assert "RISK_VETO" in res.recommended_strategies
+
+
+def test_rsi_all_gains_is_100_not_neutral_50(tmp_path):
+    import numpy as np
+    import pandas as pd
+    from agents.regime_classifier import MarketRegimeClassifier
+    n = 60
+    close = pd.Series(100.0 + np.arange(n) * 1.0)
+    df = pd.DataFrame({"close": close, "high": close + 0.5, "low": close - 0.5})
+    res = MarketRegimeClassifier(db_path=str(tmp_path / "r.db")).classify_from_df(df)
+    assert res.metrics["rsi_14"] == 100.0

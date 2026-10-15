@@ -172,7 +172,7 @@ class FeatureEngineer:
             atr_ind = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14, fillna=False)
             df["atr_14"] = atr_ind.average_true_range()
         else:
-            prev_close = close.shift(1).bfill()
+            prev_close = close.shift(1)  # sem bfill: 1a barra usa apenas high-low (anti-lookahead)
             tr1 = high - low
             tr2 = (high - prev_close).abs()
             tr3 = (low - prev_close).abs()
@@ -229,8 +229,13 @@ class FeatureEngineer:
 
         # Métricas de Microestrutura do Livro de Ofertas
         if order_book is not None:
-            df["ob_spread"] = float(order_book.spread)
-            df["ob_imbalance"] = float(order_book.imbalance)
+            # V8: snapshot atual do book só vale para a ÚLTIMA barra (inferência);
+            # barras históricas recebem valor neutro para não vazar/difundir o presente.
+            df["ob_spread"] = 0.0
+            df["ob_imbalance"] = 0.0
+            if len(df) > 0:
+                df.iloc[-1, df.columns.get_loc("ob_spread")] = float(order_book.spread)
+                df.iloc[-1, df.columns.get_loc("ob_imbalance")] = float(order_book.imbalance)
         else:
             if "ob_spread" not in df.columns:
                 df["ob_spread"] = 0.0
@@ -258,6 +263,15 @@ class FeatureEngineer:
         df["hl_spread"] = (high - low) / (close + 1e-8)
 
         return df
+
+    @staticmethod
+    def _apply_snapshot_last_row(df: pd.DataFrame, values: Dict[str, float], defaults: Dict[str, float]) -> None:
+        """Snapshot pontual (sem timestamp): neutro no histórico, valor real apenas na última barra."""
+        for col, dv in defaults.items():
+            df[col] = dv
+        if len(df) > 0:
+            for col, v in values.items():
+                df.iloc[-1, df.columns.get_loc(col)] = v
 
     @classmethod
     def add_macro_features(
@@ -294,13 +308,20 @@ class FeatureEngineer:
             return df
 
         if isinstance(macro_df, dict):
-            df["macro_cpi"] = float(macro_df.get("cpi", default_cpi))
-            df["macro_fedfunds"] = float(macro_df.get("fedfunds", default_fedfunds))
-            df["macro_vix"] = float(macro_df.get("vix", default_vix))
-            df["macro_dxy"] = float(macro_df.get("dxy", default_dxy))
-            df["macro_sp500"] = float(macro_df.get("sp500", default_sp500))
-            is_risk_off = 1.0 if macro_df.get("regime") == "risk_off" else 0.0
-            df["macro_regime_risk_off"] = is_risk_off
+            # V4: snapshot pontual só se aplica à ÚLTIMA barra (inferência);
+            # o histórico recebe valores neutros (não difundir o presente no passado).
+            cls._apply_snapshot_last_row(df, {
+                "macro_cpi": float(macro_df.get("cpi", default_cpi)),
+                "macro_fedfunds": float(macro_df.get("fedfunds", default_fedfunds)),
+                "macro_vix": float(macro_df.get("vix", default_vix)),
+                "macro_dxy": float(macro_df.get("dxy", default_dxy)),
+                "macro_sp500": float(macro_df.get("sp500", default_sp500)),
+                "macro_regime_risk_off": 1.0 if macro_df.get("regime") == "risk_off" else 0.0,
+            }, {
+                "macro_cpi": default_cpi, "macro_fedfunds": default_fedfunds,
+                "macro_vix": default_vix, "macro_dxy": default_dxy,
+                "macro_sp500": default_sp500, "macro_regime_risk_off": default_risk_off,
+            })
             return df
 
         if isinstance(macro_df, pd.DataFrame):
@@ -326,12 +347,18 @@ class FeatureEngineer:
             if date_col is None:
                 # Se não houver coluna temporal no macro_df, assume valores do último registro
                 last_row = m_df.iloc[-1]
-                df["macro_cpi"] = float(last_row.get("cpi", default_cpi))
-                df["macro_fedfunds"] = float(last_row.get("fedfunds", default_fedfunds))
-                df["macro_vix"] = float(last_row.get("vix", default_vix))
-                df["macro_dxy"] = float(last_row.get("dxy", default_dxy))
-                df["macro_sp500"] = float(last_row.get("sp500", default_sp500))
-                df["macro_regime_risk_off"] = float(last_row.get("macro_regime_risk_off", default_risk_off))
+                cls._apply_snapshot_last_row(df, {
+                    "macro_cpi": float(last_row.get("cpi", default_cpi)),
+                    "macro_fedfunds": float(last_row.get("fedfunds", default_fedfunds)),
+                    "macro_vix": float(last_row.get("vix", default_vix)),
+                    "macro_dxy": float(last_row.get("dxy", default_dxy)),
+                    "macro_sp500": float(last_row.get("sp500", default_sp500)),
+                    "macro_regime_risk_off": float(last_row.get("macro_regime_risk_off", default_risk_off)),
+                }, {
+                    "macro_cpi": default_cpi, "macro_fedfunds": default_fedfunds,
+                    "macro_vix": default_vix, "macro_dxy": default_dxy,
+                    "macro_sp500": default_sp500, "macro_regime_risk_off": default_risk_off,
+                })
                 return df
 
             # Converte chaves temporais para datetime64[ns]
@@ -345,6 +372,11 @@ class FeatureEngineer:
             else:
                 m_dt = pd.to_datetime(m_df[date_col], utc=True).dt.tz_localize(None).astype("datetime64[ns]")
 
+            if date_col != "release_date":
+                # V6: sem release_date explícito a data é de OBSERVAÇÃO (ex.: fechamento diário de
+                # mercado) -> só fica disponível no dia seguinte: shift conservador de +1 dia.
+                logger.warning("macro_df sem 'release_date' (usando '%s'): aplicando shift +1 dia anti-lookahead.", date_col)
+                m_dt = m_dt + pd.Timedelta(days=1)
             m_df["_merge_dt"] = m_dt
             m_df = m_df.sort_values("_merge_dt").drop_duplicates(subset=["_merge_dt"])
 
@@ -389,7 +421,7 @@ class FeatureEngineer:
                 ("macro_sp500", default_sp500),
             ]:
                 if target_col in merged.columns:
-                    df[target_col] = merged[target_col].ffill().bfill().fillna(def_val).values
+                    df[target_col] = merged[target_col].ffill().fillna(def_val).values
                 else:
                     df[target_col] = def_val
 
@@ -420,7 +452,7 @@ class FeatureEngineer:
                     on="timestamp",
                     direction="backward"
                 )
-                df["funding_rate"] = temp["funding_rate"].ffill().bfill().fillna(0.0).values
+                df["funding_rate"] = temp["funding_rate"].ffill().fillna(0.0).values
             else:
                 df["funding_rate"] = 0.0
 
@@ -449,7 +481,7 @@ class FeatureEngineer:
                 cleaned = cleaned.dropna().reset_index(drop=True)
             else:
                 # Séries curtas: preserva registros utilizando preenchimento coerente
-                cleaned = cleaned.bfill().ffill().fillna(0.0).reset_index(drop=True)
+                cleaned = cleaned.ffill().fillna(0.0).reset_index(drop=True)
         else:
             cleaned = cleaned.fillna(0.0)
 

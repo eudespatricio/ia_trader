@@ -85,6 +85,10 @@ class ConsensusJudge:
 
         # 2. Ponderação dos Votos
         weights = weights_override or self.default_weights
+        # Agentes sinalizados com weight<=0 (ex.: fallback por falha em core.evaluate_market_async)
+        # não devem diluir o denominador nem receber peso default do dicionário.
+        all_signals = signals
+        signals = [s for s in signals if s.weight > 0.0 or s.is_veto]
         weighted_score = 0.0
         total_weight = 0.0
 
@@ -141,7 +145,7 @@ class ConsensusJudge:
             confidence=confidence,
             is_vetoed=False,
             aggregated_score=norm_score,
-            agent_signals=signals,
+            agent_signals=all_signals,
             consensus_summary=summary,
             llm_arbitrated=False,
         )
@@ -183,8 +187,11 @@ class ConsensusJudge:
                 timeout=self.llm_timeout_seconds,
             )
             if llm_resp and isinstance(llm_resp, dict) and "direction" in llm_resp:
-                direction = llm_resp["direction"].upper()
+                direction = str(llm_resp["direction"]).upper()
+                if direction not in ("BUY", "SELL", "HOLD"):
+                    raise ValueError(f"direção inválida do LLM: {direction!r}")
                 confidence = float(llm_resp.get("confidence", 0.60))
+                confidence = 0.0 if confidence != confidence else max(0.0, min(1.0, confidence))
                 rationale = llm_resp.get("rationale", "Decisão arbitrada por LLM com sucesso.")
                 return ConsensusDecision(
                     direction=direction,

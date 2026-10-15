@@ -22,7 +22,7 @@ import sqlite3
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Union, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Importação condicional de pandas
 try:
@@ -32,6 +32,8 @@ except ImportError:
     HAS_PANDAS = False
 
 from .data_integrations import (
+    drop_open_candles,
+    timeframe_to_ms,
     CandleData,
     OrderBookDepth,
     MacroDataPoint,
@@ -231,12 +233,20 @@ class DataLoader:
                         symbol=sym, timeframe=tf, limit=limit, product_type="USDT-FUTURES"
                     )
                 if remote_candles:
+                    # V7: nunca persistir candle em formação (conectores já filtram; defesa em profundidade)
+                    remote_candles = drop_open_candles(remote_candles, tf)
+                if remote_candles:
                     self._persist_candles(remote_candles, exchange=ex)
             except Exception as e:
                 logger.warning(f"Erro ao buscar velas remotas ({ex}) para {sym}: {e}. Operando a partir do cache persistente.")
 
         # Leitura local estruturada do SQLite
         records = self._load_candles_from_db(sym, tf, limit, exchange=ex)
+        # V7: descarta vela em formação eventualmente já persistida no cache
+        _tf_ms = timeframe_to_ms(tf)
+        if _tf_ms > 0:
+            _now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            records = [r for r in records if int(r["timestamp"]) + _tf_ms <= _now_ms]
 
         # Sanitização e remoção de registros anômalos
         cleaned_records = self._sanitize_candles(records)
@@ -728,6 +738,16 @@ class DataLoader:
         vix_points = snapshots.get("vix", [])
         dxy_points = snapshots.get("dxy", [])
         sp_points = snapshots.get("sp500", [])
+
+        # V5/V6: barra diária de mercado só é conhecida após o fechamento -> usa apenas
+        # pontos com date <= as_of_date - 1 dia (barra do próprio dia está em formação/futura).
+        try:
+            _cutoff = (datetime.strptime(current_date_filter, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        except ValueError:
+            _cutoff = current_date_filter
+        vix_points = [p for p in vix_points if str(p.get("date", ""))[:10] <= _cutoff]
+        dxy_points = [p for p in dxy_points if str(p.get("date", ""))[:10] <= _cutoff]
+        sp_points = [p for p in sp_points if str(p.get("date", ""))[:10] <= _cutoff]
 
         vix_val = vix_points[-1]["close"] if vix_points else 18.0
         dxy_val = dxy_points[-1]["close"] if dxy_points else 103.5
