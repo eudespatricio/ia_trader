@@ -2060,13 +2060,92 @@ def api_educational_glossary():
     return jsonify(explainer.list_all_terms())
 
 
-@app.route("/api/educational/explain", methods=["POST"])
+@app.route("/api/educational/explain", methods=["GET", "POST"])
 def api_educational_explain():
-    """Gera explicação pedagógica em linguagem simples para um sinal ou trade."""
+    """Gera explicação pedagógica em linguagem simples para um sinal ou trade real."""
     data = request.get_json(silent=True) or {}
+    if not data:
+        data = request.args.to_dict()
+
+    req_pos_id = data.get("position_id")
+    req_symbol = (data.get("symbol") or "").upper().strip()
+    has_custom_trade = bool(
+        data.get("entry_price") and float(data.get("entry_price") or 0.0) > 0
+        and float(data.get("entry_price") or 0.0) != 64200.0
+    )
+
+    trade_data = None
+    if has_custom_trade:
+        trade_data = dict(data)
+    else:
+        try:
+            uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
+            with _closing_connect(uri, uri=True, timeout=5.0) as con:
+                con.row_factory = sqlite3.Row
+                cur = con.cursor()
+
+                pos_row = None
+                if req_pos_id:
+                    cur.execute("SELECT * FROM paper_positions WHERE position_id = ?", (req_pos_id,))
+                    pos_row = cur.fetchone()
+                elif req_symbol:
+                    cur.execute("SELECT * FROM paper_positions WHERE UPPER(status) = 'OPEN' AND symbol = ? ORDER BY entry_timestamp DESC LIMIT 1", (req_symbol,))
+                    pos_row = cur.fetchone()
+                    if not pos_row:
+                        cur.execute("SELECT * FROM paper_positions WHERE UPPER(status) != 'OPEN' AND symbol = ? ORDER BY entry_timestamp DESC LIMIT 1", (req_symbol,))
+                        pos_row = cur.fetchone()
+                else:
+                    cur.execute("SELECT * FROM paper_positions WHERE UPPER(status) = 'OPEN' ORDER BY entry_timestamp DESC LIMIT 1")
+                    pos_row = cur.fetchone()
+                    if not pos_row:
+                        cur.execute("SELECT * FROM paper_positions WHERE UPPER(status) != 'OPEN' ORDER BY entry_timestamp DESC LIMIT 1")
+                        pos_row = cur.fetchone()
+
+                cur.execute("SELECT regime, rationale, btc_price FROM market_regime ORDER BY timestamp DESC LIMIT 1")
+                reg_row = cur.fetchone()
+                current_regime = reg_row["regime"] if reg_row else "SIDEWAYS_RANGE"
+                market_rationale = reg_row["rationale"] if reg_row else ""
+                btc_live_price = float(reg_row["btc_price"]) if (reg_row and reg_row["btc_price"]) else 81620.0
+
+                if pos_row:
+                    trade_data = dict(pos_row)
+                    trade_data["direction"] = trade_data.get("side", "HOLD")
+                    trade_data["regime"] = current_regime
+                    if not trade_data.get("rationale"):
+                        trade_data["rationale"] = market_rationale
+                else:
+                    target_sym = req_symbol or "BTCUSDT"
+                    cur.execute("SELECT close FROM candles WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1", (target_sym,))
+                    candle_row = cur.fetchone()
+                    sym_price = float(candle_row["close"]) if candle_row else (btc_live_price if target_sym == "BTCUSDT" else 100.0)
+
+                    try:
+                        delib = get_live_agents_deliberation(target_sym)
+                        dir_vote = delib.get("consensus", {}).get("action", "HOLD")
+                        conf = delib.get("consensus", {}).get("confidence", 0.0)
+                        rationale_delib = delib.get("consensus", {}).get("summary", market_rationale)
+                    except Exception:
+                        dir_vote, conf, rationale_delib = "HOLD", 0.0, market_rationale
+
+                    trade_data = {
+                        "symbol": target_sym,
+                        "direction": dir_vote,
+                        "status": "DELIBERATION",
+                        "price": sym_price,
+                        "entry_price": sym_price,
+                        "stop_loss": 0.0,
+                        "take_profit": 0.0,
+                        "confidence": conf,
+                        "regime": current_regime,
+                        "rationale": rationale_delib,
+                    }
+        except Exception as e:
+            logger.warning(f"Erro ao buscar trade real para explicabilidade: {e}")
+            trade_data = data
+
     from educational_module import EducationalExplainer
     explainer = EducationalExplainer()
-    res = explainer.explain_trade_decision(data)
+    res = explainer.explain_trade_decision(trade_data or data)
     return jsonify(res)
 
 

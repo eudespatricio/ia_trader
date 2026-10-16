@@ -736,4 +736,25 @@ def test_funnel_no_overflow(make_page, vp):
                  sec: sec.scrollWidth - sec.clientWidth, right: r.right - window.innerWidth };
     }""")
     assert over["doc"] <= 0 and over["sec"] <= 0 and over["right"] <= 0, over
+
+
+def test_educational_card_dynamic_render(make_page):
+    def edu_route(route):
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "title": "Venda (Short) em SOLUSDT (3x) cotado a $105.58 · TP1 Atingido ✔ (Risco Zero)",
+            "regime": "SIDEWAYS_RANGE",
+            "is_open": True,
+            "direction": "SELL",
+            "summary": "Operação DIRECTIONAL em andamento. TP1 já executado (+40%) com stop em Breakeven.",
+            "risk_analysis": "Risco zero (Breakeven em $105.54)."
+        }))
+
+    p = make_page(routes=[("**/api/educational/explain*", edu_route)])
+    p.page.wait_for_selector("#educationalCardBody")
+    p.page.wait_for_function("document.getElementById('eduTradeTitle').innerText.includes('SOLUSDT')")
+    txt = p.page.inner_text("#educationalCardBody")
+    assert "SOLUSDT" in txt
+    assert "SIDEWAYS_RANGE" in txt
+    assert "Breakeven" in txt
+    assert "64200" not in txt and "64,200" not in txt
     assert p.page_errors == [] and p.console_errors == []

@@ -819,19 +819,19 @@
                     <!-- Explicação Didática da Decisão Mais Recente -->
                     <div id="educationalCardBody" class="mt-3 p-3.5 rounded-lg bg-dark-900/80 border border-dark-700 space-y-2.5">
                         <div class="flex items-center justify-between">
-                            <div class="text-xs font-bold text-white flex items-center gap-1.5">
-                                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-                                <span id="eduTradeTitle">Compra Institucional (Long) &bull; BTC/USDT</span>
+                            <div class="text-xs font-bold text-white flex items-center gap-1.5 min-w-0">
+                                <span id="eduTradeStatusDot" class="h-2 w-2 rounded-full bg-cyan-400 shrink-0"></span>
+                                <span id="eduTradeTitle" class="truncate">Carregando explicabilidade...</span>
                             </div>
-                            <span id="eduTradeRegime" class="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800">
-                                BULL_TREND
+                            <span id="eduTradeRegime" class="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 shrink-0">
+                                —
                             </span>
                         </div>
                         <p id="eduTradeWhy" class="text-xs text-slate-300 leading-relaxed">
-                            O Comitê de Agentes identificou confluência de absorção em Order Block com varredura prévia de liquidez (Sell-Side Liquidity Sweep) e mitigação de Fair Value Gap.
+                            Consultando a telemetria do robô e a deliberação do comitê em tempo real...
                         </p>
                         <div class="pt-2 border-t border-dark-700/60 flex items-center justify-between text-[11px] text-slate-400">
-                            <div>Gestão de Risco: <span id="eduTradeRisk" class="text-slate-200 font-mono">SL e TP calculados via ATR (R:R assimétrico 2.5:1)</span></div>
+                            <div>Gestão de Risco: <span id="eduTradeRisk" class="text-slate-200 font-mono">—</span></div>
                         </div>
                     </div>
                 </div>
@@ -2531,6 +2531,7 @@
             window._activeOrderOverlay = ov;
             updateOrderOverlayBanner();
             renderOpenPositionsTable();
+            loadEducationalExplanation();
 
             if (ov.timeframe !== currentTimeframe) {
                 setTimeframe(ov.timeframe, true);
@@ -2548,6 +2549,7 @@
             window._activeOrderOverlay = null;
             updateOrderOverlayBanner();
             renderOpenPositionsTable();
+            loadEducationalExplanation();
             if (window._cachedChartData) {
                 renderPlotlyChart(window._cachedChartData);
             }
@@ -2595,6 +2597,7 @@
             }
             loadChartData();
             loadStatus();
+            loadEducationalExplanation();
         }
 
         function setTimeframe(tf, skipLoad = false) {
@@ -3704,19 +3707,14 @@
 
         async function loadEducationalExplanation() {
             try {
-                const res = await fetch("/api/educational/explain", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        symbol: currentSymbol,
-                        direction: "BUY",
-                        entry_price: 64200.0,
-                        stop_loss: 63500.0,
-                        take_profit: 66000.0,
-                        rationale: "ORDER_BLOCK + LIQUIDITY_SWEEP + FVG Mitigation",
-                        regime: "BULL_TREND"
-                    })
-                });
+                const ov = window._activeOrderOverlay;
+                let url = "/api/educational/explain";
+                if (ov && ov.position_id) {
+                    url += "?position_id=" + encodeURIComponent(ov.position_id);
+                } else if (currentSymbol) {
+                    url += "?symbol=" + encodeURIComponent(currentSymbol);
+                }
+                const res = await fetch(url);
                 if (!res.ok) return;
                 const data = await res.json();
                 if (data.title) {
@@ -3724,11 +3722,32 @@
                     const elRegime = document.getElementById("eduTradeRegime");
                     const elRisk = document.getElementById("eduTradeRisk");
                     const elWhy = document.getElementById("eduTradeWhy");
+                    const elDot = document.getElementById("eduTradeStatusDot");
 
                     if (elTitle) elTitle.innerText = data.title;
+                    if (elRegime && data.regime) {
+                        elRegime.innerText = data.regime;
+                        if (data.regime.includes("BEAR")) {
+                            elRegime.className = "px-2 py-0.5 rounded text-[10px] font-mono bg-rose-950 text-rose-300 border border-rose-800 shrink-0";
+                        } else if (data.regime.includes("BULL")) {
+                            elRegime.className = "px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-800 shrink-0";
+                        } else {
+                            elRegime.className = "px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 shrink-0";
+                        }
+                    }
+                    if (elDot) {
+                        if (data.is_open) {
+                            elDot.className = "h-2 w-2 rounded-full bg-cyan-400 animate-pulse shrink-0";
+                        } else if (data.direction === "HOLD" || data.status === "DELIBERATION") {
+                            elDot.className = "h-2 w-2 rounded-full bg-slate-400 shrink-0";
+                        } else {
+                            elDot.className = "h-2 w-2 rounded-full bg-emerald-400 shrink-0";
+                        }
+                    }
                     if (elRisk && data.risk_analysis) elRisk.innerText = data.risk_analysis;
-                    if (elWhy && data.narrative) {
-                        elWhy.innerText = data.narrative.replace(/###.*?\n/g, "").replace(/\*\*/g, "").substring(0, 240) + "...";
+                    if (elWhy) {
+                        const raw = data.summary || (data.narrative ? data.narrative.replace(/###.*?\n/g, "").replace(/\*\*/g, "") : "");
+                        elWhy.innerText = raw.length > 280 ? raw.substring(0, 280) + "..." : raw;
                     }
                 }
             } catch (e) {

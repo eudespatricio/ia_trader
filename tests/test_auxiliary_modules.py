@@ -263,6 +263,16 @@ class TestFlaskAuxiliaryEndpoints:
         assert "title" in explain_data
         assert "Compra" in explain_data["title"]
 
+        r_get = client.get("/api/educational/explain")
+        assert r_get.status_code == 200
+        get_data = r_get.get_json()
+        assert "title" in get_data and "summary" in get_data and "risk_analysis" in get_data
+
+        r_get_btc = client.get("/api/educational/explain?symbol=BTCUSDT")
+        assert r_get_btc.status_code == 200
+        btc_data = r_get_btc.get_json()
+        assert "BTCUSDT" in btc_data["title"]
+
     def test_voice_command_endpoint(self, client):
         r_voice = client.post("/api/voice/command", json={"command": "qual o regime do mercado?"})
         assert r_voice.status_code == 200
