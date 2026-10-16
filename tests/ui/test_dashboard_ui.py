@@ -481,6 +481,7 @@ def _ladder_state():
                          tp1_fraction=0.4, tp2_fraction=0.3, runner_fraction=0.3, remaining_fraction=0.6,
                          trailing_active=True, trailing_stop_price=65300.0, exit_ladder=True, stop_loss=65000.0,
                          realized_pnl=4.50, unrealized_pnl=8.00)
+    st["open"][1].update(tp1_hit=True, trailing_active=False, stop_loss=3200.0)
     st["closed"][0].update(close_action="TRAILING_STOP", close_action_label="Trailing stop", tp1_fraction=0.4,
                            tp2_fraction=0.3, runner_fraction=0.3,
                            events=[{"action": "TP1_PARTIAL", "label": "TP1 parcial"},
@@ -492,12 +493,12 @@ def test_ladder_chart_lines_and_cards(make_page):
     p = make_page(routes=_pos_routes(_ladder_state()))
     p.page.wait_for_selector("#paperPositionsTableBody tr[data-position-id='P1']")
     txt = p.page.inner_text("#paperPositionsTableBody tr[data-position-id='P1']")
-    assert "TP1 40% / TP2 30% / runner 30%" in txt and "60%" in txt and "ATIVO" in txt and "(BE)" in txt
+    assert "TP1 40% / TP2 30% / runner 30%" in txt and "60%" in txt and "ATIVO" in txt and "(TS)" in txt
     assert "TP1 50%" not in p.page.inner_text("#paperPositionsTableBody")
     assert "Garantido: +$4.50" in txt and "PARCIAL REALIZADA" in txt and "Total: +$12.50" in txt
-    # legado (P2): '—' sem erro
+    # posição com TP1 atingido e trailing inativo: exibe (BE)
     t2 = p.page.inner_text("#paperPositionsTableBody tr[data-position-id='P2']")
-    assert "—" in t2 and "undefined" not in t2 and "NaN" not in t2
+    assert "(BE)" in t2 and "undefined" not in t2 and "NaN" not in t2
     p.page.click("#paperPositionsTableBody tr[data-position-id='P1']")
     p.page.wait_for_function("(document.getElementById('chartContainer').layout.annotations||[]).length >= 6", timeout=15000)
     ann = " ".join(p.page.evaluate("document.getElementById('chartContainer').layout.annotations.map(a => a.text)"))

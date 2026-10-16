@@ -1572,8 +1572,11 @@ def _enrich_position(pos: Dict[str, Any], close_info: Optional[Dict[str, Any]], 
         cur_price = float(pos.get("current_price") or 0.0)
         remaining_margin = (float(pos.get("quantity") or 0.0) * entry / lev) if entry > 0 else margin_initial
         unreal = float(pos.get("unrealized_pnl") or 0.0)
+        rec = float(pos.get("realized_pnl") or 0.0)
+        tot_pnl = unreal + rec
         pos["price_change_pct"] = round(sign * (cur_price - entry) / entry * 100.0, 4) if entry > 0 and cur_price > 0 else 0.0
         pos["roi_pct"] = round(unreal / remaining_margin * 100.0, 4) if remaining_margin > 0 else 0.0
+        pos["roi_total_pct"] = round(tot_pnl / margin_initial * 100.0, 4) if margin_initial > 0 else 0.0
         pos["open_for_s"] = max(0, int((now_ms - opened_ms) / 1000)) if opened_ms else None
     else:
         closed_ms = int((close_info or {}).get("closed_at_ms") or 0)

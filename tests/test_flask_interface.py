@@ -383,10 +383,23 @@ class TestPositionsEnrichment:
         p = d["positions"][0]
         assert p["opened_at_ms"] == 1700000000000  # s -> ms
         assert p["leverage_effective"] == 4 and p["margin_effective"] == 25.0
-        assert p["roi_pct"] == 8.0 and p["price_change_pct"] == 2.0
+        assert p["roi_pct"] == 8.0 and p["price_change_pct"] == 2.0 and p["roi_total_pct"] == 8.0
         assert d["summary"]["count"] == 1 and d["summary"]["win_rate_pct"] == 100.0
         assert d["summary"]["total_pnl_pct_initial"] == 0.02
         assert d["summary"]["unrealized_pnl"] == 2.0 and d["summary"]["realized_pnl"] == 0.0
+
+    def test_open_enrichment_with_realized_partial_roi_total(self, client, rich_db):
+        # simula posição com parciais já realizadas (TP1/TP2)
+        import flask_interface, sqlite3
+        con = sqlite3.connect(flask_interface.DB_PATH)
+        con.execute("UPDATE paper_positions SET realized_pnl = 3.68, unrealized_pnl = 2.12, quantity = 0.3, initial_quantity = 1.0 WHERE position_id = 'O'")
+        con.commit(); con.close()
+        d = client.get("/api/paper-trading/positions/open").get_json()
+        p = d["positions"][0]
+        # margem inicial = 1.0 * 100 / 4 = 25.0; total pnl = 3.68 + 2.12 = 5.80; roi_total = 5.80 / 25.0 = 23.2%
+        # margem restante = 0.3 * 100 / 4 = 7.5; roi_runner = 2.12 / 7.5 = 28.2667%
+        assert round(p["roi_total_pct"], 2) == 23.2
+        assert round(p["roi_pct"], 2) == 28.27
 
     def test_closed_enrichment_fallback_1x_and_close_time(self, client, rich_db):
         d = client.get("/api/paper-trading/positions/closed").get_json()

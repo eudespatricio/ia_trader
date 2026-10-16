@@ -2747,6 +2747,9 @@
             return pos.exit_ladder ? "inativo (aguarda TP2)" : "—";
         }
         function fmtCurrentSL(pos) {
+            if (pos.trailing_active) {
+                return `${fmtPx(pos.trailing_stop_price || pos.stop_loss)} (TS)`;
+            }
             const lbl = pos.tp1_hit ? " (BE)" : "";
             return `${fmtPx(pos.stop_loss)}${lbl}`;
         }
@@ -2832,7 +2835,12 @@
                                         ` : ''}
                                     </div>
                                     <div class="flex items-center justify-end gap-1.5 text-[10px] text-slate-400 mt-0.5">
-                                        <span class="font-semibold ${pctColor(pos.roi_pct)}" title="ROI sobre a margem remanescente (alavancado)">ROI ${fmtPct(pos.roi_pct)}</span>
+                                        ${hasRealized ? `
+                                            <span class="font-semibold ${pctColor(pos.roi_total_pct)}" title="ROI total da operação sobre a margem alocada ($${Number(pos.margin_effective || 0).toFixed(2)})">ROI Total ${fmtPct(pos.roi_total_pct)}</span>
+                                            <span class="text-[9px] text-slate-400" title="ROI da fração remanescente do runner (alavancado ${fmtLevX(pos.leverage_effective)})">(Runner ${fmtPct(pos.roi_pct)})</span>
+                                        ` : `
+                                            <span class="font-semibold ${pctColor(pos.roi_pct)}" title="ROI sobre a margem (alavancado ${fmtLevX(pos.leverage_effective)})">ROI ${fmtPct(pos.roi_pct)}</span>
+                                        `}
                                         <span class="${pctColor(pos.price_change_pct)}" title="Variação do preço vs entrada (a favor da posição)">Δ ${fmtPct(pos.price_change_pct)}</span>
                                     </div>
                                 </div>
@@ -2844,7 +2852,7 @@
                                 ${cardKV("Qtd / Nocional", `${Number(pos.quantity || 0).toFixed(4)} ($${Number(pos.notional || 0).toFixed(1)})`)}
                                 ${cardKV("Saída (frações)", escapeHtml(fmtLadderFractions(pos)))}
                                 ${cardKV("Restante", fracPct(pos.remaining_fraction) || "—")}
-                                ${cardKV("SL atual", fmtCurrentSL(pos))}
+                                ${cardKV("SL atual", fmtCurrentSL(pos), pos.trailing_active ? "Trailing Stop dinâmico ativo protegendo lucros do runner" : (pos.tp1_hit ? "Stop no Breakeven (risco zero)" : "Stop Loss inicial"))}
                                 ${cardKV("Trailing", escapeHtml(fmtTrailing(pos)))}
                                 ${cardKV("TP1 / TP2 / TP3", `${pos.tp1_hit ? "✔" : ""}${fmtPx(pos.tp1)} / ${pos.tp2_hit ? "✔" : ""}${fmtPx(pos.tp2)} / ${fmtPx(pos.tp3)}`)}
                                 ${hasRealized ? cardKV("Parcial Realizada", `<span class="${pctColor(recPnl)} font-semibold">${fmtUsdSigned(recPnl)}</span> (no saldo)`, "Lucro já garantido e creditado no saldo") : ""}
