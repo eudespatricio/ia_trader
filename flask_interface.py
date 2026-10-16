@@ -1374,14 +1374,27 @@ def api_paper_trading_status():
             # Trades e PnL Realizado
             cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades")
             row_tr = cur.fetchone()
-            total_trades = int(row_tr[0] or 0)
             realized = float(row_tr[1] or 0.0)
             fees = float(row_tr[2] or 0.0)
 
-            cur.execute("SELECT COUNT(*) FROM paper_trades WHERE pnl > 0.0")
-            win_count = int(cur.fetchone()[0] or 0)
-            closed_trades_count = cur.execute("SELECT COUNT(*) FROM paper_trades WHERE pnl != 0.0").fetchone()[0] or 0
+            # Trades fechados e Win Rate por posição (position_id):
+            # TP1_PARTIAL, TP2_PARTIAL e saída final pertencem ao mesmo trade (position_id).
+            cur.execute("""
+                SELECT COUNT(*), 
+                       SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END)
+                FROM (
+                    SELECT position_id, SUM(pnl) as net_pnl 
+                    FROM paper_trades 
+                    WHERE position_id NOT IN (SELECT position_id FROM paper_positions WHERE status = 'OPEN')
+                      AND action NOT LIKE 'OPEN_%'
+                    GROUP BY position_id
+                )
+            """)
+            row_closed = cur.fetchone()
+            closed_trades_count = int(row_closed[0] or 0) if row_closed else 0
+            win_count = int(row_closed[1] or 0) if row_closed else 0
             win_rate = (win_count / closed_trades_count * 100.0) if closed_trades_count > 0 else 0.0
+            total_trades = closed_trades_count
 
             # Cota de Scalps de Hoje (UTC)
             today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")

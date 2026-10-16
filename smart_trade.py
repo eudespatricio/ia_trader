@@ -1031,7 +1031,7 @@ class PaperTradingEngine:
                 "max_concurrent_positions": self.max_concurrent_positions,
                 "max_margin_utilization_pct": self.max_margin_utilization_pct,
                 "margin_utilization_pct": round((self.margin_used / self.balance * 100.0) if self.balance > 0 else 0.0, 1),
-                "total_trades_count": len(self.trade_history),
+                "total_trades_count": len(pnl_by_pos),
                 "win_rate_pct": round(win_rate, 1),
                 "simulation_mode": True,
                 "min_daily_scalps": self.min_daily_scalps,
