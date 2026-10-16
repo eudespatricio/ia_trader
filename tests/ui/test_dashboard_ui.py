@@ -479,7 +479,8 @@ def _ladder_state():
     st = _state()
     st["open"][0].update(tp3_price=67000.0, tp1=65500.0, tp2=66000.0, tp3=67000.0, tp1_hit=True, tp2_hit=False,
                          tp1_fraction=0.4, tp2_fraction=0.3, runner_fraction=0.3, remaining_fraction=0.6,
-                         trailing_active=True, trailing_stop_price=65300.0, exit_ladder=True, stop_loss=65000.0)
+                         trailing_active=True, trailing_stop_price=65300.0, exit_ladder=True, stop_loss=65000.0,
+                         realized_pnl=4.50, unrealized_pnl=8.00)
     st["closed"][0].update(close_action="TRAILING_STOP", close_action_label="Trailing stop", tp1_fraction=0.4,
                            tp2_fraction=0.3, runner_fraction=0.3,
                            events=[{"action": "TP1_PARTIAL", "label": "TP1 parcial"},
@@ -493,6 +494,7 @@ def test_ladder_chart_lines_and_cards(make_page):
     txt = p.page.inner_text("#paperPositionsTableBody tr[data-position-id='P1']")
     assert "TP1 40% / TP2 30% / runner 30%" in txt and "60%" in txt and "ATIVO" in txt and "(BE)" in txt
     assert "TP1 50%" not in p.page.inner_text("#paperPositionsTableBody")
+    assert "Garantido: +$4.50" in txt and "PARCIAL REALIZADA" in txt and "Total: +$12.50" in txt
     # legado (P2): '—' sem erro
     t2 = p.page.inner_text("#paperPositionsTableBody tr[data-position-id='P2']")
     assert "—" in t2 and "undefined" not in t2 and "NaN" not in t2

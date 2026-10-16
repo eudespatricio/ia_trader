@@ -259,16 +259,16 @@
                 <!-- Card 2: Resultado Líquido & Taxas -->
                 <div class="glass-panel p-3.5 rounded-xl border border-dark-600/80 shadow-md">
                     <div class="flex items-center justify-between text-xs text-slate-400 mb-1.5">
-                        <span class="font-medium uppercase tracking-wider text-[11px]">Lucro Líquido Realizado</span>
+                        <span class="font-medium uppercase tracking-wider text-[11px]">Resultado Líquido Total</span>
                         <i data-lucide="trending-up" class="h-4 w-4 text-emerald-400"></i>
                     </div>
                     <div class="flex items-baseline gap-2 mb-1">
                         <span id="tradingCardNetPnL" class="text-xl font-bold text-emerald-400 num-font tracking-tight">+$0.00</span>
-                        <span class="text-xs font-medium text-slate-400">líquido</span>
+                        <span class="text-xs font-medium text-slate-400">caixa + mesa</span>
                     </div>
                     <div class="text-xs text-slate-400 flex items-center justify-between pt-1 border-t border-dark-600/60 mt-2">
-                        <span>Taxas Pagas: <span id="tradingCardFees" class="text-slate-300 num-font">$0.00</span></span>
-                        <span class="text-slate-400">Maker: 0.02%</span>
+                        <span title="Lucro líquido já realizado e creditado no saldo">Realizado: <span id="tradingCardRealizedPnL" class="text-emerald-400 num-font">+$0.00</span></span>
+                        <span title="Taxas totais pagas">Taxas: <span id="tradingCardFees" class="text-slate-300 num-font">$0.00</span></span>
                     </div>
                 </div>
 
@@ -2486,6 +2486,7 @@
                 liquidationPrice: Number.isFinite(liq) ? liq : 0,
                 entryTimestamp: Number(pos.entry_timestamp || 0),
                 unrealizedPnl: numOrNaN(pos.unrealized_pnl),
+                realizedPnl: numOrNaN(pos.realized_pnl),
                 leverage: Number.isFinite(lev) ? lev : 0,
                 margin: numOrNaN(pos.margin),
                 quantity: Number(pos.quantity || 0),
@@ -2505,8 +2506,15 @@
             }
             const sideColor = ov.side === "LONG" ? "text-emerald-400" : "text-rose-400";
             const fmtP = (v) => v.toFixed(v < 1 ? 4 : 2);
-            const pnl = Number.isFinite(ov.unrealizedPnl)
-                ? ` | <span class="${ov.unrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}">PnL ${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)}</span>` : "";
+            const unP = Number.isFinite(ov.unrealizedPnl) ? ov.unrealizedPnl : null;
+            const recP = Number.isFinite(ov.realizedPnl) && Math.abs(ov.realizedPnl) > 0.0001 ? ov.realizedPnl : null;
+            let pnl = "";
+            if (unP !== null && recP !== null) {
+                const tot = unP + recP;
+                pnl = ` | <span class="${unP >= 0 ? "text-emerald-400" : "text-rose-400"}">Flutuante ${unP >= 0 ? "+" : ""}$${unP.toFixed(2)}</span> <span class="text-emerald-300 text-[11px] font-semibold">(TP: +$${recP.toFixed(2)})</span> <span class="${tot >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">Total ${tot >= 0 ? "+" : ""}$${tot.toFixed(2)}</span>`;
+            } else if (unP !== null) {
+                pnl = ` | <span class="${unP >= 0 ? "text-emerald-400" : "text-rose-400"}">PnL ${unP >= 0 ? "+" : ""}$${unP.toFixed(2)}</span>`;
+            }
             const lev = ov.leverage > 0 ? ` | ${Number.isInteger(ov.leverage) ? ov.leverage : ov.leverage.toFixed(1)}x` : "";
             const mar = Number.isFinite(ov.margin) ? ` | margem $${ov.margin.toFixed(2)}` : "";
             textEl.innerHTML = `<span class="${sideColor} font-bold">${escapeHtml(ov.symbol)} ${escapeHtml(ov.side)}</span> @ $${fmtP(ov.entryPrice)} (${escapeHtml(ov.timeframe)})${pnl}${lev}${mar}`;
@@ -2753,9 +2761,12 @@
             const cap = window._initialCapital || 10000;
             const pnl = Number(summary.total_pnl || 0);
             const pct = Number.isFinite(Number(summary.total_pnl_pct_initial)) ? Number(summary.total_pnl_pct_initial) : (pnl / cap * 100);
+            const recPnl = Number(summary.realized_pnl || 0);
+            const hasRec = Math.abs(recPnl) > 0.0001;
+            const recHtml = hasRec ? ` <span class="text-xs text-emerald-400 font-semibold" title="Lucro de saídas parciais (TP1/TP2) já creditado no saldo">(Garantido TP: +$${recPnl.toFixed(2)} | Total: ${fmtUsdSigned(pnl + recPnl)})</span>` : "";
             el.innerHTML = `
                 <span class="px-2 py-0.5 rounded bg-dark-900 border border-dark-600 text-slate-300">${label}: <strong class="text-white num-font">${Number(summary.count || 0)}</strong></span>
-                <span class="px-2 py-0.5 rounded bg-dark-900 border border-dark-600 text-slate-300">PnL: <strong class="num-font ${pctColor(pnl)}">${fmtUsdSigned(pnl)}</strong> <span class="num-font ${pctColor(pnl)}">(${fmtPct(pct)} do saldo inicial)</span></span>
+                <span class="px-2 py-0.5 rounded bg-dark-900 border border-dark-600 text-slate-300">PnL: <strong class="num-font ${pctColor(pnl)}">${fmtUsdSigned(pnl)}</strong>${recHtml} <span class="num-font ${pctColor(pnl)}">(${fmtPct(pct)} do saldo inicial)</span></span>
                 <span class="px-2 py-0.5 rounded bg-dark-900 border border-dark-600 text-slate-300" title="Win rate por position_id (não por parcial)">Win rate: <strong class="num-font text-white">${Number(summary.win_rate_pct || 0).toFixed(1)}%</strong> <span class="num-font text-slate-500">(${Number(summary.wins || 0)}V/${Number(summary.losses || 0)}D)</span></span>`;
         }
 
@@ -2783,6 +2794,9 @@
                 const side = escapeHtml(pos.side || "LONG");
                 const sideColor = side.toUpperCase() === "LONG" ? "text-emerald-400" : "text-rose-400";
                 const unPnl = Number(pos.unrealized_pnl || 0.0);
+                const recPnl = Number(pos.realized_pnl || 0.0);
+                const totPnl = unPnl + recPnl;
+                const hasRealized = Math.abs(recPnl) > 0.0001;
 
                 const isViewing = window._activeOrderOverlay && window._activeOrderOverlay.position_id === pos.position_id;
                 const activeClass = isViewing ? "bg-cyan-950/40 ring-1 ring-cyan-500/60" : "hover:bg-dark-700/50";
@@ -2803,9 +2817,21 @@
                                     <i data-lucide="crosshair" class="h-3 w-3 text-cyan-400/60 group-hover:text-cyan-300 transition-all"></i>
                                 </div>
                                 <div class="text-right num-font whitespace-nowrap">
-                                    <span class="font-semibold ${pctColor(unPnl)}">${fmtUsdSigned(unPnl)}</span>
-                                    <span class="text-[11px] font-semibold ${pctColor(pos.roi_pct)}" title="ROI sobre a margem (alavancado)">ROI ${fmtPct(pos.roi_pct)}</span>
-                                    <span class="text-[10px] ${pctColor(pos.price_change_pct)}" title="Variação do preço vs entrada (a favor da posição)">Δ ${fmtPct(pos.price_change_pct)}</span>
+                                    <div class="flex items-center justify-end gap-1.5 flex-wrap">
+                                        ${hasRealized ? `
+                                            <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 font-semibold" title="Lucro já realizado em saídas parciais (TP1/TP2) creditado no saldo">
+                                                Garantido: ${fmtUsdSigned(recPnl)}
+                                            </span>
+                                        ` : ''}
+                                        <span class="font-semibold ${pctColor(unPnl)}" title="PnL flutuante da fração remanescente">${fmtUsdSigned(unPnl)}</span>
+                                        ${hasRealized ? `
+                                            <span class="text-[11px] font-bold text-slate-200" title="PnL Total acumulado da operação (Garantido + Flutuante)">Total: <span class="${pctColor(totPnl)}">${fmtUsdSigned(totPnl)}</span></span>
+                                        ` : ''}
+                                    </div>
+                                    <div class="flex items-center justify-end gap-1.5 text-[10px] text-slate-400 mt-0.5">
+                                        <span class="font-semibold ${pctColor(pos.roi_pct)}" title="ROI sobre a margem remanescente (alavancado)">ROI ${fmtPct(pos.roi_pct)}</span>
+                                        <span class="${pctColor(pos.price_change_pct)}" title="Variação do preço vs entrada (a favor da posição)">Δ ${fmtPct(pos.price_change_pct)}</span>
+                                    </div>
                                 </div>
                             </div>
                             <div class="mt-1.5 grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-1">
@@ -2818,6 +2844,8 @@
                                 ${cardKV("SL atual", fmtCurrentSL(pos))}
                                 ${cardKV("Trailing", escapeHtml(fmtTrailing(pos)))}
                                 ${cardKV("TP1 / TP2 / TP3", `${pos.tp1_hit ? "✔" : ""}${fmtPx(pos.tp1)} / ${pos.tp2_hit ? "✔" : ""}${fmtPx(pos.tp2)} / ${fmtPx(pos.tp3)}`)}
+                                ${hasRealized ? cardKV("Parcial Realizada", `<span class="${pctColor(recPnl)} font-semibold">${fmtUsdSigned(recPnl)}</span> (no saldo)`, "Lucro já garantido e creditado no saldo") : ""}
+                                ${hasRealized ? cardKV("PnL Total Operação", `<span class="${pctColor(totPnl)} font-bold">${fmtUsdSigned(totPnl)}</span>`, "Soma do lucro já garantido com o PnL flutuante") : ""}
                             </div>
                         </td>
                     </tr>
@@ -2980,12 +3008,19 @@
                     const elTradingMarginAlloc = document.getElementById("tradingCardMarginAlloc");
                     if (elTradingMarginAlloc) elTradingMarginAlloc.innerText = `$${marginUsed.toFixed(2)}`;
 
-                    // Trading Card 2: Lucro Líquido & Taxas
+                    // Trading Card 2: Resultado Líquido & Taxas
                     const elTradingNetPnL = document.getElementById("tradingCardNetPnL");
                     if (elTradingNetPnL) {
                         const sign = netProfit >= 0 ? "+" : "";
                         elTradingNetPnL.innerText = `${sign}$${netProfit.toFixed(2)}`;
                         elTradingNetPnL.className = netProfit >= 0 ? "text-xl font-bold text-emerald-400 num-font tracking-tight" : "text-xl font-bold text-rose-400 num-font tracking-tight";
+                    }
+                    const elTradingRealized = document.getElementById("tradingCardRealizedPnL");
+                    if (elTradingRealized) {
+                        const rVal = Number(resStatus.realized_pnl || 0.0);
+                        const sign = rVal >= 0 ? "+" : "";
+                        elTradingRealized.innerText = `${sign}$${rVal.toFixed(2)}`;
+                        elTradingRealized.className = rVal >= 0 ? "text-emerald-400 font-medium num-font" : "text-rose-400 font-medium num-font";
                     }
                     const elTradingFees = document.getElementById("tradingCardFees");
                     if (elTradingFees) elTradingFees.innerText = `$${totalFees.toFixed(2)}`;

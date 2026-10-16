@@ -1641,6 +1641,9 @@ def _query_paper_positions(which: str, with_summary: bool = False):
                     pnl = float(r.get("unrealized_pnl") or 0.0) if st_open else float(r.get("net_pnl") or 0.0)
                     summary["total_pnl"] += pnl
                     summary["wins" if pnl > 0 else "losses"] += 1
+                    if st_open:
+                        summary["unrealized_pnl"] = round(summary.get("unrealized_pnl", 0.0) + float(r.get("unrealized_pnl") or 0.0), 4)
+                        summary["realized_pnl"] = round(summary.get("realized_pnl", 0.0) + float(r.get("realized_pnl") or 0.0), 4)
                 summary["count"] = len(rows)
                 summary["total_pnl"] = round(summary["total_pnl"], 4)
                 summary["total_pnl_pct_initial"] = round(summary["total_pnl"] / PAPER_INITIAL_CAPITAL * 100.0, 4)

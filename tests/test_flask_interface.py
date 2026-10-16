@@ -386,6 +386,7 @@ class TestPositionsEnrichment:
         assert p["roi_pct"] == 8.0 and p["price_change_pct"] == 2.0
         assert d["summary"]["count"] == 1 and d["summary"]["win_rate_pct"] == 100.0
         assert d["summary"]["total_pnl_pct_initial"] == 0.02
+        assert d["summary"]["unrealized_pnl"] == 2.0 and d["summary"]["realized_pnl"] == 0.0
 
     def test_closed_enrichment_fallback_1x_and_close_time(self, client, rich_db):
         d = client.get("/api/paper-trading/positions/closed").get_json()
