@@ -889,4 +889,20 @@ Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:
 - **2026-10-15 — E7:** comitê obrigatório para SCALP/GOLDEN_POT/DAY TRADE; GOLDEN_POT v3 (momentum + volatilidade extraordinária); Smart Trade Exit Ladder comum (TP1 40%+BE, TP2 30%+trailing sem lookahead, TP3/trailing); colunas novas em `paper_positions` (migração segura); `tests/test_exit_ladder_e7.py`. Piloto reiniciado; sem evidência de alfa.
 - **2026-10-15 — E8:** gate de fluxo (Tape Reading) na entrada de SCALP/GOLDEN_POT/DAY TRADE (`agents/tape_reading_agent.py`, `_flow_gate`), auditoria contrafactual em `flow_gate_log` (limpa pelo `reset_pilot`), telemetria no `[STATUS DEMO]`; `tests/test_tape_reading_gate.py`. Piloto reiniciado; sem evidência prévia, não backtestável.
 
+- **Transição de Timeframes Intraday (2026-10-16):** Alinhamento operacional do Scalper (Majors BTC/ETH/SOL) para candles 3m com gatilho de momentum rápido e do Golden Pot (Radar Altcoins) para 5m com expansão de volatilidade calibrada; polling ágil a 3m para posições ativas; Smart Trade Exit Ladder mantida intacta; reinício a quente via supervisor com restauração total de estado (trade SOLUSDT preservado).
+
+- **Isolamento de Velas Pré-Entrada (2026-10-16):** Em `smart_trade.py` (`update_market_tick`) e `scripts/run_paper_simulation.py` (`_update_symbol`), corrigido vazamento temporal onde candles anteriores à abertura da posição (`bts < entry_timestamp`) avaliavam a escada de saída e disparavam falso Stop Loss em trades de rompimento (ocorrido em `BTWUSDT`); barras pré-entrada agora são estritamente filtradas no polling e bloqueadas na ladder; testes de regressão adicionados (`tests/test_pre_entry_regression.py`, 256 testes passando); trava de cooldown do RollbackGuard liberada com restauração de estado.
+
+- **Auditoria Estrutural Argon & Validação Offline A/B (2026-10-17):**
+  - **Escopo:** Auditoria completa sobre 41,4h de microestrutura real (`datasets/microstructure.db`: 28.737 snapshots de book e 7.457 janelas de `tick_agg` totalizando US$ 4,42 bilhões em volume nocional) e replay contrafactual das posições reais do piloto.
+  - **6 Correções Implementadas e Validadas:**
+    1. Deduplicação de `_flow_gate` por `(strategy, symbol, bar_ts)` em `scripts/run_paper_simulation.py` (reduziu em 99,2% logs repetidos em `flow_gate_log` e eliminou entradas atrasadas com *stale price*).
+    2. Alinhamento do grid de polling (`5m` para `GOLDEN_POT`, `3m` para `SCALP`/`DIRECTIONAL`), avanço de `_last_tick_bar_ts` na abertura e trava de `_ratchet_trailing` por bucket do timeframe nativo (`prof.bar_ms`).
+    3. Priorização de `SWING_BREAKOUT` sobre `SCALP_REVERSION` em `agents/golden_pot_agent.py` e ordenação `top_swings + top_scalps` no daemon.
+    4. Bloqueio de colisão de mesmo símbolo entre estratégias distintas em `smart_trade.py` e calibração de `GOLDEN_POT.sl_atr_mult = 1.5` (consistente com `trail_atr_mult = 1.5` para absorver pavios de reteste em 5m).
+    5. Escalonamento de `ATR_PCT_EXTREME` por timeframe em `leverage_policy.py` (`3m`: 1,2%, `5m`: 1,5%, `15m`: 2,0%, `1h`: 3,0%, `4h`: 5,0%) e sincronismo de `current_day_utc` em `restore_state()`.
+    6. Consolidação por `position_id` em `performance_tracker.py` e envio de `pos.realized_pnl` ao `LearningTracker` em `smart_trade.py`, eliminando falsas derrotas geradas por saídas parciais no `BREAKEVEN_STOP` (`-$0.05`) ou linhas de `FUNDING`.
+  - **Testes:** **544 testes backend passando (0 falhas)**, incluindo 8 testes de regressão dedicados em `tests/test_pre_entry_regression.py`.
+
 > **Funil de sinais (2026-10-15):** tabela `signal_funnel` no banco do piloto (instrumentação; não altera a estratégia nem as decisões de trading).
+

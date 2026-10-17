@@ -12,7 +12,14 @@ from typing import Optional
 MAX_LEVERAGE = 5.0               # teto duro (também reforçado no engine)
 MIN_LEVERAGE = 1.0
 LEVERAGE_STEP = 1.0              # passo da política (engine aceita passos de 0.5)
-ATR_PCT_EXTREME = 0.03           # ATR/preço >= 3% por vela = volatilidade extrema -> -1 degrau
+ATR_PCT_EXTREME = 0.03           # ATR/preço >= 3% por vela (1h default) = volatilidade extrema -> -1 degrau
+ATR_PCT_EXTREME_BY_TF = {
+    "3m": 0.012,
+    "5m": 0.015,
+    "15m": 0.020,
+    "1h": 0.030,
+    "4h": 0.050,
+}
 
 # (confiança mínima inclusiva, alavancagem base) em ordem decrescente
 CONFIDENCE_LADDER = (
@@ -41,6 +48,7 @@ def decide_leverage(
     atr_pct: float = 0.0,
     regime_alignment: Optional[bool] = None,
     *,
+    timeframe: Optional[str] = None,
     is_vetoed: bool = False,
     low_history_or_liquidity: bool = False,
     max_leverage: float = MAX_LEVERAGE,
@@ -50,7 +58,7 @@ def decide_leverage(
 
     - veto, símbolo sem histórico/baixa liquidez -> 1x (sem alavancar);
     - confiança <0.60 -> 1x; 0.60-0.70 -> 2x; 0.70-0.80 -> 3x; 0.80-0.90 -> 4x; >=0.90 -> 5x;
-    - -1 degrau se ATR% >= ATR_PCT_EXTREME (volatilidade extrema);
+    - -1 degrau se ATR% >= limiar de volatilidade extrema do timeframe (ou ATR_PCT_EXTREME por padrão);
     - -1 degrau se a entrada é contra a tendência (regime_alignment is False; sma_200);
     - resultado sempre em [1, 5].
     """
@@ -73,8 +81,10 @@ def decide_leverage(
         atr = float(atr_pct)
     except (TypeError, ValueError):
         atr = 0.0
-    if atr == atr and atr >= ATR_PCT_EXTREME:
+    extreme_thr = ATR_PCT_EXTREME_BY_TF.get(timeframe, ATR_PCT_EXTREME) if timeframe else ATR_PCT_EXTREME
+    if atr == atr and atr >= extreme_thr:
         lev -= LEVERAGE_STEP
     if regime_alignment is False:
         lev -= LEVERAGE_STEP
     return clamp_leverage(lev, max_leverage)
+

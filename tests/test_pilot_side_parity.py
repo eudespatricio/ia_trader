@@ -44,7 +44,7 @@ def test_entry_recorded_at_next_bar_open_timestamp(eng):
         TradeSignal(**{**_sig("SELL").__dict__, "symbol": "ETHUSDT"}), 100.0, TS0, 1.0)
     assert sh.entry_price == pytest.approx(100.0 * (1 - MARKET_SLIPPAGE_PCT))     # long == short
     sc = eng.execute_scalp_signal(TradeSignal(**{**_sig().__dict__, "symbol": "SOLUSDT"}), 100.0, TS0)
-    assert sc.entry_timestamp == TS0 + 15 * 60_000
+    assert sc.entry_timestamp == TS0 + STRATEGY_PROFILES["SCALP"].bar_ms
 
 
 def test_first_post_entry_bar_uses_full_range(eng):

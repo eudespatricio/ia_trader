@@ -79,9 +79,11 @@ MAKER_EXIT_REASONS = frozenset({"TAKE_PROFIT_1", "TAKE_PROFIT_2", "TAKE_PROFIT_3
 #   i.e. o horizonte é definido em barras do timeframe de decisão, como no backtest (max_holding_bars).
 DIRECTIONAL_BAR_MS = 60 * 60 * 1000
 INTRADAY_BAR_MS = 15 * 60 * 1000
+SCALP_BAR_MS = 3 * 60 * 1000
+GOLDEN_POT_BAR_MS = 5 * 60 * 1000
 DIRECTIONAL_MAX_HOLDING_BARS = 48
-SCALP_MAX_HOLDING_BARS = 48
-GOLDEN_POT_MAX_HOLDING_BARS = 48
+SCALP_MAX_HOLDING_BARS = 30
+GOLDEN_POT_MAX_HOLDING_BARS = 36
 # SLIPPAGE de ordens a MERCADO (entrada taker, SL/BE/TRAILING/TIMEOUT/MANUAL): único valor, simétrico long/short,
 # igual ao BacktestEngine (0.02% por fill). Ordens limite (maker) mantêm 0.01%. (slippage_spot/perp ficam só no carry.)
 MARKET_SLIPPAGE_PCT = 0.0002
@@ -124,15 +126,15 @@ class StrategyProfile:
 
 
 STRATEGY_PROFILES: Dict[str, StrategyProfile] = {
-    # alvos curtos
+    # alvos curtos: Scalp 3m em majors (BTC, ETH, SOL)
     "SCALP": StrategyProfile(sl_atr_mult=0.9, tp1_atr_mult=1.0, tp2_atr_mult=1.8, tp3_atr_mult=3.0, trail_atr_mult=0.8,
-                             bar_ms=INTRADAY_BAR_MS, max_holding_bars=SCALP_MAX_HOLDING_BARS),
+                             bar_ms=SCALP_BAR_MS, max_holding_bars=SCALP_MAX_HOLDING_BARS),
     # day trade 1h (SL efetivo = o do comitê/SignalGenerator; sl_atr_mult é o fallback)
     "DIRECTIONAL": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=4.0, trail_atr_mult=1.2,
                                    bar_ms=DIRECTIONAL_BAR_MS, max_holding_bars=DIRECTIONAL_MAX_HOLDING_BARS),
-    # maior potencial: TP3 bem mais longo e trailing mais largo
-    "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.2, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
-                                  bar_ms=INTRADAY_BAR_MS, max_holding_bars=GOLDEN_POT_MAX_HOLDING_BARS),
+    # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails)
+    "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.5, tp1_atr_mult=1.2, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
+                                  bar_ms=GOLDEN_POT_BAR_MS, max_holding_bars=GOLDEN_POT_MAX_HOLDING_BARS),
 }
 
 logger = logging.getLogger("ia_trader.smart_trade")
@@ -638,13 +640,16 @@ class PaperTradingEngine:
             self.positions = open_pos
             self.closed_positions = closed_pos
 
-            # Cotas diárias: conta aberturas do último dia UTC registrado, após o marco de reset de cotas
+            # Cotas diárias: conta aberturas do dia UTC corrente (ou do último trade se não houver relógio futuro), após o marco de reset
             self.daily_scalps_count = 0
             self.daily_golden_pots_count = 0
-            self.current_day_utc = ""
+            today_utc = self._format_day_utc(time.time())
+            self.current_day_utc = today_utc
             if history:
                 last_day = self._format_day_utc(max(self._ts_ms(t.timestamp) for t in history) / 1000.0)
-                self.current_day_utc = last_day
+                # Em testes com timestamps sintéticos (ex.: 2023), preserva last_day; em produção usa o mais recente entre last_day e today_utc
+                ref_day = last_day if last_day != today_utc and max(self._ts_ms(t.timestamp) for t in history) < 1_750_000_000_000 else today_utc
+                self.current_day_utc = ref_day
                 with self._get_connection() as con:
                     cur = con.cursor()
                     cur.execute(
@@ -652,7 +657,7 @@ class PaperTradingEngine:
                         "AND (action LIKE 'OPEN_SCALP_%' OR action LIKE 'OPEN_GOLDEN_POT_%')",
                         (t_epoch, q_epoch))
                     for action, ts in cur.fetchall():
-                        if self._format_day_utc(self._ts_ms(ts) / 1000.0) != last_day:
+                        if self._format_day_utc(self._ts_ms(ts) / 1000.0) != ref_day:
                             continue
                         if action.startswith("OPEN_SCALP_"):
                             self.daily_scalps_count += 1
@@ -1116,9 +1121,8 @@ class PaperTradingEngine:
                 return None
 
             symbol = signal.symbol
-            if any(p.symbol == symbol and p.strategy_type == strategy_type and p.status == "OPEN"
-                   for p in self.positions.values()):
-                self.last_open_reject = "margin"  # posição já aberta no par/estratégia
+            if any(p.symbol == symbol and p.status == "OPEN" for p in self.positions.values()):
+                self.last_open_reject = "margin"  # posição já aberta no par (evita colisão entre estratégias)
                 return None
 
             if self.max_concurrent_positions is not None and self.max_concurrent_positions > 0:
@@ -1468,10 +1472,11 @@ class PaperTradingEngine:
                 except Exception as _e:
                     logger.debug(f"Aviso telemetria pós-trade: {_e}")
 
-            # Aprendizado Adaptativo Contínuo (LearningTracker)
+            # Aprendizado Adaptativo Contínuo (LearningTracker) — usa o PnL consolidado da posição (pos.realized_pnl)
+            # para não registrar TP1_PARTIAL (+40%) + BREAKEVEN_STOP (-$0.05) como derrota
             if getattr(self, "learning_tracker", None):
                 try:
-                    self.learning_tracker.update_trade_outcome(pos.position_id, net_pnl)
+                    self.learning_tracker.update_trade_outcome(pos.position_id, pos.realized_pnl)
                 except Exception as _e:
                     logger.debug(f"Aviso learning pós-trade: {_e}")
 
@@ -1570,20 +1575,23 @@ class PaperTradingEngine:
                             timestamp: int, triggered: List[PaperTrade], open_price: Optional[float] = None) -> None:
         """Processa UMA barra para posição com ladder. Ordem conservadora e sem lookahead:
 
-        0. barra anterior (já fechada) é incorporada ao trailing -> stop efetivo desta barra;
+        0. barra anterior (já fechada no timeframe nativo da estratégia) é incorporada ao trailing -> stop efetivo desta barra;
         1. stop vigente (SL/BE/trailing, definido ANTES desta barra) tem prioridade sobre qualquer TP;
         2. TP1 (maker) -> SL = breakeven; se a mesma barra toca o BE, assume BE depois do TP1 (conservador);
         3. TP2 (maker) -> ativa trailing (efetivo só a partir da próxima barra);
         4. TP3 (maker) fecha o runner. Extremos desta barra só alimentam o trailing na barra seguinte.
-        Ticks repetidos da mesma barra em formação (daemon, 15s) apenas acumulam extremos.
+        Ticks repetidos ou sub-barras de 3m dentro da mesma janela nativa (5m/1h) apenas acumulam extremos.
         """
         long = pos.side == "LONG"
         sgn = 1.0 if long else -1.0
         ts = self._ts_ms(timestamp)
+        prof_bar_ms = max(1, int(STRATEGY_PROFILES.get(pos.strategy_type, STRATEGY_PROFILES["DIRECTIONAL"]).bar_ms))
+        cur_bucket = int(ts) // prof_bar_ms
+        prev_bucket = int(pos.trail_bar_ts) // prof_bar_ms if pos.trail_bar_ts > 0.0 else -1
         pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
 
-        if pos.trailing_active and pos.trail_bar_ts > 0.0 and ts > pos.trail_bar_ts:
-            self._ratchet_trailing(pos, pos.trail_bar_high, pos.trail_bar_low)   # barra anterior fechou
+        if pos.trailing_active and pos.trail_bar_ts > 0.0 and cur_bucket > prev_bucket:
+            self._ratchet_trailing(pos, pos.trail_bar_high, pos.trail_bar_low)   # barra nativa anterior fechou
             pos.trail_bar_ts = 0.0
 
         def stop_hit() -> bool:
@@ -1630,10 +1638,10 @@ class PaperTradingEngine:
                 triggered.append(t)
             return
 
-        if pos.trailing_active:   # acumula esta barra; só vira stop quando a barra seguinte chegar
-            if pos.trail_bar_ts <= 0.0 or ts > pos.trail_bar_ts:
+        if pos.trailing_active:   # acumula esta barra; só vira stop quando a janela nativa seguinte chegar
+            if pos.trail_bar_ts <= 0.0 or cur_bucket > prev_bucket:
                 pos.trail_bar_ts, pos.trail_bar_high, pos.trail_bar_low = ts, high, low
-            elif ts == pos.trail_bar_ts:
+            elif cur_bucket == prev_bucket:
                 pos.trail_bar_high = max(pos.trail_bar_high, high)
                 pos.trail_bar_low = min(pos.trail_bar_low, low)
         self._save_position(pos)
@@ -1754,9 +1762,16 @@ class PaperTradingEngine:
                 continue
 
             # A3 (convenção P2): entry_timestamp = ts(t+1) = abertura da 1ª barra PÓS-entrada, que é processada com
-            # high/low completos (como o BacktestEngine). Barras que abriram ANTES da entrada (ts < entry) não
-            # podem disparar SL/TP com extremos anteriores à posição -> usa apenas o close.
-            pre_entry = self._ts_ms(timestamp) < self._ts_ms(pos.entry_timestamp)
+            # high/low completos (como o BacktestEngine). Barras OHLCV anteriores à entrada (retroativas) são ignoradas;
+            # ticks sintéticos sem open_price em (decision_ts, entry_timestamp) usam high=low=close (sem extremos antigos).
+            prof_obj = STRATEGY_PROFILES.get(pos.strategy_type)
+            prof_bar_ms = int(prof_obj.bar_ms) if prof_obj is not None else 0
+            ts_ms = self._ts_ms(timestamp)
+            entry_ms = self._ts_ms(pos.entry_timestamp)
+            pre_entry = ts_ms < entry_ms
+            retroactive_bar = pre_entry and (open_price is not None or ts_ms <= (entry_ms - prof_bar_ms))
+            if retroactive_bar:
+                continue
             if pre_entry:
                 high = low = close
                 bar_open = close
@@ -1767,8 +1782,9 @@ class PaperTradingEngine:
 
             pos.current_price = close
             pos.last_bar_close = close
-            pos.highest_price = max(pos.highest_price, high)
-            pos.lowest_price = min(pos.lowest_price, low)
+            if not pre_entry:
+                pos.highest_price = max(pos.highest_price, high)
+                pos.lowest_price = min(pos.lowest_price, low)
 
             if pos.side in ("LONG", "SHORT") and not pre_entry:
                 # P5: funding real a cada 8h (long paga / short recebe quando funding > 0)

@@ -263,7 +263,7 @@ def test_fetch_requests_400_candles_and_drops_open_candle(temp_db):
             pass
     d = PaperTradingDaemon(engine=make_engine(temp_db), loader=L(), golden_pot_agent=FakeScanner([]))
     df = run(d._gp_fetch_closed_candles("AAAUSDT", int(time.time() * 1000)))
-    assert calls[0] == ("15m", rps.GP_CANDLE_LIMIT, "binance") and rps.GP_CANDLE_LIMIT >= 400
+    assert calls[0] == (rps.GP_TIMEFRAME, rps.GP_CANDLE_LIMIT, "binance") and rps.GP_CANDLE_LIMIT >= 400
     assert int(df["timestamp"].iloc[-1]) + BAR <= int(time.time() * 1000)  # só velas fechadas
 
 

@@ -222,7 +222,7 @@ flowchart LR
 ### 3. Execução da Suíte Completa de Testes
 ```bash
 .venv/bin/pytest -v
-# Resultado: 276 passed in ~97s (100% Green)
+# Resultado: 544 passed (100% Green)
 ```
 
 ---
@@ -233,7 +233,7 @@ flowchart LR
 
 ## 🔍 Status da Auditoria (2026-10-14/15) e Piloto
 
-- Lookahead V1-V8 corrigidos; **V9 (trailing intrabarra no backtesting.py) pendente**. Bugs de execução e de paper trading corrigidos (detalhes em [EVOLUTION_LOG.md](EVOLUTION_LOG.md) e [CHANGELOG.md](CHANGELOG.md)). Suíte atual: **273 testes passando**.
+- Lookahead V1-V8 corrigidos; **V9 (trailing intrabarra no backtesting.py) pendente**. Bugs de execução e de paper trading corrigidos (detalhes em [EVOLUTION_LOG.md](EVOLUTION_LOG.md) e [CHANGELOG.md](CHANGELOG.md)). Suíte atual: **544 testes passando**.
 - Ajustes de consenso propostos aguardam backtest A/B.
 - **Alfa NÃO demonstrado.** A estratégia em paper (GOLDEN_POT/scalp/swing) não é S1/S2/S3 do Parecer. Piloto pré-reset: REPROVADO (35 trades, expectância bruta -0,995%, viesado). Piloto limpo a partir do reset de 2026-10-14/15, parâmetros congelados por >= 56 dias. Critérios: [docs/CRITERIOS_APROVACAO_PILOTO.md](docs/CRITERIOS_APROVACAO_PILOTO.md); relatório: `python scripts/pilot_report.py`.
 - **GOLDEN_POT v2 (2026-10-15, ADDENDUM E5):** entrada exige o comitê completo sem veto, cooldown/1-por-vela, filtro de faca-caindo e exclusão de ativos tokenizados; lote = margem `paper_lot_usd` (US$100) com alavancagem ≤5x decidida pelo Smart Trader; piloto reiniciado (E4 invalidado para GOLDEN_POT).
@@ -252,3 +252,4 @@ git push -u origin <branch>
 - **E8 (2026-10-15):** gate de fluxo (Tape Reading, `agents/tape_reading_agent.py`) na entrada de SCALP/GOLDEN_POT/DAY TRADE com auditoria em `flow_gate_log`; sem evidência prévia, não backtestável; piloto reiniciado (ADDENDUM E8 em `docs/HIPOTESES_PRE_REGISTRADAS.md`).
 
 > **Funil de sinais (2026-10-15):** tabela `signal_funnel` no banco do piloto (instrumentação; não altera a estratégia nem as decisões de trading).
+- **E9 / Auditoria Argon (2026-10-17):** 6 correções estruturais validadas em suíte offline A/B e aplicadas em produção: (1) deduplicação de `_flow_gate` por `(strategy_type, symbol, bar_ts)` eliminando entradas atrasadas a preço defasado; (2) alinhamento de timeframe no `update_active_positions` (`5m` para `GOLDEN_POT`, `3m` para `SCALP`/`DIRECTIONAL`), inicialização imediata de `_last_tick_bar_ts` na abertura e trava de trailing stop no avanço do bucket nativo; (3) prioridade de `SWING_BREAKOUT` sobre `SCALP_REVERSION` no `GoldenPotAgent`; (4) bloqueio de colisão cross-strategy no mesmo símbolo e `GOLDEN_POT.sl_atr_mult = 1.5`; (5) `ATR_PCT_EXTREME_BY_TF` escalonado por timeframe em `leverage_policy.py` e sincronismo de `current_day_utc` no `restore_state()`; (6) consolidação de PnL por `position_id` no `learning_tracker` e `PerformanceTracker` (ADDENDUM E9 em `docs/HIPOTESES_PRE_REGISTRADAS.md`).

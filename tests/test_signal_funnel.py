@@ -262,6 +262,7 @@ def test_scalp_funnel_no_trigger_and_executed(temp_db):
         import pandas as pd
         return pd.DataFrame({"timestamp": [0]})
     d._fetch_closed_candles_15m = fetch
+    d._scalp_fetch_closed_candles = fetch
     feat = g._feat(g._bar_ts(), side="BUY", close=100.0, rsi=20.0)
     feat["volume_zscore_20"] = 1.0
     d._compute_swing_features = lambda df: feat.copy()

@@ -162,17 +162,60 @@ class PerformanceTracker:
             net_pnl_pct = (net_pnl / self.initial_capital) * 100.0
 
             # ------------------------------------------------------------------
-            # Análise de Trades Fechados
+            # Análise de Trades Fechados Consolidados por Posição (position_id)
+            # Evita contar BREAKEVEN_STOP (-$0.05) de posição vencedora (TP1+$1.12)
+            # ou liquidações de FUNDING como derrotas independentes em consecutive_losses.
             # ------------------------------------------------------------------
             trades = [dict(r) for r in trades_rows]
-            
-            # Filtra apenas trades de fechamento que computaram PnL realizado
-            closing_trades = [
-                t for t in trades 
-                if t.get("action", "").startswith("CLOSE_") 
-                or t.get("action") in ("STOP_LOSS", "TAKE_PROFIT", "TP1_PARTIAL", "TP2_FULL")
-                or float(t.get("pnl", 0.0)) != 0.0
+            open_pos_ids: set[str] = set()
+            try:
+                with self._get_connection() as conn:
+                    has_pos = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='paper_positions'"
+                    ).fetchone()
+                    if has_pos:
+                        open_pos_ids = {
+                            str(r["position_id"])
+                            for r in conn.execute("SELECT position_id FROM paper_positions WHERE status='OPEN'").fetchall()
+                            if r["position_id"]
+                        }
+            except Exception:
+                open_pos_ids = set()
+
+            raw_closing = [
+                t for t in trades
+                if not str(t.get("action", "")).startswith("OPEN_")
+                and (
+                    str(t.get("action", "")).startswith("CLOSE_")
+                    or t.get("action") in (
+                        "STOP_LOSS", "TAKE_PROFIT", "TP1_PARTIAL", "TP2_PARTIAL",
+                        "TAKE_PROFIT_2", "TAKE_PROFIT_3", "BREAKEVEN_STOP",
+                        "TRAILING_STOP", "HORIZON_TIMEOUT", "LIQUIDATION", "TP2_FULL"
+                    )
+                    or float(t.get("pnl", 0.0)) != 0.0
+                )
             ]
+
+            grouped_by_pos: Dict[str, List[Dict[str, Any]]] = {}
+            for idx, t in enumerate(raw_closing):
+                pid = str(t.get("position_id") or f"_leg_{idx}")
+                if pid in open_pos_ids:
+                    continue
+                grouped_by_pos.setdefault(pid, []).append(t)
+
+            closing_trades: List[Dict[str, Any]] = []
+            for pid, legs in grouped_by_pos.items():
+                # Se só há linhas de FUNDING sem nenhum evento de saída/parcial, ignora
+                if all(str(l.get("action", "")) == "FUNDING" for l in legs):
+                    continue
+                last_leg = legs[-1]
+                closing_trades.append({
+                    **last_leg,
+                    "position_id": pid,
+                    "pnl": sum(float(l.get("pnl", 0.0)) for l in legs),
+                    "fee": sum(float(l.get("fee", 0.0)) for l in legs),
+                    "rationale": " | ".join(str(l.get("rationale", "")) for l in legs if l.get("rationale")),
+                })
 
             total_trades = len(closing_trades)
             pnls = np.array([float(t.get("pnl", 0.0)) for t in closing_trades], dtype=np.float64) if closing_trades else np.array([])

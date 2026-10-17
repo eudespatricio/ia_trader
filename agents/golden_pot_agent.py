@@ -232,41 +232,10 @@ class GoldenPotAgent:
         vol_score = min(vol_usd / 200_000_000.0, 1.0) * 25.0
 
         # =====================================================================
-        # SETUP 1: SCALP REVERSION (15m) - Esticamento Elástico de VWAP
+        # SETUP 1: SWING BREAKOUT (Momentum / Expansão Direcional)
+        # Avaliado PRIMEIRO para que ativos em rompimento forte nos extremos de 24h
+        # não sejam classificados prematuramente como exaustão (SCALP_REVERSION).
         # =====================================================================
-        # Condição: Desvio expressivo do VWAP (|dist| >= 2.5%) com amplitude saudável
-        if abs(dist_vwap_pct) >= 2.5 and amplitude_pct >= 4.0:
-            direction = "BUY" if dist_vwap_pct < 0 else "SELL"
-            # Score de Scalp: baseado na distância do VWAP + amplitude + liquidez
-            stretch_score = min(abs(dist_vwap_pct) * 12.0, 50.0)
-            amp_score = min(amplitude_pct * 2.0, 25.0)
-            total_score = round(min(stretch_score + amp_score + vol_score, 99.0), 1)
-
-            side_text = "Sobrevenda extrema abaixo do VWAP (retração rápida)" if direction == "BUY" else "Sobrecompra esticada acima do VWAP (exaustão)"
-            rationale = (
-                f"Scalp 15m Cirúrgico: {sym} descolou {dist_vwap_pct:+.2f}% do VWAP 24h. "
-                f"{side_text} com ${vol_usd/1e6:.1f}M de volume."
-            )
-
-            return GoldenPotOpportunity(
-                symbol=sym,
-                setup_type="SCALP_REVERSION",
-                direction=direction,
-                score=total_score,
-                last_price=last_p,
-                dist_vwap_pct=round(dist_vwap_pct, 2),
-                volume_24h_usd=vol_usd,
-                price_change_pct_24h=round(chg_pct, 2),
-                range_position_pct=round(range_pos_pct, 1),
-                amplitude_pct=round(amplitude_pct, 2),
-                suggested_timeframe="15m",
-                rationale=rationale,
-            )
-
-        # =====================================================================
-        # SETUP 2: SWING BREAKOUT (1h/4h) - Rompimento com Momentum
-        # =====================================================================
-        # Condição: Preço colado na máxima (>= 90%) ou na mínima (<= 10%) com forte variação
         is_bull_breakout = (range_pos_pct >= 90.0 and chg_pct >= 3.5)
         is_bear_breakout = (range_pos_pct <= 10.0 and chg_pct <= -3.5)
 
@@ -294,6 +263,36 @@ class GoldenPotAgent:
                 range_position_pct=round(range_pos_pct, 1),
                 amplitude_pct=round(amplitude_pct, 2),
                 suggested_timeframe="1h",
+                rationale=rationale,
+            )
+
+        # =====================================================================
+        # SETUP 2: SCALP REVERSION (Esticamento Elástico de VWAP)
+        # =====================================================================
+        if abs(dist_vwap_pct) >= 2.5 and amplitude_pct >= 4.0:
+            direction = "BUY" if dist_vwap_pct < 0 else "SELL"
+            stretch_score = min(abs(dist_vwap_pct) * 12.0, 50.0)
+            amp_score = min(amplitude_pct * 2.0, 25.0)
+            total_score = round(min(stretch_score + amp_score + vol_score, 99.0), 1)
+
+            side_text = "Sobrevenda extrema abaixo do VWAP (retração rápida)" if direction == "BUY" else "Sobrecompra esticada acima do VWAP (exaustão)"
+            rationale = (
+                f"Scalp 15m Cirúrgico: {sym} descolou {dist_vwap_pct:+.2f}% do VWAP 24h. "
+                f"{side_text} com ${vol_usd/1e6:.1f}M de volume."
+            )
+
+            return GoldenPotOpportunity(
+                symbol=sym,
+                setup_type="SCALP_REVERSION",
+                direction=direction,
+                score=total_score,
+                last_price=last_p,
+                dist_vwap_pct=round(dist_vwap_pct, 2),
+                volume_24h_usd=vol_usd,
+                price_change_pct_24h=round(chg_pct, 2),
+                range_position_pct=round(range_pos_pct, 1),
+                amplitude_pct=round(amplitude_pct, 2),
+                suggested_timeframe="15m",
                 rationale=rationale,
             )
 

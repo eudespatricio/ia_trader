@@ -353,3 +353,21 @@ Voto: **BUY** se `taker_imb_5m >= +0.15` **E** `book_imb_10 >= +0.10` **E** `mic
 - O gate **não é backtestável** de forma ordinária: não existe histórico de book/tape; a avaliação só é possível prospectivamente, via `flow_gate_log`.
 - O gate reduz a amostra (E7 já a reduziu) e pode ser dominado por UNAVAILABLE_PASSED se o coletor estiver parado; a taxa de indisponibilidade deve ser reportada.
 - **Piloto reiniciado com esta mudança.** E4–E7 permanecem inalterados, exceto que as entradas de SCALP/GP/DAY TRADE agora exigem também confirmação de fluxo (E8); a amostra anterior ao gate não é comparável.
+
+---
+
+# ADDENDUM E9 — Calibração Intraday (3m/5m) e Saneamento Estrutural Argon (2026-10-17)
+
+## E9.1 Especificação técnica consolidada
+1. **Timeframes e Perfis (`smart_trade.STRATEGY_PROFILES`):**
+   - `SCALP` (BTC/ETH/SOL em `3m`): `sl_atr_mult = 0.9`, `tp1_atr_mult = 1.0`, `tp2_atr_mult = 1.8`, `tp3_atr_mult = 3.0`, `trail_atr_mult = 0.8`, `max_holding_bars = 30` (`90 min`).
+   - `GOLDEN_POT` (Altcoins em `5m`): `sl_atr_mult = 1.5` (alinhado ao `trail_atr_mult = 1.5` para absorver o reteste da barra de expansão em 5m), `tp1_atr_mult = 1.2`, `tp2_atr_mult = 2.5`, `tp3_atr_mult = 6.0`, `max_holding_bars = 36` (`3h`).
+   - `DIRECTIONAL` (BTC/ETH/SOL em `1h`): `sl_atr_mult = 1.0`, `tp1_atr_mult = 1.5`, `tp2_atr_mult = 2.5`, `tp3_atr_mult = 4.0`, `trail_atr_mult = 1.2`, `max_holding_bars = 48` (`48h`).
+2. **Saneamento de Execução e Telemetria (6 Correções Argon):**
+   - **Deduplicação do Gate de Fluxo (`_flow_gate`):** cada sinal de uma barra fechada `(strategy_type, symbol, bar_ts)` é avaliado e registrado em `flow_gate_log` uma única vez no fechamento da vela, impedindo entradas com preço defasado (*stale price*) minutos após um bloqueio inicial.
+   - **Isolamento Pós-Entrada e Bucket Nativo do Trailing:** velas anteriores à abertura são estritamente ignoradas; posições `GOLDEN_POT` são monitoradas no grid de `5m` e `SCALP`/`DIRECTIONAL` no grid de `3m`, e o `_ratchet_trailing` só avança quando fecha uma janela completa de `prof.bar_ms`.
+   - **Priorização de Momentum no Scanner GP:** `SWING_BREAKOUT` precede `SCALP_REVERSION` no `GoldenPotAgent`, e o daemon consome `top_swings + top_scalps`.
+   - **Veto de Colisão por Símbolo:** proibida a abertura de mais de uma posição simultânea no mesmo ativo, mesmo entre estratégias distintas.
+   - **Escalonamento de `ATR_PCT_EXTREME` por Timeframe (`leverage_policy.py`):** reducción de `-1x` na alavancagem aplicada em `>= 1.2%` (`3m`), `>= 1.5%` (`5m`), `>= 2.0%` (`15m`), `>= 3.0%` (`1h`) e `>= 5.0%` (`4h`).
+   - **Consolidação por `position_id` (`PerformanceTracker` e `LearningTracker`):** métricas de assertividade, `consecutive_losses` (que acionam o `RollbackGuard`) e feedback ao `LearningTracker` utilizam o PnL líquido consolidado da posição (`pos.realized_pnl`), não tratando saídas parciais no `BREAKEVEN_STOP` (`-$0.05`) ou liquidações de `FUNDING` como derrotas independentes.
+

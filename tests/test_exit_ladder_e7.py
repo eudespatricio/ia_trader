@@ -417,6 +417,7 @@ def make_daemon(db, committee, feat, symbols=("AAAUSDT",), volume=500e6):
     async def _fetch(sym, now_ts):
         return pd.DataFrame({"timestamp": [0]})
     d._gp_fetch_closed_candles = _fetch
+    d._scalp_fetch_closed_candles = _fetch
     d._fetch_closed_candles_15m = _fetch
     d._compute_swing_features = lambda df: feat.copy()
     eng.core.evaluate_market_async = committee
