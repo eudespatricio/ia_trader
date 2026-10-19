@@ -217,6 +217,20 @@ class TestConsensusJudgeAndSignalGenerator:
         assert decision.direction == "BUY"
         assert decision.aggregated_score >= 0.45
 
+    def test_contextual_abstention_prevents_denominator_dilution(self):
+        """Agentes macro/contextuais sem evento (HOLD) abstêm-se sem diluir o consenso técnico."""
+        judge = ConsensusJudge(min_consensus_threshold=0.30)
+        signals = [
+            AgentSignal("TechnicalAgent", "BUY", 0.70, 1.0, "Compra técnica"),
+            AgentSignal("OrderFlowAgent", "BUY", 0.60, 0.8, "Fluxo comprador"),
+            AgentSignal("SentimentAgent", "HOLD", 0.50, 0.6, "Sentimento neutro"),
+            AgentSignal("MacroAgent", "HOLD", 0.50, 0.6, "Sem dados macro"),
+            AgentSignal("OnChainAgent", "HOLD", 0.50, 0.5, "On-chain neutro"),
+        ]
+        decision = judge.judge_deterministic(signals)
+        assert decision.direction == "BUY"
+        assert decision.aggregated_score >= 0.30
+
     def test_signal_generator_atr_barriers_and_fixed_risk_sizing(self):
         """SignalGenerator calcula TP, SL proporcionais ao ATR e tamanho via risco de 1%."""
         gen = SignalGenerator(capital=10000.0, risk_per_trade=0.01, tp_atr_multiple=1.5, sl_atr_multiple=1.0)

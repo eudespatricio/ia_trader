@@ -71,12 +71,42 @@ def test_boundaries_inclusive(tmp_path):
     assert ev(tmp_path, taker=0.15, book=0.10, dev=0.0)["vote"] == "BUY"
 
 
+def test_hold_legacy_boundaries(tmp_path):
+    path = tmp_path / "legacy.db"
+    db = make_db(str(path), sym="BTCUSDT", taker=0.1499, book=0.2, dev=1.0)
+    # No modo legacy booleano rígido (use_continuous_flow=False), 0.1499 < 0.15 é barrado
+    r = TapeReadingAgent(db_path=db, use_continuous_flow=False).evaluate("BTCUSDT", "BUY", now_ms=NOW)
+    assert (r["vote"], r["status"], r["reason"]) == ("HOLD", "OK", "no_flow_confluence")
+
+
 @pytest.mark.parametrize("kw", [
-    dict(taker=0.1499), dict(book=0.0999), dict(dev=-0.01), dict(taker=-0.2),
+    dict(taker=0.10, book=0.10, dev=0.0),    # 0.6*0.10 + 0.3*0.10 = 0.09 < 0.12
+    dict(taker=0.14, book=0.08, dev=0.0),    # 0.6*0.14 + 0.3*0.08 = 0.108 < 0.12
+    dict(taker=0.0, book=0.0, dev=0.0),       # 0.0 < 0.12
 ])
-def test_hold_just_outside(tmp_path, kw):
+def test_hold_just_outside_continuous(tmp_path, kw):
     r = ev(tmp_path, **kw)
     assert (r["vote"], r["status"], r["reason"]) == ("HOLD", "OK", "no_flow_confluence")
+
+
+def test_bullish_absorption(tmp_path):
+    # Agressão vendedora extrema (-0.35) absorvida por barreira no book (+0.25)
+    r = ev(tmp_path, taker=-0.35, book=0.25, dev=0.0)
+    assert (r["vote"], r["status"], r["reason"]) == ("BUY", "OK", "absorption_buy_confirmed")
+    assert r["confidence"] > 0.5
+
+
+def test_bearish_absorption(tmp_path):
+    # Agressão compradora extrema (+0.35) absorvida por barreira no book (-0.25)
+    r = ev(tmp_path, taker=0.35, book=-0.25, dev=0.0)
+    assert (r["vote"], r["status"], r["reason"]) == ("SELL", "OK", "absorption_sell_confirmed")
+    assert r["confidence"] > 0.5
+
+
+def test_continuous_flow_cross_threshold(tmp_path):
+    # Taker moderado (+0.10) compensado por Book forte (+0.20): 0.6*0.1 + 0.3*0.2 = 0.12
+    r = ev(tmp_path, taker=0.10, book=0.20, dev=0.0)
+    assert (r["vote"], r["status"], r["reason"]) == ("BUY", "OK", "flow_buy_confirmed")
 
 
 def test_sell_boundary_and_hold(tmp_path):

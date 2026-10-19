@@ -27,7 +27,9 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(ROOT, "datasets", "microstructure.db")
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+CACHE_DB = os.path.join(ROOT, "datasets", "market_cache.db")
+BASE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+SYMBOLS = list(BASE_SYMBOLS)
 BITGET = "https://api.bitget.com/api/v2/mix/market"
 BINANCE = "https://fapi.binance.com/futures/data"
 PT = "USDT-FUTURES"
@@ -35,6 +37,7 @@ BOOK_EVERY = 15.0
 FILLS_EVERY = 6.0
 DERIV_EVERY = 60.0
 BINANCE_EVERY = 600.0
+SYMBOLS_REFRESH_EVERY = 120.0
 BOOK_WINDOWS_FINE = (2, 5, 10)        # bps (precision scale1, ~±13 bps no BTC)
 BOOK_WINDOWS_COARSE = (25, 50, 100)   # bps (precision scale2, ~±120 bps no BTC)
 BINANCE_KINDS = {
@@ -64,7 +67,29 @@ CREATE TABLE IF NOT EXISTS derivs (
   last_price REAL, quote_volume_24h REAL, PRIMARY KEY (ts_ms, symbol));
 CREATE TABLE IF NOT EXISTS binance_series (
   ts_ms INTEGER, symbol TEXT, kind TEXT, v1 REAL, v2 REAL, v3 REAL, PRIMARY KEY (ts_ms, symbol, kind));
+CREATE TABLE IF NOT EXISTS active_symbols (
+  symbol TEXT PRIMARY KEY, updated_at INTEGER);
 """
+
+
+def get_active_golden_pot_symbols(top_n: int = 3) -> list:
+    """Descobre até top_n altcoins mais frequentes/recentes na tabela golden_pots de market_cache.db."""
+    if not os.path.exists(CACHE_DB):
+        return []
+    try:
+        with sqlite3.connect(f"file:{CACHE_DB}?mode=ro", uri=True, timeout=5.0) as conn:
+            rows = conn.execute("""
+                SELECT symbol, count(*) as cnt 
+                FROM golden_pots 
+                WHERE symbol NOT IN ('BTCUSDT', 'ETHUSDT', 'SOLUSDT')
+                GROUP BY symbol 
+                ORDER BY max(timestamp) DESC, cnt DESC 
+                LIMIT ?
+            """, (top_n,)).fetchall()
+            return [str(r[0]).upper() for r in rows if r[0]]
+    except Exception as e:
+        log.warning("Falha ao consultar golden_pots no market_cache.db: %s", e)
+        return []
 
 
 def connect():
@@ -128,15 +153,16 @@ def book_snapshot(sym):
 
 class TickAggregator:
     def __init__(self):
-        self.last_id = {s: 0 for s in SYMBOLS}
+        self.last_id = {s: 0 for s in BASE_SYMBOLS}
         self.buckets = {}   # (sym, minute_ms) -> dict
 
     def poll(self, sym):
         rows = get_json(BITGET + "/fills", {"symbol": sym, "productType": PT, "limit": "100"})["data"]
-        new = [r for r in rows if int(r["tradeId"]) > self.last_id[sym]]
+        last_seen = self.last_id.setdefault(sym, 0)
+        new = [r for r in rows if int(r["tradeId"]) > last_seen]
         if not new:
             return 0
-        saturated = (len(new) == len(rows) and self.last_id[sym] != 0)
+        saturated = (len(new) == len(rows) and last_seen != 0)
         for r in sorted(new, key=lambda r: int(r["tradeId"])):
             ts = int(r["ts"])
             m = ts - ts % 60000
@@ -255,15 +281,32 @@ def main():
     conn = connect()
     agg = TickAggregator()
     threading.Thread(target=binance_backfill_and_update, daemon=True, name="binance").start()
-    log.info("Coletor iniciado: %s | book=%ss fills=%ss deriv=%ss", SYMBOLS, BOOK_EVERY, FILLS_EVERY, DERIV_EVERY)
-    due = {"book": 0.0, "fills": 0.0, "deriv": 0.0, "report": time.time() + 60}
+    active_symbols = list(BASE_SYMBOLS)
+    log.info("Coletor iniciado: %s | book=%ss fills=%ss deriv=%ss", active_symbols, BOOK_EVERY, FILLS_EVERY, DERIV_EVERY)
+    due = {"book": 0.0, "fills": 0.0, "deriv": 0.0, "report": time.time() + 60, "symbols": 0.0}
     counts = dict(book=0, fills=0, deriv=0, errors=0)
     while not STOP.is_set():
         now = time.time()
+        if now >= due["symbols"]:
+            due["symbols"] = now + SYMBOLS_REFRESH_EVERY
+            gp_syms = get_active_golden_pot_symbols(top_n=3)
+            current_syms = list(dict.fromkeys(BASE_SYMBOLS + gp_syms))
+            if set(current_syms) != set(active_symbols):
+                log.info("Expansão dinâmica de cobertura: %s -> %s", active_symbols, current_syms)
+                active_symbols = current_syms
+            try:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO active_symbols VALUES (?,?)",
+                    [(s, int(now * 1000)) for s in active_symbols]
+                )
+                conn.commit()
+            except Exception as e:
+                log.warning("Erro ao atualizar active_symbols: %s", e)
+
         if now >= due["book"]:
             due["book"] = now + BOOK_EVERY
             rows = []
-            for s in SYMBOLS:
+            for s in list(active_symbols):
                 try:
                     rows.append(book_snapshot(s))
                 except Exception as e:   # noqa: BLE001
@@ -273,7 +316,7 @@ def main():
                 conn.commit(); counts["book"] += len(rows)
         if now >= due["fills"]:
             due["fills"] = now + FILLS_EVERY
-            for s in SYMBOLS:
+            for s in list(active_symbols):
                 try:
                     counts["fills"] += agg.poll(s)
                 except Exception as e:   # noqa: BLE001
@@ -282,7 +325,7 @@ def main():
         if now >= due["deriv"]:
             due["deriv"] = now + DERIV_EVERY
             rows = []
-            for s in SYMBOLS:
+            for s in list(active_symbols):
                 try:
                     rows.append(deriv_snapshot(s))
                 except Exception as e:   # noqa: BLE001
@@ -292,7 +335,7 @@ def main():
                 conn.commit(); counts["deriv"] += len(rows)
         if now >= due["report"]:
             due["report"] = now + 300
-            log.info("heartbeat: %s", counts)
+            log.info("heartbeat: %s (símbolos ativos=%s)", counts, active_symbols)
         STOP.wait(1.0)
     agg.flush(conn, force=True)
     conn.close()

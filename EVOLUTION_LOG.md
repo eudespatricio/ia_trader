@@ -906,3 +906,55 @@ Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:
 
 > **Funil de sinais (2026-10-15):** tabela `signal_funnel` no banco do piloto (instrumentação; não altera a estratégia nem as decisões de trading).
 
+- **Auditoria Forense Golden Pot & Consolidação Estratégica (2026-10-18):**
+  - **Diagnóstico Forense de Operações:** Análise aprofundada dos trades `BTWUSDT` (`477930eb`) e `AGTUSDT` (`a300a0fd`), confirmando stop-out ultrarrápido (<35s) e identificando 4 causas-raiz: (1) avaliação atrasada em vela já madura com entrada a mercado defasada (*stale execution*); (2) venda na exaustão de clímax (-14% em 10m com RSI<15 vendendo o fundo); (3) assimetria entre stop ATR (4,8%) e amplitude de vela de altcoin (10,7%); (4) ausência de tape reading em altcoins (*fail-open*).
+  - **Benchmark & Roadmap de Interface Gráfica:** Especificação de melhorias inspiradas em TradingView/exchanges (zoom/pan fluído centrado no cursor, escala vertical manual, switcher rápido de tempos gráficos, overlays dinâmicos de SL/TP/Trailing e HUD crosshair 60fps).
+  - **Criação do Documento Mestre de Continuidade:** Criação de `docs/ROADMAP_BRAINSTORMS.md` e atualização do `CRONOGRAMA_MODULAR.md` contendo prompt de sincronização rápida para abertura de novos chats e detalhamento de todos os brainstorms e planos de ação.
+
+- **Proteções Forenses do Golden Pot & Modernização do Gráfico TradingView (2026-10-18):**
+  - **1. Proteções Forenses do Golden Pot (100% Implementado e Validado):**
+    - **Trava de Latência de Barra:** Rejeição rigorosa de candles 5m com idade superior a 45s (`GP_STALE_BAR_MAX_AGE_MS = 45_000`), evitando entradas atrasadas em meio à vela ou fora de sincronia com a exchange.
+    - **Filtro de Exaustão de Clímax:** Bloqueio de sinais de venda no fundo ou compra no topo quando RSI < 15 / > 85, ou quando a variação de 3 velas excede 2.5 ATR com estiramento direcional.
+    - **Cap de Alavancagem 2.0x:** Alavancagem máxima limitada estritamente a 2.0x para altcoins voláteis operadas pelo Golden Pot.
+    - **Stop Loss Adaptativo:** Distância de Stop Loss calibrada com margem de segurança de 1.15x sobre a amplitude recente da barra, absorvendo pavios e retestes.
+    - **Suite Forense:** Criada `tests/test_golden_pot_forensic_protections.py` (6/6 passando); suíte completa de 162 testes passando (0 falhas).
+  - **2. Modernização do Componente de Gráficos (Benchmark TradingView):**
+    - **Lightweight Charts v4.2.1:** Integração nativa do canvas Lightweight Charts com renderização a 60fps em `templates/dashboard.html` e biblioteca empacotada localmente em `static/`.
+    - **Multi-Timeframes Intraday e Diário:** Botões seletores para `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d`, com auto-fetch on-demand na API `/api/chart` (Binance com fallback Bitget) quando o cache SQLite possui < 20 candles.
+    - **Smart Trade Exit Ladder Lines:** Projeção visual direta no gráfico das linhas de Entry (azul), Stop Loss / Breakeven (vermelho/ciano), TP1, TP2, TP3 (verde), Trailing Stop (dourado) e Preço de Liquidação.
+    - **HUD Crosshair & Ferramentas:** Leitura instantânea de OHLCV, amplitude, volume e indicadores (SMA 20/50, EMA 9/21, BB) sem sobrecarga, com zoom centrado no cursor e arraste de escala no eixo direito. Fallback para Plotly mantido intacto.
+  - **3. Validação em Tempo Real:**
+    - Supervisor rearmou os daemons com sucesso (`flask_dashboard` PID 340588, `paper_trading_daemon` PID 340623, 4/4 serviços HEALTHY).
+    - Logs ao vivo do daemon já confirmam a proteção ativa descartando barras antigas em tempo real.
+
+- **Auditoria Empírica do Funil de Sinais & Mapeamento de Gargalos (2026-10-18):**
+  - **Massa de Dados Analisada:** 884 registros em `signal_funnel`, 513 decisões em `flow_gate_log` e 60.270 snapshots de book / 15.623 ticks em `microstructure.db`.
+  - **Gargalo 1 Identificado (Diluição no Consenso):** 96,4% de Day Trade, 96,1% de Golden Pot e 92,6% de Scalp foram rejeitados por `committee_disagree`. Causa: agentes passivos/macro votam `HOLD` com peso $>0$, inflando o denominador `total_weight` e diluindo o `norm_score` matemático para $<0.30$, mesmo quando o setup técnico é legítimo.
+  - **Gargalo 2 Identificado (Rigidez Booleana no Tape Reading):** 94,5% (485/513) das avaliações do `flow_gate_log` foram bloqueadas por `no_flow_confluence`. A exigência simultânea de `taker >= 0.15 AND book >= 0.10` desconsidera absorção passiva de market makers. 140 sinais de venda tinham forte agressão vendedora alinhada, mas foram travados porque o book estava absorvendo.
+  - **Plano de Potencialização & Resultados do Teste Offline (2026-10-19):**
+    - Executado teste empírico em `scripts/test_offline_funnel_optimizations.py`:
+    - *Abstenção no Comitê:* Desbloqueia vazão saudável de 38% dos candidatos (+84 Day Trade, +17 Golden Pot, +40 Scalp).
+    - *FlowScore Contínuo:* Multiplica a aprovação de fluxo em 13.1x (de 8 para 105 sinais alinhados) mantendo a barreira de 180 fluxos contrários bloqueados com precisão cirúrgica.
+    - *Absorção Institucional:* 18 eventos de absorção de venda e 23 de compra mapeados na microestrutura real como novo alfa de reversão.
+    - *Ollama / RTX 3060:* Validada inferência local no gateway `172.30.176.1:11434` (3,4s warm, 100% JSON estruturado, R$ 0,00 de custo).
+    - *Altcoins Top 3:* Demonstrou que a blindagem de book teria eliminado 83,8% (-$33,53) das perdas do piloto.
+
+- **Implementação dos 5 Itens de Otimização do Funil & Produção 24/7 (2026-10-19):**
+  - **1. Abstenção Não-Punitiva no Comitê (`consensus_judge.py`):**
+    - Agentes contextuais/macro (`SentimentAgent`, `MacroAgent`, `OnChainAgent`) que votam `HOLD` por ausência de choques recentes agora são tratados como abstenção (`weight = 0.0`), impedindo a diluição do denominador no cálculo do consenso. Setups técnicos e de momentum preservam a pontuação real necessária para aprovação sem enfraquecer o Sentinela de Risco.
+  - **2. Score Contínuo de Fluxo no Tape Reading (`agents/tape_reading_agent.py`):**
+    - Substituição do `AND` rígido pela fórmula contínua: $\text{FlowScore} = 0.60 \times \text{TakerImb} + 0.30 \times \text{BookImb} + 0.10 \times \text{MicroDevNorm}$.
+    - Ordens autorizadas quando $|\text{FlowScore}| \ge 0.12$ na mesma direção do sinal, autorizando agressões genuínas mesmo com absorção passiva temporária.
+  - **3. Detecção de Absorção Institucional (`agents/tape_reading_agent.py`):**
+    - Mapeamento automático de exaustão agressora contra paredes de liquidez passiva:
+      - *Bullish Absorption:* $\text{TakerImb} \le -0.30 \land \text{BookImb} \ge +0.15 \implies$ Voto `BUY` (`absorption_buy_confirmed`).
+      - *Bearish Absorption:* $\text{TakerImb} \ge +0.30 \land \text{BookImb} \le -0.15 \implies$ Voto `SELL` (`absorption_sell_confirmed`).
+  - **4. Desempate Semântico via GPU Local (`core.py`, `chatgpt_assistant.py`, `scripts/run_paper_simulation.py`):**
+    - Integração de `ChatGPTAssistant` com modelo `llama3.1:latest` rodando no Ollama local na RTX 3060 via gateway host (`http://172.30.176.1:11434`), ativado no `_committee_gate` (`use_llm=True`).
+    - Atuando estritamente em divergências reais ou empates no limiar com timeout de 4.5s e retorno determinístico imediato em caso de timeout/falha, a R$ 0,00 de custo de API.
+  - **5. Expansão Dinâmica do Coletor para Altcoins Top 3 (`scripts/microstructure_collector.py`):**
+    - O coletor consulta a tabela `golden_pots` a cada 2 minutos e expande dinamicamente a captura de livros (`book_features`) e agressões (`tick_agg`) para as top 3 altcoins mais ativas, registrando-as em `active_symbols`.
+    - `TapeReadingAgent` sincroniza `active_symbols` do banco, eliminando o ponto cego de fail-open (`UNAVAILABLE_PASSED`) e blindando entradas em altcoins com leitura de fluxo real.
+  - **Homologação & Zero Regressões:**
+    - Suíte completa de **228 testes passando (0 falhas)** (`test_agents_and_consensus.py`, `test_tape_reading_gate.py`, `test_golden_pot_forensic_protections.py`, `test_pre_entry_regression.py`, `test_exit_ladder_e7.py`, `test_signal_funnel.py`, `test_paper_trading_engine.py`, `test_flask_interface.py`, `test_system_supervisor.py`).
+    - Daemons atualizados e saudáveis sob o supervisor (4/4 `HEALTHY`): `microstructure_collector` (PID 357867) e `paper_trading_daemon` (PID 357947). Logs ao vivo confirmam expansão dinâmica para `['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AGTUSDT', 'QUSDT', 'BTWUSDT']` e bloqueio de fluxos contrários em tempo real.

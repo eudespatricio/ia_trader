@@ -11,6 +11,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Plotly.js CDN com Fallback Local -->
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" onerror="this.onerror=null;this.src='/static/plotly.min.js'"></script>
+    <!-- TradingView Lightweight Charts v4.2.1 CDN com Fallback Local -->
+    <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js" onerror="this.onerror=null;this.src='/static/lightweight-charts.standalone.production.js'"></script>
     <!-- Lucide Icons Versão Fixa 0.469.0 com Fallback Local -->
     <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js" onerror="this.onerror=null;this.src='/static/lucide.min.js'"></script>
     <!-- Google Fonts -->
@@ -338,9 +340,25 @@
 
                     <!-- Timeframe Pill Buttons -->
                     <div class="flex items-center bg-dark-800 rounded-lg p-1 border border-dark-600 text-xs font-medium">
-                        <button onclick="setTimeframe('15m')" id="btnTf_15m" class="tf-btn px-2.5 py-1 rounded text-slate-400 hover:text-white transition-all">15m</button>
-                        <button onclick="setTimeframe('1h')" id="btnTf_1h" class="tf-btn px-2.5 py-1 rounded bg-cyan-600 text-white font-semibold transition-all">1h</button>
-                        <button onclick="setTimeframe('4h')" id="btnTf_4h" class="tf-btn px-2.5 py-1 rounded text-slate-400 hover:text-white transition-all">4h</button>
+                        <button onclick="setTimeframe('1m')" id="btnTf_1m" title="1 Minuto (Ultra Rápido)" class="tf-btn px-2 py-1 rounded text-slate-400 hover:text-white transition-all">1m</button>
+                        <button onclick="setTimeframe('3m')" id="btnTf_3m" title="Scalp Cirúrgico (3m)" class="tf-btn px-2 py-1 rounded text-slate-400 hover:text-white transition-all">3m</button>
+                        <button onclick="setTimeframe('5m')" id="btnTf_5m" title="Golden Pot Momentum (5m)" class="tf-btn px-2 py-1 rounded text-slate-400 hover:text-white transition-all">5m</button>
+                        <button onclick="setTimeframe('15m')" id="btnTf_15m" title="15 Minutos" class="tf-btn px-2 py-1 rounded text-slate-400 hover:text-white transition-all">15m</button>
+                        <button onclick="setTimeframe('30m')" id="btnTf_30m" title="30 Minutos" class="tf-btn px-2 py-1 rounded text-slate-400 hover:text-white transition-all">30m</button>
+                        <button onclick="setTimeframe('1h')" id="btnTf_1h" title="1 Hora (Direcional)" class="tf-btn px-2.5 py-1 rounded bg-cyan-600 text-white font-semibold transition-all">1h</button>
+                        <button onclick="setTimeframe('4h')" id="btnTf_4h" title="4 Horas (Macro Swing)" class="tf-btn px-2.5 py-1 rounded text-slate-400 hover:text-white transition-all">4h</button>
+                        <button onclick="setTimeframe('1d')" id="btnTf_1d" title="Diário (1D)" class="tf-btn px-2 py-1 rounded text-slate-400 hover:text-white transition-all">1D</button>
+                    </div>
+
+                    <!-- Candle Density / Window Selector -->
+                    <div class="flex items-center bg-dark-800 rounded-lg px-2 py-1 border border-dark-600 text-xs">
+                        <span class="text-slate-500 text-[10px] mr-1 hidden md:inline">JANELA:</span>
+                        <select id="chartLimitSelect" onchange="setChartCandleLimit(this.value)" title="Quantidade de velas carregadas no gráfico" class="bg-transparent text-slate-200 font-mono text-xs focus:outline-none cursor-pointer">
+                            <option value="60" class="bg-dark-800">60V</option>
+                            <option value="120" selected class="bg-dark-800">120V</option>
+                            <option value="250" class="bg-dark-800">250V</option>
+                            <option value="500" class="bg-dark-800">500V</option>
+                        </select>
                     </div>
 
                     <!-- Warmup / Bitget Sync Button -->
@@ -356,6 +374,7 @@
                     <button onclick="toggleIndicator('sma')" id="btnInd_sma" class="px-2 py-0.5 rounded border border-cyan-500/50 bg-cyan-950/40 text-cyan-300 font-medium">SMA 20/50</button>
                     <button onclick="toggleIndicator('ema')" id="btnInd_ema" class="px-2 py-0.5 rounded border border-dark-600 bg-dark-800 text-slate-400 hover:text-slate-200">EMA 9/21</button>
                     <button onclick="toggleIndicator('bb')" id="btnInd_bb" class="px-2 py-0.5 rounded border border-dark-600 bg-dark-800 text-slate-400 hover:text-slate-200">Bollinger</button>
+                    <button onclick="toggleIndicator('smc')" id="btnInd_smc" title="Smart Money Concepts: Order Blocks, Fair Value Gaps (FVG) e S/R" class="px-2 py-0.5 rounded border border-dark-600 bg-dark-800 text-slate-400 hover:text-slate-200">SMC / S&amp;R</button>
                     <button onclick="toggleIndicator('rsi')" id="btnInd_rsi" class="px-2 py-0.5 rounded border border-indigo-500/50 bg-indigo-950/40 text-indigo-300 font-medium">RSI (14)</button>
                 </div>
 
@@ -381,22 +400,28 @@
 
             </div>
 
-            <!-- Interactive Chart Toolbar (TradingView-style Quick Tools) -->
+            <!-- Interactive Chart Toolbar (TradingView / Binance Pro Quick Tools) -->
             <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-dark-850/80 border border-dark-600/60 text-xs">
                 <div class="flex flex-wrap items-center gap-1.5">
                     <span class="text-slate-500 font-semibold text-[10px] uppercase tracking-wider mr-1 flex items-center gap-1">
                         <i data-lucide="mouse-pointer" class="h-3 w-3 text-cyan-400"></i>
-                        <span>Navegação:</span>
+                        <span class="hidden md:inline">Controle:</span>
                     </span>
-                    <button onclick="chartZoomIn()" title="Aumentar Zoom (+)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
+                    <button onclick="chartPanStep(-1)" title="Navegar para trás no histórico (Tecla ←)" class="px-1.5 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center transition-all">
+                        <i data-lucide="chevron-left" class="h-3.5 w-3.5"></i>
+                    </button>
+                    <button onclick="chartPanStep(1)" title="Navegar para frente no tempo (Tecla →)" class="px-1.5 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center transition-all">
+                        <i data-lucide="chevron-right" class="h-3.5 w-3.5"></i>
+                    </button>
+                    <button onclick="chartZoomIn()" title="Aumentar Zoom Horizontal (Roda do Mouse / Tecla +)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
                         <i data-lucide="zoom-in" class="h-3.5 w-3.5"></i>
                         <span class="text-[11px] font-medium hidden sm:inline">Zoom +</span>
                     </button>
-                    <button onclick="chartZoomOut()" title="Diminuir Zoom (-)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
+                    <button onclick="chartZoomOut()" title="Diminuir Zoom Horizontal (Roda do Mouse / Tecla -)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
                         <i data-lucide="zoom-out" class="h-3.5 w-3.5"></i>
                         <span class="text-[11px] font-medium hidden sm:inline">Zoom -</span>
                     </button>
-                    <button id="btnChartPan" onclick="setChartDragMode('pan')" title="Modo Mão / Arrastar Série" class="px-2 py-1 rounded bg-cyan-600 text-white font-semibold border border-cyan-500 flex items-center gap-1 transition-all">
+                    <button id="btnChartPan" onclick="setChartDragMode('pan')" title="Modo Mão / Arrastar Série (Padrão TradingView)" class="px-2 py-1 rounded bg-cyan-600 text-white font-semibold border border-cyan-500 flex items-center gap-1 transition-all">
                         <i data-lucide="hand" class="h-3.5 w-3.5"></i>
                         <span class="text-[11px]">Arrastar</span>
                     </button>
@@ -404,21 +429,40 @@
                         <i data-lucide="scan" class="h-3.5 w-3.5"></i>
                         <span class="text-[11px]">Seleção</span>
                     </button>
-                    <button onclick="resetChartZoom()" title="Resetar Zoom (Visão Geral)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
+                    <button id="btnChartMeasure" onclick="toggleChartMeasureMode()" title="Régua de Variação % / $ / Velas (Atalho: M ou Shift+Clique)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
+                        <i data-lucide="ruler" class="h-3.5 w-3.5"></i>
+                        <span class="text-[11px] hidden sm:inline">Régua</span>
+                    </button>
+                    <button id="btnAddHLine" onclick="toggleAddHLineMode()" title="Marcar Linha Horizontal de Preço S/R no Clique" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
+                        <i data-lucide="minus" class="h-3.5 w-3.5"></i>
+                        <span class="text-[11px] hidden md:inline">+ Linha S/R</span>
+                    </button>
+                    <button id="btnClearHLines" onclick="clearUserHLines()" title="Remover todas as linhas S/R manuais" class="hidden px-2 py-1 rounded bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 text-amber-300 flex items-center gap-1 transition-all">
+                        <i data-lucide="trash-2" class="h-3 w-3"></i>
+                        <span class="text-[10px]">Limpar S/R</span>
+                    </button>
+                    <button onclick="resetChartZoom()" title="Resetar Escala e Focar Tempo Real (Duplo Clique / Tecla R)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
                         <i data-lucide="rotate-ccw" class="h-3.5 w-3.5"></i>
                         <span class="text-[11px] hidden sm:inline">Resetar</span>
                     </button>
                 </div>
                 <div class="flex items-center gap-1.5 ml-auto">
+                    <button id="btnAutoScaleY" onclick="toggleChartAutoScaleY()" title="Auto-Ajuste Vertical às Velas Visíveis (Atalho: A | Arraste o eixo direito para escala manual)" class="px-2 py-1 rounded bg-cyan-950/70 border border-cyan-500/50 text-cyan-300 font-semibold flex items-center gap-1 transition-all">
+                        <span class="text-[11px] font-mono">Auto Y</span>
+                    </button>
+                    <button id="btnOverlayScaleMode" onclick="toggleOverlayScaleMode()" title="Alternar foco vertical entre Velas vs Escada Completa (TP3/LIQ)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
+                        <i data-lucide="eye" class="h-3.5 w-3.5"></i>
+                        <span id="lblOverlayScaleMode" class="text-[11px] hidden lg:inline">Focar Velas</span>
+                    </button>
                     <button id="btnToggleCrosshair" onclick="toggleChartCrosshair()" title="Alternar Mira de Precisão (Crosshair)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-cyan-300 flex items-center gap-1 transition-all">
                         <i data-lucide="crosshair" class="h-3.5 w-3.5"></i>
-                        <span class="text-[11px]">Mira</span>
+                        <span class="text-[11px] hidden sm:inline">Mira</span>
                     </button>
                     <button id="btnToggleRangeSlider" onclick="toggleRangeSlider()" title="Alternar Mini-Mapa Inferior (Range Slider)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
                         <i data-lucide="sliders-horizontal" class="h-3.5 w-3.5"></i>
                         <span class="text-[11px] hidden sm:inline">Mini-Mapa</span>
                     </button>
-                    <button id="btnToggleFullscreen" onclick="toggleChartFullscreen()" title="Alternar Modo Tela Cheia" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
+                    <button id="btnToggleFullscreen" onclick="toggleChartFullscreen()" title="Alternar Modo Tela Cheia (Tecla F)" class="px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all">
                         <i data-lucide="maximize-2" class="h-3.5 w-3.5"></i>
                         <span class="text-[11px] hidden sm:inline">Tela Cheia</span>
                     </button>
@@ -441,21 +485,57 @@
                 </button>
             </div>
 
-            <!-- Plotly Interactive Canvas Container -->
-            <div id="chartContainer" class="w-full h-[520px] rounded-lg relative overflow-hidden bg-[#0A0E17]">
-                <div id="chartLoader" class="absolute inset-0 bg-[#0A0E17]/80 backdrop-blur-sm flex flex-col items-center justify-center gap-2 z-10">
-                    <i data-lucide="loader-2" class="h-7 w-7 text-cyan-400 animate-spin"></i>
-                    <span class="text-xs text-slate-400">Carregando dados da série temporal...</span>
+            <!-- Plotly Interactive Canvas Container + TradingView HUD Overlays -->
+            <div id="chartWrapper" class="relative w-full">
+                <!-- TradingView Top-Left Floating OHLCV & Indicators Status HUD (Non-blocking) -->
+                <div id="tvChartHud" class="pointer-events-none select-none absolute top-2 left-3 right-20 z-10 flex flex-col gap-0.5 bg-[#0A0E17]/80 backdrop-blur-[2px] px-2.5 py-1 rounded border border-slate-800/80 text-[11px] font-mono">
+                    <div id="tvHudRowOhlcv" class="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-slate-300">
+                        <span id="tvHudSymbol" class="font-bold text-white">BTCUSDT · 1h</span>
+                        <span id="tvHudTime" class="text-slate-400 text-[10px]">--</span>
+                        <span>A <b id="tvHudOpen" class="text-slate-200">--</b></span>
+                        <span>M <b id="tvHudHigh" class="text-slate-200">--</b></span>
+                        <span>m <b id="tvHudLow" class="text-slate-200">--</b></span>
+                        <span>F <b id="tvHudClose" class="text-slate-200">--</b></span>
+                        <span id="tvHudChange" class="font-semibold">--</span>
+                        <span class="text-slate-400">Amp <b id="tvHudRange" class="text-slate-300">--</b></span>
+                        <span class="text-slate-400">Vol <b id="tvHudVol" class="text-cyan-300">--</b></span>
+                    </div>
+                    <div id="tvHudRowIndicators" class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-slate-400"></div>
+                </div>
+
+                <!-- Interactive Measure / Ruler Floating Box (Shift+Click or Régua button) -->
+                <div id="tvMeasureOverlay" class="hidden pointer-events-none select-none absolute z-20 border border-cyan-400/80 bg-cyan-500/15 rounded backdrop-blur-[1px]">
+                    <div id="tvMeasureLabel" class="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap px-2 py-0.5 rounded bg-dark-900/95 border border-cyan-500/60 text-[11px] font-mono font-semibold text-white shadow-lg"></div>
+                </div>
+
+                <!-- Right-Axis Drag Zone Tooltip Hint & Floating "Jump to Realtime" Button -->
+                <div id="tvAxisRightZone" title="Arraste verticalmente ou role o mouse para ajustar a escala de preços (Duplo clique: Auto Y)" class=" absolute top-6 right-0 bottom-10 w-14 z-10 cursor-ns-resize"></div>
+
+                <div class="absolute bottom-11 right-16 z-20 flex items-center gap-1.5">
+                    <button id="btnJumpToLatest" onclick="jumpChartToLatest()" title="Voltar para as velas atuais em tempo real" class="hidden px-2.5 py-1 rounded-full bg-cyan-600/90 hover:bg-cyan-500 text-white font-semibold text-[11px] shadow-lg border border-cyan-400/60 flex items-center gap-1 transition-all">
+                        <i data-lucide="chevrons-right" class="h-3.5 w-3.5"></i>
+                        <span>Tempo Real</span>
+                    </button>
+                </div>
+
+                <div id="chartContainer" class="w-full h-[540px] rounded-lg relative overflow-hidden bg-[#0A0E17]">
+                    <div id="tvChartMount" class="w-full h-full"></div>
+                    <div id="chartLoader" class="absolute inset-0 bg-[#0A0E17]/80 backdrop-blur-sm flex flex-col items-center justify-center gap-2 z-10">
+                        <i data-lucide="loader-2" class="h-7 w-7 text-cyan-400 animate-spin"></i>
+                        <span class="text-xs text-slate-400">Carregando dados da série temporal...</span>
+                    </div>
                 </div>
             </div>
 
             <!-- Chart Footer Metadata -->
             <div class="flex flex-wrap items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-dark-600/40">
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
                     <span class="h-2 w-2 rounded-full bg-cyan-400"></span>
-                    <span>Fonte: Bitget v2 (Futuros USDT) &bull; Cache Local SQLite modo WAL</span>
+                    <span>Fonte: Bitget v2 (Futuros USDT) &bull; <span class="text-slate-300">Roda do mouse: Zoom X | Eixo direito: Escala Y | Shift+Clique: Régua</span></span>
                 </div>
                 <div class="flex items-center gap-3 num-font">
+                    <span id="chartCandleCountdown" class="text-cyan-400 font-semibold">--</span>
+                    <span>&bull;</span>
                     <span id="chartCandleCount">0 velas plotadas</span>
                     <span>&bull;</span>
                     <span id="chartLastUpdated">Atualizado: --</span>
@@ -1429,6 +1509,7 @@
             sma: true,
             ema: false,
             bb: false,
+            smc: false,
             rsi: true
         };
 
@@ -1986,12 +2067,20 @@
         }
 
         // ==========================================
-        // CHART STATE & FRIENDLY INTERACTION CONTROLS
+        // CHART STATE & TRADINGVIEW / EXCHANGE PRO ENGINE
         // ==========================================
         let currentDragMode = 'pan';
         let crosshairActive = true;
         let rangeSliderActive = false;
         let isChartFullscreen = false;
+        let currentChartLimit = 120;
+        let chartAutoScaleY = true;
+        let orderScaleFocus = 'candles'; // 'candles' | 'all'
+        let chartMeasureMode = false;
+        let chartMeasureStart = null;
+        let addHLineMode = false;
+        const userHLinesBySymbol = {};
+        let _tvInteractionsBound = false;
         window._cachedChartData = null;
 
         function switchMainTab(tab) {
@@ -2019,37 +2108,255 @@
             }
         }
 
-        function chartZoomIn() {
-            const container = document.getElementById('chartContainer');
-            if (!container || !container.layout || !container.layout.xaxis) return;
-            const currentRange = container.layout.xaxis.range;
-            if (currentRange && currentRange.length === 2) {
-                const span = currentRange[1] - currentRange[0];
-                const delta = span * 0.15;
-                Plotly.relayout('chartContainer', {
-                    'xaxis.range': [currentRange[0] + delta, currentRange[1] - delta]
+        function _getChartXRange(container) {
+            const data = window._cachedChartData;
+            const n = (data && data.datetimes) ? data.datetimes.length : 120;
+            if (container && container.layout && container.layout.xaxis && Array.isArray(container.layout.xaxis.range) && container.layout.xaxis.range.length === 2) {
+                const r0 = Number(container.layout.xaxis.range[0]);
+                const r1 = Number(container.layout.xaxis.range[1]);
+                if (Number.isFinite(r0) && Number.isFinite(r1) && r1 > r0) {
+                    return [r0, r1];
+                }
+            }
+            return [0, Math.max(1, n - 1)];
+        }
+
+        function computeVisibleYRange(data, x0, x1) {
+            if (!data || !Array.isArray(data.high) || !Array.isArray(data.low) || data.high.length === 0) return null;
+            const n = data.high.length;
+            const i0 = Math.max(0, Math.min(n - 1, Math.floor(Math.max(0, x0))));
+            const i1 = Math.max(i0, Math.min(n - 1, Math.ceil(Math.min(n - 1, x1))));
+            let yMin = Infinity;
+            let yMax = -Infinity;
+            for (let i = i0; i <= i1; i++) {
+                const lo = Number(data.low[i]);
+                const hi = Number(data.high[i]);
+                if (Number.isFinite(lo) && lo < yMin) yMin = lo;
+                if (Number.isFinite(hi) && hi > yMax) yMax = hi;
+                if (activeIndicators.bb && data.indicators) {
+                    const bbu = Number((data.indicators.bb_upper || [])[i]);
+                    const bbl = Number((data.indicators.bb_lower || [])[i]);
+                    if (Number.isFinite(bbl) && bbl < yMin) yMin = bbl;
+                    if (Number.isFinite(bbu) && bbu > yMax) yMax = bbu;
+                }
+            }
+            if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMax <= 0) return null;
+            const candleSpan = Math.max(yMax - yMin, yMax * 0.0025);
+
+            // Include active position levels responsibly without squashing candles on distant LIQ
+            if (window._activeOrderOverlay && window._activeOrderOverlay.symbol === currentSymbol) {
+                const ov = window._activeOrderOverlay;
+                const candidatePrices = orderScaleFocus === 'all'
+                    ? [ov.entryPrice, ov.stopLoss, ov.tp1Price, ov.tp2Price, ov.tp3Price, ov.trailingStopPrice, ov.liquidationPrice]
+                    : [ov.entryPrice, ov.stopLoss, ov.tp1Price, ov.trailingStopPrice];
+                const maxDeviation = orderScaleFocus === 'all' ? candleSpan * 15.0 : candleSpan * 2.2;
+                candidatePrices.forEach(v => {
+                    const p = Number(v);
+                    if (Number.isFinite(p) && p > 0) {
+                        if (Math.abs(p - yMax) <= maxDeviation || Math.abs(p - yMin) <= maxDeviation) {
+                            if (p < yMin) yMin = p;
+                            if (p > yMax) yMax = p;
+                        }
+                    }
                 });
+            }
+
+            const pad = Math.max((yMax - yMin) * 0.08, yMax * 0.001);
+            return [yMin - pad, yMax + pad];
+        }
+
+        function updateJumpToLatestBtn(x1) {
+            const btn = document.getElementById("btnJumpToLatest");
+            const data = window._cachedChartData;
+            if (!btn || !data || !data.datetimes) return;
+            const n = data.datetimes.length;
+            if (Number.isFinite(x1) && x1 < n - 3) {
+                btn.classList.remove("hidden");
+            } else {
+                btn.classList.add("hidden");
             }
         }
 
-        function chartZoomOut() {
+        function applyChartXRange(newX0, newX1) {
             const container = document.getElementById('chartContainer');
-            if (!container || !container.layout || !container.layout.xaxis) return;
-            const currentRange = container.layout.xaxis.range;
-            if (currentRange && currentRange.length === 2) {
-                const span = currentRange[1] - currentRange[0];
-                const delta = span * 0.20;
-                Plotly.relayout('chartContainer', {
-                    'xaxis.range': [Math.max(0, currentRange[0] - delta), currentRange[1] + delta]
-                });
+            const data = window._cachedChartData;
+            if (!container || !data || !data.datetimes || data.datetimes.length === 0) return;
+            const n = data.datetimes.length;
+            const minSpan = Math.min(10, Math.max(4, n));
+            const maxSpan = n + 4;
+            let span = Math.max(minSpan, Math.min(maxSpan, newX1 - newX0));
+            let x0 = newX0;
+            let x1 = x0 + span;
+            if (x0 < -1) {
+                x0 = -1;
+                x1 = x0 + span;
             }
+            if (x1 > n + 3) {
+                x1 = n + 3;
+                x0 = Math.max(-1, x1 - span);
+            }
+            const update = {
+                'xaxis.autorange': false,
+                'xaxis.range': [x0, x1]
+            };
+            if (chartAutoScaleY) {
+                const yRng = computeVisibleYRange(data, x0, x1);
+                if (yRng) {
+                    update['yaxis.autorange'] = false;
+                    update['yaxis.range'] = yRng;
+                }
+            }
+            updateJumpToLatestBtn(x1);
+            Plotly.relayout('chartContainer', update);
+        }
+
+        function chartZoomIn(anchorRatio = 0.75) {
+            if (window._tvChartInstance) {
+                const ts = window._tvChartInstance.timeScale();
+                const r = ts.getVisibleLogicalRange();
+                if (r) {
+                    const span = r.to - r.from;
+                    if (span > 5) {
+                        const step = span * 0.15;
+                        ts.setVisibleLogicalRange({ from: r.from + step * anchorRatio, to: r.to - step * (1 - anchorRatio) });
+                    }
+                }
+                return;
+            }
+            const container = document.getElementById('chartContainer');
+            if (!container) return;
+            const [x0, x1] = _getChartXRange(container);
+            const span = x1 - x0;
+            const newSpan = span * 0.80;
+            const anchor = x0 + span * anchorRatio;
+            applyChartXRange(anchor - newSpan * anchorRatio, anchor + newSpan * (1 - anchorRatio));
+        }
+
+        function chartZoomOut(anchorRatio = 0.75) {
+            if (window._tvChartInstance) {
+                const ts = window._tvChartInstance.timeScale();
+                const r = ts.getVisibleLogicalRange();
+                if (r) {
+                    const span = r.to - r.from;
+                    const step = span * 0.15;
+                    ts.setVisibleLogicalRange({ from: r.from - step * anchorRatio, to: r.to + step * (1 - anchorRatio) });
+                }
+                return;
+            }
+            const container = document.getElementById('chartContainer');
+            if (!container) return;
+            const [x0, x1] = _getChartXRange(container);
+            const span = x1 - x0;
+            const newSpan = span * 1.25;
+            const anchor = x0 + span * anchorRatio;
+            applyChartXRange(anchor - newSpan * anchorRatio, anchor + newSpan * (1 - anchorRatio));
+        }
+
+        function chartPanStep(dir = 1) {
+            if (window._tvChartInstance) {
+                const ts = window._tvChartInstance.timeScale();
+                const r = ts.getVisibleLogicalRange();
+                if (r) {
+                    const step = Math.max(2, Math.round((r.to - r.from) * 0.15)) * dir;
+                    ts.setVisibleLogicalRange({ from: r.from + step, to: r.to + step });
+                }
+                return;
+            }
+            const container = document.getElementById('chartContainer');
+            if (!container) return;
+            const [x0, x1] = _getChartXRange(container);
+            const step = Math.max(3, (x1 - x0) * 0.18) * dir;
+            applyChartXRange(x0 + step, x1 + step);
+        }
+
+        function jumpChartToLatest() {
+            if (window._tvChartInstance) {
+                window._tvChartInstance.timeScale().scrollToRealTime();
+                const btnJump = document.getElementById("btnJumpToLatest");
+                if (btnJump) btnJump.classList.add("hidden");
+                return;
+            }
+            const data = window._cachedChartData;
+            if (!data || !data.datetimes || data.datetimes.length === 0) return;
+            const n = data.datetimes.length;
+            const visibleBars = Math.min(n, 75);
+            chartAutoScaleY = true;
+            syncAutoScaleYBtn();
+            applyChartXRange(Math.max(0, n - visibleBars), n + 2);
         }
 
         function resetChartZoom() {
-            Plotly.relayout('chartContainer', {
-                'xaxis.autorange': true,
-                'yaxis.autorange': true
-            });
+            chartAutoScaleY = true;
+            syncAutoScaleYBtn();
+            clearChartMeasureOverlay();
+            const btnJump = document.getElementById("btnJumpToLatest");
+            if (btnJump) btnJump.classList.add("hidden");
+
+            if (window._tvChartInstance) {
+                window._tvChartInstance.timeScale().fitContent();
+                window._tvChartInstance.priceScale('right').applyOptions({ autoScale: true });
+                return;
+            }
+
+            const data = window._cachedChartData;
+            const update = { 'xaxis.autorange': true };
+            if (data && data.datetimes && data.datetimes.length > 0) {
+                const yRng = computeVisibleYRange(data, 0, data.datetimes.length - 1);
+                if (yRng) {
+                    update['yaxis.autorange'] = false;
+                    update['yaxis.range'] = yRng;
+                } else {
+                    update['yaxis.autorange'] = true;
+                }
+            } else {
+                update['yaxis.autorange'] = true;
+            }
+            Plotly.relayout('chartContainer', update);
+        }
+
+        function syncAutoScaleYBtn() {
+            const btn = document.getElementById("btnAutoScaleY");
+            if (!btn) return;
+            btn.className = chartAutoScaleY
+                ? "px-2 py-1 rounded bg-cyan-950/70 border border-cyan-500/50 text-cyan-300 font-semibold flex items-center gap-1 transition-all"
+                : "px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-400 flex items-center gap-1 transition-all";
+        }
+
+        function toggleChartAutoScaleY(forceState = null) {
+            chartAutoScaleY = forceState !== null ? Boolean(forceState) : !chartAutoScaleY;
+            syncAutoScaleYBtn();
+            if (window._tvChartInstance) {
+                window._tvChartInstance.priceScale('right').applyOptions({ autoScale: chartAutoScaleY });
+            }
+            const container = document.getElementById('chartContainer');
+            const data = window._cachedChartData;
+            if (chartAutoScaleY && container && data && data.datetimes && data.datetimes.length > 0) {
+                const [x0, x1] = _getChartXRange(container);
+                const yRng = computeVisibleYRange(data, x0, x1);
+                if (yRng) {
+                    Plotly.relayout('chartContainer', { 'yaxis.autorange': false, 'yaxis.range': yRng });
+                }
+            }
+        }
+
+        function toggleOverlayScaleMode() {
+            orderScaleFocus = orderScaleFocus === 'candles' ? 'all' : 'candles';
+            const lbl = document.getElementById("lblOverlayScaleMode");
+            const btn = document.getElementById("btnOverlayScaleMode");
+            if (lbl) lbl.innerText = orderScaleFocus === 'all' ? "Escala: Ordens/LIQ" : "Focar Velas";
+            if (btn) {
+                btn.className = orderScaleFocus === 'all'
+                    ? "px-2 py-1 rounded bg-amber-950/70 border border-amber-500/50 text-amber-300 font-semibold flex items-center gap-1 transition-all"
+                    : "px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all";
+            }
+            toggleChartAutoScaleY(true);
+        }
+
+        function setChartCandleLimit(val) {
+            const lim = parseInt(val, 10);
+            if (!Number.isFinite(lim) || lim < 20) return;
+            currentChartLimit = lim;
+            loadChartData();
         }
 
         function setChartDragMode(mode) {
@@ -2074,6 +2381,13 @@
                     "px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-cyan-300 flex items-center gap-1 transition-all" : 
                     "px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-400 flex items-center gap-1 transition-all";
             }
+            if (window._tvChartInstance && window.LightweightCharts) {
+                window._tvChartInstance.applyOptions({
+                    crosshair: {
+                        mode: crosshairActive ? LightweightCharts.CrosshairMode.Normal : LightweightCharts.CrosshairMode.Hidden
+                    }
+                });
+            }
             Plotly.relayout('chartContainer', {
                 'xaxis.showspikes': crosshairActive,
                 'yaxis.showspikes': crosshairActive
@@ -2095,20 +2409,402 @@
 
         function toggleChartFullscreen() {
             isChartFullscreen = !isChartFullscreen;
+            const wrapper = document.getElementById("chartWrapper") || document.getElementById("chartContainer");
             const container = document.getElementById("chartContainer");
             const btn = document.getElementById("btnToggleFullscreen");
-            if (!container) return;
+            if (!container || !wrapper) return;
             if (isChartFullscreen) {
-                container.classList.add("fixed", "inset-4", "z-50", "h-auto", "shadow-2xl", "border-2", "border-cyan-500/80");
-                container.classList.remove("h-[520px]");
+                wrapper.classList.add("fixed", "inset-3", "z-50", "bg-[#0A0E17]", "p-2", "rounded-xl", "shadow-2xl", "border-2", "border-cyan-500/80");
+                container.classList.remove("h-[540px]");
+                container.classList.add("h-full");
                 if (btn) btn.innerHTML = `<i data-lucide="minimize-2" class="h-3.5 w-3.5"></i><span class="text-[11px] hidden sm:inline">Fechar</span>`;
             } else {
-                container.classList.remove("fixed", "inset-4", "z-50", "h-auto", "shadow-2xl", "border-2", "border-cyan-500/80");
-                container.classList.add("h-[520px]");
+                wrapper.classList.remove("fixed", "inset-3", "z-50", "bg-[#0A0E17]", "p-2", "rounded-xl", "shadow-2xl", "border-2", "border-cyan-500/80");
+                container.classList.remove("h-full");
+                container.classList.add("h-[540px]");
                 if (btn) btn.innerHTML = `<i data-lucide="maximize-2" class="h-3.5 w-3.5"></i><span class="text-[11px] hidden sm:inline">Tela Cheia</span>`;
             }
             lucide.createIcons();
+            if (window._tvChartInstance) {
+                setTimeout(() => {
+                    const mount = document.getElementById("tvChartMount");
+                    if (mount) window._tvChartInstance.applyOptions({ width: mount.clientWidth, height: mount.clientHeight });
+                }, 50);
+            }
             Plotly.Plots.resize(container);
+        }
+
+        // ==========================================
+        // TRADINGVIEW STATUS HUD, MEASURE RULER & S/R LINES
+        // ==========================================
+        function fmtChartPrice(v) {
+            const num = Number(v);
+            if (!Number.isFinite(num)) return "--";
+            const dec = Math.abs(num) < 1 ? 4 : 2;
+            return num.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+        }
+
+        function fmtChartVol(v) {
+            const num = Number(v);
+            if (!Number.isFinite(num)) return "--";
+            if (num >= 1e6) return (num / 1e6).toFixed(2) + "M";
+            if (num >= 1e3) return (num / 1e3).toFixed(2) + "K";
+            return num.toFixed(1);
+        }
+
+        function updateTvChartHud(data, index = null) {
+            if (!data || !Array.isArray(data.close) || data.close.length === 0) return;
+            const n = data.close.length;
+            const idx = (index !== null && index >= 0 && index < n) ? index : (n - 1);
+            const o = Number(data.open[idx]);
+            const h = Number(data.high[idx]);
+            const l = Number(data.low[idx]);
+            const c = Number(data.close[idx]);
+            const v = Number(data.volume[idx]);
+            const dt = (data.datetimes && data.datetimes[idx]) ? data.datetimes[idx] : "--";
+            const isUp = c >= o;
+            const colorCls = isUp ? "text-emerald-400" : "text-rose-400";
+            const chg = o > 0 ? ((c - o) / o) * 100 : 0;
+            const amp = l > 0 ? ((h - l) / l) * 100 : 0;
+
+            const symEl = document.getElementById("tvHudSymbol");
+            const timeEl = document.getElementById("tvHudTime");
+            const oEl = document.getElementById("tvHudOpen");
+            const hEl = document.getElementById("tvHudHigh");
+            const lEl = document.getElementById("tvHudLow");
+            const cEl = document.getElementById("tvHudClose");
+            const chgEl = document.getElementById("tvHudChange");
+            const rngEl = document.getElementById("tvHudRange");
+            const volEl = document.getElementById("tvHudVol");
+
+            if (symEl) symEl.innerText = `${currentSymbol} · ${currentTimeframe}`;
+            if (timeEl) timeEl.innerText = dt;
+            if (oEl) { oEl.innerText = fmtChartPrice(o); oEl.className = colorCls; }
+            if (hEl) { hEl.innerText = fmtChartPrice(h); hEl.className = colorCls; }
+            if (lEl) { lEl.innerText = fmtChartPrice(l); lEl.className = colorCls; }
+            if (cEl) { cEl.innerText = fmtChartPrice(c); cEl.className = colorCls; }
+            if (chgEl) {
+                const sign = chg >= 0 ? "+" : "";
+                chgEl.innerText = `${sign}${(c - o).toFixed(c < 1 ? 4 : 2)} (${sign}${chg.toFixed(2)}%)`;
+                chgEl.className = `font-semibold ${colorCls}`;
+            }
+            if (rngEl) rngEl.innerText = `${amp.toFixed(2)}%`;
+            if (volEl) volEl.innerText = fmtChartVol(v);
+
+            const indRow = document.getElementById("tvHudRowIndicators");
+            if (indRow && data.indicators) {
+                const parts = [];
+                const ind = data.indicators;
+                if (activeIndicators.sma) {
+                    const s20 = (ind.sma20 || [])[idx];
+                    const s50 = (ind.sma50 || [])[idx];
+                    if (Number.isFinite(Number(s20)) && s20 !== null) parts.push(`<span class="text-cyan-400">SMA20: <b>${fmtChartPrice(s20)}</b></span>`);
+                    if (Number.isFinite(Number(s50)) && s50 !== null) parts.push(`<span class="text-amber-400">SMA50: <b>${fmtChartPrice(s50)}</b></span>`);
+                }
+                if (activeIndicators.ema) {
+                    const e9 = (ind.ema9 || [])[idx];
+                    const e21 = (ind.ema21 || [])[idx];
+                    if (Number.isFinite(Number(e9)) && e9 !== null) parts.push(`<span class="text-pink-400">EMA9: <b>${fmtChartPrice(e9)}</b></span>`);
+                    if (Number.isFinite(Number(e21)) && e21 !== null) parts.push(`<span class="text-violet-400">EMA21: <b>${fmtChartPrice(e21)}</b></span>`);
+                }
+                if (activeIndicators.bb) {
+                    const bbu = (ind.bb_upper || [])[idx];
+                    const bbl = (ind.bb_lower || [])[idx];
+                    if (Number.isFinite(Number(bbu)) && bbu !== null) parts.push(`<span class="text-sky-400">BB: <b>${fmtChartPrice(bbl)} – ${fmtChartPrice(bbu)}</b></span>`);
+                }
+                if (activeIndicators.rsi) {
+                    const r = (ind.rsi || [])[idx];
+                    if (Number.isFinite(Number(r)) && r !== null) parts.push(`<span class="text-indigo-400">RSI(14): <b>${Number(r).toFixed(1)}</b></span>`);
+                }
+                indRow.innerHTML = parts.join("");
+            }
+        }
+
+        function updateChartCandleCountdown() {
+            const el = document.getElementById("chartCandleCountdown");
+            if (!el) return;
+            const tfSecMap = {
+                "1m": 60,
+                "3m": 180,
+                "5m": 300,
+                "15m": 900,
+                "30m": 1800,
+                "1h": 3600,
+                "4h": 14400,
+                "1d": 86400,
+                "1D": 86400
+            };
+            const sec = tfSecMap[currentTimeframe] || 3600;
+            const nowSec = Math.floor(Date.now() / 1000);
+            const rem = sec - (nowSec % sec);
+            const m = Math.floor(rem / 60);
+            const s = rem % 60;
+            const h = Math.floor(m / 60);
+            const mm = m % 60;
+            const txt = h > 0
+                ? `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+                : `${String(mm).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            el.innerText = `Fechamento (${currentTimeframe}): ${txt}`;
+        }
+        setInterval(updateChartCandleCountdown, 1000);
+
+        function toggleChartMeasureMode() {
+            chartMeasureMode = !chartMeasureMode;
+            chartMeasureStart = null;
+            if (chartMeasureMode) addHLineMode = false;
+            syncToolButtons();
+            if (!chartMeasureMode) clearChartMeasureOverlay();
+        }
+
+        function clearChartMeasureOverlay() {
+            chartMeasureStart = null;
+            const box = document.getElementById("tvMeasureOverlay");
+            if (box) box.classList.add("hidden");
+        }
+
+        function toggleAddHLineMode() {
+            addHLineMode = !addHLineMode;
+            if (addHLineMode) {
+                chartMeasureMode = false;
+                clearChartMeasureOverlay();
+            }
+            syncToolButtons();
+        }
+
+        function clearUserHLines() {
+            userHLinesBySymbol[currentSymbol] = [];
+            syncToolButtons();
+            if (window._cachedChartData) renderPlotlyChart(window._cachedChartData);
+        }
+
+        function syncToolButtons() {
+            const btnM = document.getElementById("btnChartMeasure");
+            const btnH = document.getElementById("btnAddHLine");
+            const btnClr = document.getElementById("btnClearHLines");
+            if (btnM) {
+                btnM.className = chartMeasureMode
+                    ? "px-2 py-1 rounded bg-cyan-600 text-white font-semibold border border-cyan-500 flex items-center gap-1 transition-all"
+                    : "px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all";
+            }
+            if (btnH) {
+                btnH.className = addHLineMode
+                    ? "px-2 py-1 rounded bg-amber-600 text-white font-semibold border border-amber-500 flex items-center gap-1 transition-all"
+                    : "px-2 py-1 rounded bg-dark-750 hover:bg-dark-600 border border-dark-600 text-slate-300 hover:text-white flex items-center gap-1 transition-all";
+            }
+            const lines = userHLinesBySymbol[currentSymbol] || [];
+            if (btnClr) {
+                if (lines.length > 0) btnClr.classList.remove("hidden");
+                else btnClr.classList.add("hidden");
+            }
+        }
+
+        function _mapMouseToChartCoords(container, clientX, clientY) {
+            const data = window._cachedChartData;
+            if (!container || !data || !data.datetimes || data.datetimes.length === 0) return null;
+            const rect = container.getBoundingClientRect();
+            const padLeft = 55;
+            const padRight = 40;
+            const padTop = 25;
+            const padBottom = 40;
+            const plotW = Math.max(100, rect.width - padLeft - padRight);
+            const plotH = Math.max(100, rect.height - padTop - padBottom);
+            const yDomain = (activeIndicators.rsi) ? [0.32, 1.0] : [0.22, 1.0];
+            const candleTopPx = padTop + plotH * (1 - yDomain[1]);
+            const candleBottomPx = padTop + plotH * (1 - yDomain[0]);
+            const candleH = Math.max(50, candleBottomPx - candleTopPx);
+
+            const relX = Math.max(0, Math.min(1, (clientX - rect.left - padLeft) / plotW));
+            const relY = Math.max(0, Math.min(1, (candleBottomPx - (clientY - rect.top)) / candleH));
+
+            const [x0, x1] = _getChartXRange(container);
+            const barIdx = Math.max(0, Math.min(data.datetimes.length - 1, Math.round(x0 + relX * (x1 - x0))));
+
+            let y0 = 0, y1 = 100;
+            if (container.layout && container.layout.yaxis && Array.isArray(container.layout.yaxis.range)) {
+                y0 = Number(container.layout.yaxis.range[0]);
+                y1 = Number(container.layout.yaxis.range[1]);
+            } else {
+                const yr = computeVisibleYRange(data, x0, x1) || [data.low[0], data.high[0]];
+                y0 = yr[0];
+                y1 = yr[1];
+            }
+            const price = y0 + relY * (y1 - y0);
+            return { barIdx, price, relX, pxX: clientX - rect.left, pxY: clientY - rect.top };
+        }
+
+        function initTradingViewChartInteractions() {
+            if (_tvInteractionsBound) return;
+            const container = document.getElementById("chartContainer");
+            const rightAxisZone = document.getElementById("tvAxisRightZone");
+            if (!container) return;
+            _tvInteractionsBound = true;
+
+            // 1. TradingView Wheel Zoom: X-only on plot area, Y-only on right price axis (Plotly fallback)
+            container.addEventListener("wheel", (e) => {
+                if (window._tvChartInstance) return; // Native TV canvas handles wheel zoom smoothly
+                if (!window._cachedChartData || !window._cachedChartData.datetimes || window._cachedChartData.datetimes.length === 0) return;
+                e.preventDefault();
+                const rect = container.getBoundingClientRect();
+                const offsetX = e.clientX - rect.left;
+                const isRightAxis = offsetX > rect.width - 65;
+
+                if (isRightAxis) {
+                    chartAutoScaleY = false;
+                    syncAutoScaleYBtn();
+                    const [x0, x1] = _getChartXRange(container);
+                    const curY = (container.layout && container.layout.yaxis && Array.isArray(container.layout.yaxis.range))
+                        ? container.layout.yaxis.range
+                        : (computeVisibleYRange(window._cachedChartData, x0, x1) || [0, 100]);
+                    const mid = (Number(curY[0]) + Number(curY[1])) / 2;
+                    const half = ((Number(curY[1]) - Number(curY[0])) / 2) * (e.deltaY > 0 ? 1.14 : 0.88);
+                    Plotly.relayout('chartContainer', { 'yaxis.autorange': false, 'yaxis.range': [mid - half, mid + half] });
+                } else {
+                    const plotW = Math.max(100, rect.width - 95);
+                    const ratio = Math.max(0.05, Math.min(0.95, (offsetX - 55) / plotW));
+                    if (e.deltaY < 0) chartZoomIn(ratio);
+                    else chartZoomOut(ratio);
+                }
+            }, { passive: false });
+
+            // 2. Right Y-Axis Drag to Scale Vertically & Double-Click to Reset Auto Y
+            if (rightAxisZone) {
+                let draggingY = false;
+                let startY = 0;
+                let startRangeY = null;
+
+                rightAxisZone.addEventListener("mousedown", (e) => {
+                    if (!window._cachedChartData || !window._cachedChartData.datetimes) return;
+                    draggingY = true;
+                    startY = e.clientY;
+                    const [x0, x1] = _getChartXRange(container);
+                    startRangeY = (container.layout && container.layout.yaxis && Array.isArray(container.layout.yaxis.range))
+                        ? [...container.layout.yaxis.range]
+                        : computeVisibleYRange(window._cachedChartData, x0, x1);
+                    chartAutoScaleY = false;
+                    syncAutoScaleYBtn();
+                    e.preventDefault();
+                });
+
+                window.addEventListener("mousemove", (e) => {
+                    if (!draggingY || !startRangeY) return;
+                    const dy = e.clientY - startY;
+                    const factor = Math.pow(1.005, dy);
+                    const mid = (Number(startRangeY[0]) + Number(startRangeY[1])) / 2;
+                    const half = Math.max(1e-6, ((Number(startRangeY[1]) - Number(startRangeY[0])) / 2) * factor);
+                    Plotly.relayout('chartContainer', { 'yaxis.autorange': false, 'yaxis.range': [mid - half, mid + half] });
+                });
+
+                window.addEventListener("mouseup", () => { draggingY = false; });
+                rightAxisZone.addEventListener("dblclick", () => { toggleChartAutoScaleY(true); });
+                rightAxisZone.addEventListener("wheel", (e) => {
+                    e.preventDefault();
+                    const evt = new WheelEvent("wheel", { clientX: e.clientX, clientY: e.clientY, deltaY: e.deltaY });
+                    container.dispatchEvent(evt);
+                }, { passive: false });
+            }
+
+            // 3. Live HUD Update on Mouse Move + Measure Ruler + Auto-Fit Y after user pan
+            let isUserDraggingCanvas = false;
+            container.addEventListener("mousedown", (e) => {
+                if (e.button !== 0) return;
+                isUserDraggingCanvas = true;
+                const coords = _mapMouseToChartCoords(container, e.clientX, e.clientY);
+                if (!coords) return;
+
+                if (addHLineMode && Number.isFinite(coords.price) && coords.price > 0) {
+                    if (!userHLinesBySymbol[currentSymbol]) userHLinesBySymbol[currentSymbol] = [];
+                    userHLinesBySymbol[currentSymbol].push(Number(coords.price));
+                    addHLineMode = false;
+                    syncToolButtons();
+                    if (window._cachedChartData) renderPlotlyChart(window._cachedChartData);
+                    return;
+                }
+
+                if (chartMeasureMode || e.shiftKey) {
+                    if (!chartMeasureStart) {
+                        chartMeasureStart = coords;
+                        const box = document.getElementById("tvMeasureOverlay");
+                        if (box) {
+                            box.style.left = `${coords.pxX}px`;
+                            box.style.top = `${coords.pxY}px`;
+                            box.style.width = `2px`;
+                            box.style.height = `2px`;
+                            box.classList.remove("hidden");
+                        }
+                    } else {
+                        chartMeasureStart = null;
+                        if (!chartMeasureMode) clearChartMeasureOverlay();
+                    }
+                }
+            });
+
+            container.addEventListener("mousemove", (e) => {
+                const data = window._cachedChartData;
+                if (!data || !data.datetimes || data.datetimes.length === 0) return;
+                const coords = _mapMouseToChartCoords(container, e.clientX, e.clientY);
+                if (!coords) return;
+                updateTvChartHud(data, coords.barIdx);
+
+                if (chartMeasureStart) {
+                    const box = document.getElementById("tvMeasureOverlay");
+                    const lbl = document.getElementById("tvMeasureLabel");
+                    if (box && lbl) {
+                        const left = Math.min(chartMeasureStart.pxX, coords.pxX);
+                        const top = Math.min(chartMeasureStart.pxY, coords.pxY);
+                        const w = Math.max(4, Math.abs(coords.pxX - chartMeasureStart.pxX));
+                        const h = Math.max(4, Math.abs(coords.pxY - chartMeasureStart.pxY));
+                        box.style.left = `${left}px`;
+                        box.style.top = `${top}px`;
+                        box.style.width = `${w}px`;
+                        box.style.height = `${h}px`;
+                        const p0 = chartMeasureStart.price;
+                        const p1 = coords.price;
+                        const diff = p1 - p0;
+                        const pct = p0 > 0 ? (diff / p0) * 100 : 0;
+                        const bars = Math.abs(coords.barIdx - chartMeasureStart.barIdx);
+                        const sign = diff >= 0 ? "+" : "";
+                        box.className = `pointer-events-none select-none absolute z-20 rounded backdrop-blur-[1px] border ${diff >= 0 ? 'border-emerald-400/80 bg-emerald-500/15' : 'border-rose-400/80 bg-rose-500/15'}`;
+                        lbl.innerHTML = `<span class="${diff >= 0 ? 'text-emerald-300' : 'text-rose-300'}">${sign}${pct.toFixed(2)}% (${sign}$${fmtChartPrice(diff)})</span> &bull; <span class="text-cyan-300">${bars} velas</span>`;
+                    }
+                }
+            });
+
+            container.addEventListener("mouseleave", () => {
+                if (window._cachedChartData) updateTvChartHud(window._cachedChartData, null);
+            });
+
+            window.addEventListener("mouseup", () => {
+                if (!isUserDraggingCanvas) return;
+                isUserDraggingCanvas = false;
+                if (!window._cachedChartData || !window._cachedChartData.datetimes) return;
+                setTimeout(() => {
+                    const [x0, x1] = _getChartXRange(container);
+                    updateJumpToLatestBtn(x1);
+                    if (chartAutoScaleY) {
+                        const yRng = computeVisibleYRange(window._cachedChartData, x0, x1);
+                        if (yRng) {
+                            Plotly.relayout('chartContainer', { 'yaxis.autorange': false, 'yaxis.range': yRng });
+                        }
+                    }
+                }, 20);
+            });
+
+            // 4. Keyboard Shortcuts (when not typing in an input/select/textarea)
+            document.addEventListener("keydown", (e) => {
+                const tag = (e.target && e.target.tagName) ? e.target.tagName.toUpperCase() : "";
+                if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+                const paneTrading = document.getElementById("mainTabTrading");
+                if (paneTrading && paneTrading.classList.contains("hidden")) return;
+
+                if (e.key === "+" || e.key === "=") { e.preventDefault(); chartZoomIn(); }
+                else if (e.key === "-" || e.key === "_") { e.preventDefault(); chartZoomOut(); }
+                else if (e.key === "ArrowLeft") { e.preventDefault(); chartPanStep(-1); }
+                else if (e.key === "ArrowRight") { e.preventDefault(); chartPanStep(1); }
+                else if (e.key === "a" || e.key === "A") { toggleChartAutoScaleY(); }
+                else if (e.key === "r" || e.key === "R") { resetChartZoom(); }
+                else if (e.key === "m" || e.key === "M") { toggleChartMeasureMode(); }
+                else if (e.key === "Escape") { clearChartMeasureOverlay(); if (isChartFullscreen) toggleChartFullscreen(); }
+            });
         }
 
         // ==========================================
@@ -2120,7 +2816,7 @@
             const reqId = ++chartReqSeq;
 
             try {
-                const res = await fetch(`/api/chart/${currentSymbol}/${currentTimeframe}?limit=120`);
+                const res = await fetch(`/api/chart/${currentSymbol}/${currentTimeframe}?limit=${currentChartLimit}`);
                 if (!res.ok) throw new Error("HTTP " + res.status);
                 const data = await res.json();
                 if (reqId !== chartReqSeq) return; // resposta obsoleta (troca rápida de par/timeframe)
@@ -2146,11 +2842,14 @@
                     lowEl.innerText = fmt(data.summary.low_24h);
                 }
 
-                // Update Footnotes
+                // Update Footnotes & HUD
                 document.getElementById("chartCandleCount").innerText = `${data.count || 0} velas plotadas`;
                 document.getElementById("chartLastUpdated").innerText = `Atualizado: ${new Date().toLocaleTimeString()}`;
+                updateChartCandleCountdown();
+                updateTvChartHud(data, null);
 
                 renderPlotlyChart(data);
+                initTradingViewChartInteractions();
 
             } catch (err) {
                 console.error("Erro ao renderizar gráfico:", err);
@@ -2174,7 +2873,308 @@
             }, { responsive: true });
         }
 
+        function renderTradingViewChart(data) {
+            const mount = document.getElementById("tvChartMount");
+            if (!mount) return;
+            mount.classList.remove("hidden");
+
+            // Disable pointer events on overlay zone so native TV scale can be directly dragged
+            const rightZone = document.getElementById("tvAxisRightZone");
+            if (rightZone) rightZone.style.pointerEvents = "none";
+
+            const tvData = data.tv_data;
+            if (!tvData || !tvData.candles || tvData.candles.length === 0) return;
+
+            // 1. Initialize LightweightCharts instance on mount if not yet created
+            if (!window._tvChartInstance) {
+                const chart = LightweightCharts.createChart(mount, {
+                    width: mount.clientWidth || 800,
+                    height: mount.clientHeight || 540,
+                    layout: {
+                        background: { type: 'solid', color: '#0A0E17' },
+                        textColor: '#848E9C',
+                        fontSize: 11,
+                        fontFamily: "'JetBrains Mono', monospace",
+                    },
+                    grid: {
+                        vertLines: { color: 'rgba(30, 41, 59, 0.35)', style: LightweightCharts.LineStyle.Dotted },
+                        horzLines: { color: 'rgba(30, 41, 59, 0.35)', style: LightweightCharts.LineStyle.Dotted },
+                    },
+                    crosshair: {
+                        mode: crosshairActive ? LightweightCharts.CrosshairMode.Normal : LightweightCharts.CrosshairMode.Hidden,
+                        vertLine: {
+                            color: 'rgba(56, 189, 248, 0.7)',
+                            width: 1,
+                            style: LightweightCharts.LineStyle.Dashed,
+                            labelBackgroundColor: '#0284C7',
+                        },
+                        horzLine: {
+                            color: 'rgba(56, 189, 248, 0.7)',
+                            width: 1,
+                            style: LightweightCharts.LineStyle.Dashed,
+                            labelBackgroundColor: '#0284C7',
+                        },
+                    },
+                    rightPriceScale: {
+                        borderColor: '#1E293B',
+                        scaleMargins: {
+                            top: 0.08,
+                            bottom: 0.22,
+                        },
+                        autoScale: chartAutoScaleY,
+                    },
+                    timeScale: {
+                        borderColor: '#1E293B',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    },
+                    handleScroll: {
+                        mouseWheel: true,
+                        pressedMouseMove: true,
+                        horzTouchDrag: true,
+                        vertTouchDrag: true,
+                    },
+                    handleScale: {
+                        axisPressedMouseMove: true,
+                        mouseWheel: true,
+                        pinch: true,
+                    },
+                });
+
+                // Volume Histogram (overlay on bottom pane)
+                const volSeries = chart.addHistogramSeries({
+                    priceFormat: { type: 'volume' },
+                    priceScaleId: '', // overlay
+                });
+                volSeries.priceScale().applyOptions({
+                    scaleMargins: { top: 0.80, bottom: 0.01 },
+                });
+
+                // Candlestick Series
+                const candleSeries = chart.addCandlestickSeries({
+                    upColor: '#0ECB81',
+                    downColor: '#F6465D',
+                    borderVisible: false,
+                    wickUpColor: '#0ECB81',
+                    wickDownColor: '#F6465D',
+                });
+
+                // Technical Indicator Lines
+                const indMap = {
+                    sma20: chart.addLineSeries({ color: '#06B6D4', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false }),
+                    sma50: chart.addLineSeries({ color: '#F59E0B', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false }),
+                    ema9: chart.addLineSeries({ color: '#EC4899', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false }),
+                    ema21: chart.addLineSeries({ color: '#8B5CF6', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false }),
+                    bb_upper: chart.addLineSeries({ color: 'rgba(56, 189, 248, 0.5)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
+                    bb_lower: chart.addLineSeries({ color: 'rgba(56, 189, 248, 0.5)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false }),
+                };
+
+                // Crosshair HUD update subscription (60fps native callback)
+                chart.subscribeCrosshairMove(param => {
+                    if (!param || !param.time || !window._cachedChartData) {
+                        updateTvChartHud(window._cachedChartData, null);
+                        return;
+                    }
+                    const map = window._tvTimeIndexMap;
+                    if (map && map.has(param.time)) {
+                        updateTvChartHud(window._cachedChartData, map.get(param.time));
+                    }
+                });
+
+                // Dynamic resize observer
+                if (window.ResizeObserver) {
+                    new ResizeObserver(entries => {
+                        for (let entry of entries) {
+                            if (entry.target === mount) {
+                                const { width, height } = entry.contentRect;
+                                if (width > 0 && height > 0) {
+                                    chart.applyOptions({ width, height });
+                                }
+                            }
+                        }
+                    }).observe(mount);
+                }
+
+                window._tvChartInstance = chart;
+                window._tvCandleSeries = candleSeries;
+                window._tvVolumeSeries = volSeries;
+                window._tvIndicatorSeries = indMap;
+                window._tvActivePriceLines = [];
+            }
+
+            // 2. Map timestamps to bar indices for HUD lookup
+            const candles = tvData.candles;
+            const timeMap = new Map();
+            candles.forEach((c, idx) => timeMap.set(c.time, idx));
+            window._tvTimeIndexMap = timeMap;
+
+            // 3. Update candles and volume
+            window._tvCandleSeries.setData(candles);
+            window._tvVolumeSeries.setData(tvData.volume || []);
+
+            // 4. Update Indicators & Visibility
+            const indMap = window._tvIndicatorSeries;
+            if (indMap && tvData.indicators) {
+                if (indMap.sma20) {
+                    indMap.sma20.applyOptions({ visible: Boolean(activeIndicators.sma) });
+                    if (activeIndicators.sma && tvData.indicators.sma20) indMap.sma20.setData(tvData.indicators.sma20);
+                }
+                if (indMap.sma50) {
+                    indMap.sma50.applyOptions({ visible: Boolean(activeIndicators.sma) });
+                    if (activeIndicators.sma && tvData.indicators.sma50) indMap.sma50.setData(tvData.indicators.sma50);
+                }
+                if (indMap.ema9) {
+                    indMap.ema9.applyOptions({ visible: Boolean(activeIndicators.ema) });
+                    if (activeIndicators.ema && tvData.indicators.ema9) indMap.ema9.setData(tvData.indicators.ema9);
+                }
+                if (indMap.ema21) {
+                    indMap.ema21.applyOptions({ visible: Boolean(activeIndicators.ema) });
+                    if (activeIndicators.ema && tvData.indicators.ema21) indMap.ema21.setData(tvData.indicators.ema21);
+                }
+                if (indMap.bb_upper) {
+                    indMap.bb_upper.applyOptions({ visible: Boolean(activeIndicators.bb) });
+                    if (activeIndicators.bb && tvData.indicators.bb_upper) indMap.bb_upper.setData(tvData.indicators.bb_upper);
+                }
+                if (indMap.bb_lower) {
+                    indMap.bb_lower.applyOptions({ visible: Boolean(activeIndicators.bb) });
+                    if (activeIndicators.bb && tvData.indicators.bb_lower) indMap.bb_lower.setData(tvData.indicators.bb_lower);
+                }
+            }
+
+            // 5. Smart Trade Exit Ladder Price Lines (Active Position or Manual Overlay)
+            if (window._tvActivePriceLines) {
+                window._tvActivePriceLines.forEach(pl => {
+                    try { window._tvCandleSeries.removePriceLine(pl); } catch (e) {}
+                });
+            }
+            window._tvActivePriceLines = [];
+
+            const ov = (window._activeOrderOverlay && window._activeOrderOverlay.symbol === currentSymbol)
+                ? window._activeOrderOverlay
+                : (data.active_position ? positionToOverlay(data.active_position) : null);
+
+            if (ov && ov.symbol === currentSymbol) {
+                const fmtP = (v) => Number(v).toFixed(Number(v) < 1 ? 4 : 2);
+                const side = (ov.side || "LONG").toUpperCase();
+                const pnlTxt = Number.isFinite(ov.unrealizedPnl) ? ` (${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)})` : "";
+
+                if (ov.entryPrice > 0) {
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.entryPrice,
+                        color: '#3B82F6',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: `ENTRY ${side} $${fmtP(ov.entryPrice)}${pnlTxt}`,
+                    }));
+                }
+
+                if (ov.stopLoss > 0) {
+                    const isBe = ov.tp1Hit;
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.stopLoss,
+                        color: isBe ? '#38BDF8' : '#EF4444',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: isBe ? `BE: $${fmtP(ov.stopLoss)}` : `SL: $${fmtP(ov.stopLoss)}`,
+                    }));
+                }
+
+                if (ov.tp1Price > 0) {
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.tp1Price,
+                        color: '#34D399',
+                        lineWidth: ov.tp1Hit ? 1 : 2,
+                        lineStyle: ov.tp1Hit ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `${ov.tp1Hit ? '✔ ' : ''}TP1: $${fmtP(ov.tp1Price)}`,
+                    }));
+                }
+
+                if (ov.tp2Price > 0) {
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.tp2Price,
+                        color: '#10B981',
+                        lineWidth: ov.tp2Hit ? 1 : 2,
+                        lineStyle: ov.tp2Hit ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `${ov.tp2Hit ? '✔ ' : ''}TP2: $${fmtP(ov.tp2Price)}`,
+                    }));
+                }
+
+                if (ov.tp3Price > 0) {
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.tp3Price,
+                        color: '#A3E635',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: `TP3: $${fmtP(ov.tp3Price)}`,
+                    }));
+                }
+
+                if (ov.trailingStopPrice > 0) {
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.trailingStopPrice,
+                        color: ov.trailingActive ? '#F59E0B' : '#7C6A8A',
+                        lineWidth: ov.trailingActive ? 2 : 1,
+                        lineStyle: LightweightCharts.LineStyle.LargeDashed,
+                        axisLabelVisible: true,
+                        title: `TRAILING: $${fmtP(ov.trailingStopPrice)}${ov.trailingActive ? ' (ATV)' : ''}`,
+                    }));
+                }
+
+                if (ov.liquidationPrice > 0) {
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.liquidationPrice,
+                        color: '#F97316',
+                        lineWidth: 1.5,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `LIQ: $${fmtP(ov.liquidationPrice)}`,
+                    }));
+                }
+            }
+
+            // 6. User Manual Horizontal S/R Lines
+            const manualLines = userHLinesBySymbol[currentSymbol] || [];
+            manualLines.forEach((pLvl, idx) => {
+                if (pLvl > 0) {
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: pLvl,
+                        color: '#FACC15',
+                        lineWidth: 1.5,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `S/R #${idx + 1}: $${Number(pLvl).toFixed(2)}`,
+                    }));
+                }
+            });
+
+            // 7. Auto-fit candles on initial load or symbol/timeframe switch
+            const curKey = `${currentSymbol}_${currentTimeframe}`;
+            if (window._tvLastSymbolTf !== curKey) {
+                window._tvLastSymbolTf = curKey;
+                window._tvChartInstance.timeScale().fitContent();
+            }
+        }
+
         function renderPlotlyChart(data) {
+            if (window.LightweightCharts && data && data.tv_data && data.tv_data.candles && data.tv_data.candles.length > 0) {
+                try {
+                    renderTradingViewChart(data);
+                    return;
+                } catch (e) {
+                    console.warn("Falha ao renderizar TradingView Lightweight Charts, revertendo para Plotly:", e);
+                }
+            }
+
+            const mount = document.getElementById("tvChartMount");
+            if (mount) mount.classList.add("hidden");
+            const rightZone = document.getElementById("tvAxisRightZone");
+            if (rightZone) rightZone.style.pointerEvents = "auto";
+
             if (!data.datetimes || data.datetimes.length === 0) {
                 Plotly.react('chartContainer', [], {
                     title: `Sem velas disponíveis para ${currentSymbol} (${currentTimeframe}). Use o botão 'Sincronizar Cache'.`,
@@ -2190,7 +3190,7 @@
             const x = data.datetimes;
             const traces = [];
 
-            // 1. Candlestick Trace
+            // 1. Candlestick Trace (Non-blocking hover: HUD at top-left handles live OHLCV readout)
             const candlestickTrace = {
                 type: 'candlestick',
                 x: x,
@@ -2201,6 +3201,7 @@
                 name: `${currentSymbol}`,
                 increasing: { line: { color: '#10B981', width: 1.5 }, fillcolor: '#10B981' },
                 decreasing: { line: { color: '#EF4444', width: 1.5 }, fillcolor: '#EF4444' },
+                hoverinfo: 'none',
                 yaxis: 'y1'
             };
             traces.push(candlestickTrace);
@@ -2215,6 +3216,7 @@
                         y: data.indicators.sma20,
                         name: 'SMA 20',
                         line: { color: '#06B6D4', width: 1.5 },
+                        hoverinfo: 'none',
                         yaxis: 'y1'
                     });
                 }
@@ -2226,6 +3228,7 @@
                         y: data.indicators.sma50,
                         name: 'SMA 50',
                         line: { color: '#F59E0B', width: 1.5 },
+                        hoverinfo: 'none',
                         yaxis: 'y1'
                     });
                 }
@@ -2240,6 +3243,7 @@
                         y: data.indicators.ema9,
                         name: 'EMA 9',
                         line: { color: '#EC4899', width: 1.5 },
+                        hoverinfo: 'none',
                         yaxis: 'y1'
                     });
                 }
@@ -2251,6 +3255,7 @@
                         y: data.indicators.ema21,
                         name: 'EMA 21',
                         line: { color: '#8B5CF6', width: 1.5 },
+                        hoverinfo: 'none',
                         yaxis: 'y1'
                     });
                 }
@@ -2264,6 +3269,7 @@
                     y: data.indicators.bb_upper,
                     name: 'BB Upper',
                     line: { color: 'rgba(56, 189, 248, 0.4)', width: 1, dash: 'dot' },
+                    hoverinfo: 'none',
                     yaxis: 'y1'
                 });
                 traces.push({
@@ -2275,6 +3281,7 @@
                     line: { color: 'rgba(56, 189, 248, 0.4)', width: 1, dash: 'dot' },
                     fill: 'tonexty',
                     fillcolor: 'rgba(56, 189, 248, 0.05)',
+                    hoverinfo: 'none',
                     yaxis: 'y1'
                 });
             }
@@ -2291,6 +3298,7 @@
                 y: data.volume,
                 name: 'Volume',
                 marker: { color: volumeColors },
+                hoverinfo: 'none',
                 yaxis: 'y2'
             };
             traces.push(volumeTrace);
@@ -2304,68 +3312,92 @@
                     y: data.indicators.rsi,
                     name: 'RSI (14)',
                     line: { color: '#818CF8', width: 1.5 },
+                    hoverinfo: 'none',
                     yaxis: 'y3'
                 });
+            }
+
+            // Preserve existing zoom/pan state if same uirevision
+            const container = document.getElementById('chartContainer');
+            const targetUiRev = `${currentSymbol}|${currentTimeframe}|${activeIndicators.rsi}|${currentChartLimit}`;
+            const sameUiRev = container && container.layout && container.layout.uirevision === targetUiRev;
+
+            const xaxisConfig = {
+                type: 'category',
+                anchor: 'free',
+                position: 0,
+                nticks: 8,
+                tickangle: 0,
+                automargin: true,
+                rangeslider: { visible: rangeSliderActive },
+                gridcolor: '#162032',
+                tickfont: { color: '#64748B', size: 10 },
+                linecolor: '#1E293B',
+                showspikes: crosshairActive,
+                spikemode: 'across',
+                spikesnap: 'cursor',
+                spikedash: 'dot',
+                spikethickness: 1,
+                spikecolor: '#38BDF8'
+            };
+
+            const yaxisConfig = {
+                domain: activeIndicators.rsi ? [0.30, 1.0] : [0.20, 1.0],
+                gridcolor: '#162032',
+                tickfont: { color: '#94A3B8', size: 10 },
+                side: 'right',
+                linecolor: '#1E293B',
+                showspikes: crosshairActive,
+                spikemode: 'across',
+                spikesnap: 'cursor',
+                spikedash: 'dot',
+                spikethickness: 1,
+                spikecolor: '#38BDF8'
+            };
+
+            if (sameUiRev && container.layout.xaxis && Array.isArray(container.layout.xaxis.range)) {
+                xaxisConfig.autorange = false;
+                xaxisConfig.range = [...container.layout.xaxis.range];
+                if (chartAutoScaleY) {
+                    const yRng = computeVisibleYRange(data, xaxisConfig.range[0], xaxisConfig.range[1]);
+                    if (yRng) {
+                        yaxisConfig.autorange = false;
+                        yaxisConfig.range = yRng;
+                    }
+                } else if (container.layout.yaxis && Array.isArray(container.layout.yaxis.range)) {
+                    yaxisConfig.autorange = false;
+                    yaxisConfig.range = [...container.layout.yaxis.range];
+                }
+            } else if (chartAutoScaleY) {
+                const yRng = computeVisibleYRange(data, 0, x.length - 1);
+                if (yRng) {
+                    yaxisConfig.autorange = false;
+                    yaxisConfig.range = yRng;
+                }
             }
 
             // Layout Configuration
             const layout = {
                 paper_bgcolor: '#0A0E17',
                 plot_bgcolor: '#0A0E17',
-                margin: { l: 55, r: 40, t: 25, b: 40 },
-                modebar: { orientation: 'h' },
-                showlegend: true,
+                margin: { l: 12, r: 58, t: 38, b: 32 },
+                showlegend: false,
                 dragmode: currentDragMode || 'pan',
-                hovermode: 'x unified',
-                legend: {
-                    orientation: 'h',
-                    x: 0,
-                    y: 1.08,
-                    font: { color: '#94A3B8', size: 10 }
-                },
-                xaxis: {
-                    type: 'category',
-                    anchor: 'free',
-                    position: 0,
-                    nticks: 8,
-                    tickangle: 0,
-                    automargin: true,
-                    rangeslider: { visible: rangeSliderActive },
-                    gridcolor: '#1E293B',
-                    tickfont: { color: '#64748B', size: 10 },
-                    linecolor: '#1E293B',
-                    showspikes: crosshairActive,
-                    spikemode: 'across',
-                    spikesnap: 'cursor',
-                    spikedash: 'dot',
-                    spikethickness: 1,
-                    spikecolor: '#64748B'
-                },
-                yaxis: {
-                    domain: activeIndicators.rsi ? [0.32, 1.0] : [0.22, 1.0],
-                    gridcolor: '#1E293B',
-                    tickfont: { color: '#94A3B8', size: 10 },
-                    side: 'right',
-                    linecolor: '#1E293B',
-                    showspikes: crosshairActive,
-                    spikemode: 'across',
-                    spikesnap: 'cursor',
-                    spikedash: 'dot',
-                    spikethickness: 1,
-                    spikecolor: '#64748B'
-                },
+                hovermode: 'closest',
+                xaxis: xaxisConfig,
+                yaxis: yaxisConfig,
                 yaxis2: {
-                    domain: activeIndicators.rsi ? [0.18, 0.30] : [0.0, 0.18],
+                    domain: activeIndicators.rsi ? [0.16, 0.28] : [0.0, 0.18],
                     gridcolor: '#151C28',
                     tickfont: { color: '#64748B', size: 9 },
                     side: 'right',
                     showgrid: false
                 },
-                uirevision: `${currentSymbol}|${currentTimeframe}|${activeIndicators.rsi}`
+                uirevision: targetUiRev
             };
             if (activeIndicators.rsi) {
                 layout.yaxis3 = {
-                    domain: [0.0, 0.15],
+                    domain: [0.0, 0.14],
                     gridcolor: '#1E293B',
                     tickfont: { color: '#818CF8', size: 9 },
                     side: 'right',
@@ -2374,10 +3406,64 @@
                 };
             }
 
-            // 5. Projeção ao vivo da posição selecionada (ENTRY, SL, TP1, TP2, TP3, TRAILING, liquidação + marcador de entrada)
+            // 5. Shapes & Annotations: Order Overlay + Optional SMC Structure + Optional User S/R Lines
             const shapes = [];
             const annotations = [];
 
+            // 5a. Smart Money Concepts (FVG, Order Blocks, Swing S/R) when toggled ON
+            if (activeIndicators.smc && data.structure) {
+                const st = data.structure;
+                (st.supports || []).forEach(sup => {
+                    if (sup > 0) {
+                        shapes.push({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y1', y0: sup, y1: sup, line: { color: 'rgba(16, 185, 129, 0.45)', width: 1, dash: 'dot' } });
+                        annotations.push({ xref: 'paper', x: 0.99, yref: 'y1', y: sup, text: `SUP $${fmtChartPrice(sup)}`, showarrow: false, font: { color: '#34D399', size: 8, family: 'JetBrains Mono' }, bgcolor: 'rgba(10,14,23,0.7)', xanchor: 'right', yanchor: 'top' });
+                    }
+                });
+                (st.resistances || []).forEach(resP => {
+                    if (resP > 0) {
+                        shapes.push({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y1', y0: resP, y1: resP, line: { color: 'rgba(239, 68, 68, 0.45)', width: 1, dash: 'dot' } });
+                        annotations.push({ xref: 'paper', x: 0.99, yref: 'y1', y: resP, text: `RES $${fmtChartPrice(resP)}`, showarrow: false, font: { color: '#F87171', size: 8, family: 'JetBrains Mono' }, bgcolor: 'rgba(10,14,23,0.7)', xanchor: 'right', yanchor: 'bottom' });
+                    }
+                });
+                (st.active_obs || []).forEach(ob => {
+                    const top = Number(ob.top || ob.high || 0);
+                    const bot = Number(ob.bottom || ob.low || 0);
+                    if (top > 0 && bot > 0) {
+                        const isBull = String(ob.type || ob.direction || "").toUpperCase().includes("BULL");
+                        shapes.push({
+                            type: 'rect', xref: 'paper', x0: 0.15, x1: 1, yref: 'y1', y0: bot, y1: top,
+                            fillcolor: isBull ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                            line: { color: isBull ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)', width: 1 }
+                        });
+                    }
+                });
+                (st.active_fvgs || []).forEach(fvg => {
+                    const top = Number(fvg.top || fvg.high || 0);
+                    const bot = Number(fvg.bottom || fvg.low || 0);
+                    if (top > 0 && bot > 0) {
+                        shapes.push({
+                            type: 'rect', xref: 'paper', x0: 0.35, x1: 1, yref: 'y1', y0: bot, y1: top,
+                            fillcolor: 'rgba(56, 189, 248, 0.07)',
+                            line: { color: 'rgba(56, 189, 248, 0.3)', width: 1, dash: 'dot' }
+                        });
+                    }
+                });
+            }
+
+            // 5b. User Manual Horizontal S/R Lines
+            const manualLines = userHLinesBySymbol[currentSymbol] || [];
+            manualLines.forEach((pLvl, idx) => {
+                if (pLvl > 0) {
+                    shapes.push({ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y1', y0: pLvl, y1: pLvl, line: { color: '#FACC15', width: 1.5, dash: 'dash' } });
+                    annotations.push({
+                        xref: 'paper', x: 0.99, yref: 'y1', y: pLvl, text: `S/R #${idx + 1}: $${fmtChartPrice(pLvl)}`, showarrow: false,
+                        font: { color: '#FACC15', size: 9, family: 'JetBrains Mono' }, bgcolor: 'rgba(10,14,23,0.85)', bordercolor: '#FACC15', borderwidth: 1, borderpad: 2,
+                        xanchor: 'right', yanchor: 'bottom'
+                    });
+                }
+            });
+
+            // 5c. Projeção ao vivo da posição selecionada (ENTRY, SL, TP1, TP2, TP3, TRAILING, liquidação + marcador de entrada)
             if (window._activeOrderOverlay && window._activeOrderOverlay.symbol === currentSymbol) {
                 const ov = window._activeOrderOverlay;
                 const side = (ov.side || "LONG").toUpperCase();
@@ -2409,7 +3495,7 @@
                     annotations.push({
                         xref: 'paper', x: 0.01, yref: 'y1', y: l.v, text: l.label, showarrow: false,
                         font: { color: l.color, size: 9, family: 'JetBrains Mono, monospace' },
-                        bgcolor: 'rgba(10, 14, 23, 0.75)', bordercolor: l.color, borderwidth: 1, borderpad: 2,
+                        bgcolor: 'rgba(10, 14, 23, 0.82)', bordercolor: l.color, borderwidth: 1, borderpad: 2,
                         xanchor: 'left', yanchor: l.anchor
                     });
                 });
@@ -2438,11 +3524,10 @@
 
             const config = {
                 responsive: true,
-                scrollZoom: true,
+                scrollZoom: false,
                 doubleClick: 'reset',
-                displayModeBar: true,
-                displaylogo: false,
-                modeBarButtonsToRemove: ['lasso2d', 'select2d']
+                displayModeBar: false,
+                displaylogo: false
             };
 
             Plotly.react('chartContainer', traces, layout, config);
@@ -2456,9 +3541,9 @@
 
         function inferPositionTimeframe(pos) {
             const tf = String(pos.timeframe || "").toLowerCase();
-            if (["15m", "1h", "4h"].includes(tf)) return tf;
+            if (["3m", "5m", "15m", "1h", "4h"].includes(tf)) return tf;
             const st = String(pos.strategy_type || "").toUpperCase();
-            return (st === "SWING" || st === "CARRY") ? "1h" : "15m";
+            return (st === "SWING" || st === "CARRY" || st === "DIRECTIONAL") ? "1h" : "15m";
         }
 
         function numOrNaN(v) {
@@ -2595,6 +3680,7 @@
             if (customInput && !['BTCUSDT', 'ETHUSDT', 'SOLUSDT'].includes(sym)) {
                 customInput.value = sym;
             }
+            syncToolButtons();
             loadChartData();
             loadStatus();
             loadEducationalExplanation();
@@ -2602,28 +3688,33 @@
 
         function setTimeframe(tf, skipLoad = false) {
             currentTimeframe = tf;
-            ['15m', '1h', '4h'].forEach(t => {
+            ['1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'].forEach(t => {
                 const btn = document.getElementById(`btnTf_${t}`);
+                if (!btn) return;
                 if (t === tf) {
                     btn.className = "tf-btn px-2.5 py-1 rounded bg-cyan-600 text-white font-semibold transition-all";
                 } else {
                     btn.className = "tf-btn px-2.5 py-1 rounded text-slate-400 hover:text-white transition-all";
                 }
             });
+            updateChartCandleCountdown();
             if (!skipLoad) loadChartData();
         }
 
         function toggleIndicator(ind) {
             activeIndicators[ind] = !activeIndicators[ind];
             const btn = document.getElementById(`btnInd_${ind}`);
-            if (activeIndicators[ind]) {
-                btn.className = ind === 'rsi' ? 
-                    "px-2 py-0.5 rounded border border-indigo-500/50 bg-indigo-950/40 text-indigo-300 font-medium" : 
-                    "px-2 py-0.5 rounded border border-cyan-500/50 bg-cyan-950/40 text-cyan-300 font-medium";
-            } else {
-                btn.className = "px-2 py-0.5 rounded border border-dark-600 bg-dark-800 text-slate-400 hover:text-slate-200";
+            if (btn) {
+                if (activeIndicators[ind]) {
+                    btn.className = ind === 'rsi' ? 
+                        "px-2 py-0.5 rounded border border-indigo-500/50 bg-indigo-950/40 text-indigo-300 font-medium" : 
+                        "px-2 py-0.5 rounded border border-cyan-500/50 bg-cyan-950/40 text-cyan-300 font-medium";
+                } else {
+                    btn.className = "px-2 py-0.5 rounded border border-dark-600 bg-dark-800 text-slate-400 hover:text-slate-200";
+                }
             }
             if (window._cachedChartData) {
+                updateTvChartHud(window._cachedChartData, null);
                 renderPlotlyChart(window._cachedChartData);
             } else {
                 loadChartData(true);

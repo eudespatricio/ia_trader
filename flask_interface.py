@@ -35,6 +35,7 @@ load_dotenv(ENV_FILE_PATH, override=True)
 
 TEMPLATE_DIR = os.path.join(getattr(sys, "_MEIPASS", BASE_DIR), "templates")
 app = Flask(__name__, template_folder=TEMPLATE_DIR)
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 CORS(app)
 
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "super-secret-key-ia-trader-2026")
@@ -953,6 +954,33 @@ def api_chart(symbol: str, timeframe: str):
 
     records.reverse()
 
+    # On-demand auto-fetch se o cache tiver poucas velas para o par/timeframe solicitado
+    if len(records) < 20:
+        try:
+            from data.data_loader import DataLoader
+            dl = DataLoader(db_path=DB_PATH)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            # Tenta Binance primeiro (histórico profundo e baixa latência), fallback Bitget
+            fetched = loop.run_until_complete(dl.get_candles(sym, tf, limit=limit, force_refresh=True, as_dataframe=False, exchange="binance"))
+            if not fetched:
+                fetched = loop.run_until_complete(dl.get_candles(sym, tf, limit=limit, force_refresh=True, as_dataframe=False, exchange="bitget"))
+            loop.close()
+            if fetched:
+                with get_db_connection(read_only=True) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume
+                        FROM candles
+                        WHERE symbol = ? AND timeframe = ?
+                        ORDER BY timestamp DESC
+                        LIMIT ?
+                    """, (sym, tf, limit))
+                    records = [dict(r) for r in cur.fetchall()]
+                    records.reverse()
+        except Exception as e:
+            logger.debug(f"Auto-fetch candles failed for {sym} {tf}: {e}")
+
     if not records:
         return jsonify({
             "symbol": sym,
@@ -976,6 +1004,12 @@ def api_chart(symbol: str, timeframe: str):
                 "bb_lower": [],
                 "rsi": []
             },
+            "tv_data": {
+                "candles": [],
+                "volume": [],
+                "indicators": {}
+            },
+            "active_position": None,
             "summary": {
                 "last_price": 0.0,
                 "change_pct": 0.0,
@@ -994,6 +1028,64 @@ def api_chart(symbol: str, timeframe: str):
     volumes = [float(r["volume"]) for r in records]
 
     indicators = calculate_indicators(closes, highs, lows, volumes)
+
+    # TradingView Lightweight Charts formatação de séries nativas
+    tv_candles = [
+        {"time": int(ts // 1000), "open": o, "high": h, "low": l, "close": c}
+        for ts, o, h, l, c in zip(timestamps, opens, highs, lows, closes)
+    ]
+    tv_volume = [
+        {"time": int(ts // 1000), "value": v, "color": "rgba(16, 185, 129, 0.45)" if c >= o else "rgba(239, 68, 68, 0.45)"}
+        for ts, o, c, v in zip(timestamps, opens, closes, volumes)
+    ]
+    tv_indicators = {
+        "sma20": [{"time": int(ts // 1000), "value": v} for ts, v in zip(timestamps, indicators.get("sma20", [])) if v is not None],
+        "sma50": [{"time": int(ts // 1000), "value": v} for ts, v in zip(timestamps, indicators.get("sma50", [])) if v is not None],
+        "ema9": [{"time": int(ts // 1000), "value": v} for ts, v in zip(timestamps, indicators.get("ema9", [])) if v is not None],
+        "ema21": [{"time": int(ts // 1000), "value": v} for ts, v in zip(timestamps, indicators.get("ema21", [])) if v is not None],
+        "bb_upper": [{"time": int(ts // 1000), "value": v} for ts, v in zip(timestamps, indicators.get("bb_upper", [])) if v is not None],
+        "bb_lower": [{"time": int(ts // 1000), "value": v} for ts, v in zip(timestamps, indicators.get("bb_lower", [])) if v is not None],
+    }
+
+    # Posição ativa em Paper Trading para overlay da Smart Trade Ladder
+    active_position = None
+    try:
+        with get_db_connection(read_only=True) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT position_id, symbol, side, entry_price, current_price, quantity, notional,
+                       stop_loss, take_profit, tp1_price, tp1_hit, tp2_price, tp2_hit, tp3_price,
+                       trailing_active, trailing_stop_price, unrealized_pnl, leverage, strategy_type
+                FROM paper_positions
+                WHERE symbol = ? AND status = 'OPEN'
+                ORDER BY id DESC LIMIT 1
+            """, (sym,))
+            row = cur.fetchone()
+            if row:
+                r_dict = dict(row)
+                active_position = {
+                    "position_id": r_dict.get("position_id"),
+                    "symbol": r_dict.get("symbol"),
+                    "side": r_dict.get("side"),
+                    "entry_price": float(r_dict.get("entry_price") or 0.0),
+                    "current_price": float(r_dict.get("current_price") or 0.0),
+                    "quantity": float(r_dict.get("quantity") or 0.0),
+                    "notional": float(r_dict.get("notional") or 0.0),
+                    "stop_loss": float(r_dict.get("stop_loss")) if r_dict.get("stop_loss") is not None else None,
+                    "take_profit": float(r_dict.get("take_profit")) if r_dict.get("take_profit") is not None else None,
+                    "tp1_price": float(r_dict.get("tp1_price")) if r_dict.get("tp1_price") is not None else None,
+                    "tp1_hit": bool(r_dict.get("tp1_hit")),
+                    "tp2_price": float(r_dict.get("tp2_price")) if r_dict.get("tp2_price") is not None else None,
+                    "tp2_hit": bool(r_dict.get("tp2_hit")),
+                    "tp3_price": float(r_dict.get("tp3_price")) if r_dict.get("tp3_price") is not None else None,
+                    "trailing_active": bool(r_dict.get("trailing_active")),
+                    "trailing_stop_price": float(r_dict.get("trailing_stop_price")) if r_dict.get("trailing_stop_price") is not None else None,
+                    "unrealized_pnl": float(r_dict.get("unrealized_pnl") or 0.0),
+                    "leverage": float(r_dict.get("leverage") or 1.0),
+                    "strategy_type": r_dict.get("strategy_type"),
+                }
+    except Exception as e:
+        logger.debug(f"Aviso ao buscar active_position para {sym}: {e}")
 
     last_price = closes[-1]
     first_price = closes[0]
@@ -1037,6 +1129,12 @@ def api_chart(symbol: str, timeframe: str):
         "volume": volumes,
         "indicators": indicators,
         "structure": structure_data,
+        "tv_data": {
+            "candles": tv_candles,
+            "volume": tv_volume,
+            "indicators": tv_indicators,
+        },
+        "active_position": active_position,
         "summary": {
             "last_price": last_price,
             "prev_price": closes[-2] if len(closes) > 1 else last_price,

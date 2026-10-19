@@ -26,7 +26,7 @@ logger = logging.getLogger("ia_trader.tape_reading")
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MICROSTRUCTURE_DB = os.path.join(BASE, "datasets", "microstructure.db")
 
-COVERED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT", "SOLUSDT"})   # = SYMBOLS do coletor
+COVERED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT", "SOLUSDT"})   # = BASE SYMBOLS do coletor
 TAKER_WINDOW_MIN = 5            # soma dos últimos 5 minutos de tick_agg
 TAKER_MIN_MINUTES = 3           # mínimo de minutos distintos com dados na janela
 TAKER_MIN_TRADES = 30           # mínimo de trades somados na janela
@@ -38,12 +38,25 @@ SPREAD_MAX_BPS = 5.0
 BOOK_MAX_AGE_S = 120
 TICK_MAX_AGE_S = 180
 
+# Item 2 & 3: Score contínuo e absorção institucional
+FLOW_SCORE_MIN = 0.12
+ABSORPTION_TAKER_THRESHOLD = 0.30
+ABSORPTION_BOOK_THRESHOLD = 0.15
+
 
 class TapeReadingAgent:
     name = "TapeReadingAgent"
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        use_continuous_flow: bool = True,
+        covered_symbols: Optional[set] = None,
+    ):
         self.db_path = db_path or MICROSTRUCTURE_DB
+        self.use_continuous_flow = use_continuous_flow
+        self.covered_symbols = set(covered_symbols) if covered_symbols else set(COVERED_SYMBOLS)
+        self._last_refresh_ms: int = 0
         self.last_result: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
@@ -64,12 +77,38 @@ class TapeReadingAgent:
         con.execute("PRAGMA busy_timeout=5000")
         return con
 
+    def add_covered_symbol(self, sym: str) -> None:
+        self.covered_symbols.add(str(sym).upper())
+
+    def set_covered_symbols(self, symbols: Any) -> None:
+        self.covered_symbols = {str(s).upper() for s in symbols}
+
+    def refresh_covered_symbols_from_db(self, now_ms: Optional[int] = None) -> None:
+        """Sincroniza símbolos monitorados a partir da tabela active_symbols gerenciada pelo coletor."""
+        now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        self._last_refresh_ms = now_ms
+        try:
+            con = self._connect_ro()
+            rows = con.execute(
+                "SELECT symbol FROM active_symbols WHERE updated_at >= ?",
+                (now_ms - 3600_000,)
+            ).fetchall()
+            con.close()
+            for r in rows:
+                if r[0]:
+                    self.covered_symbols.add(str(r[0]).upper())
+        except Exception:
+            pass
+
     def evaluate(self, symbol: str, direction: str = "", now_ms: Optional[int] = None) -> Dict[str, Any]:
         """Retorna dict AgentSignal-like. `direction` é só informativo (o voto não depende dele)."""
         now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
         sym = str(symbol).upper()
-        if sym not in COVERED_SYMBOLS:
-            return self._unavailable(sym, "symbol_not_covered", now_ms)
+        if sym not in self.covered_symbols:
+            if (now_ms - self._last_refresh_ms) > 30_000:
+                self.refresh_covered_symbols_from_db(now_ms)
+            if sym not in self.covered_symbols:
+                return self._unavailable(sym, "symbol_not_covered", now_ms)
         try:
             con = self._connect_ro()
         except Exception as e:  # noqa: BLE001
@@ -124,20 +163,50 @@ class TapeReadingAgent:
         book_imb = sum(imbs) / len(imbs)
         mdev = sum(devs) / len(devs)
         spread = float(spread)
-        feats.update({"taker_imb_5m": taker, "book_imb_10": book_imb, "microprice_dev": mdev, "spread_bps": spread})
+
+        mdev_norm = max(-1.0, min(1.0, mdev))
+        flow_score = 0.60 * taker + 0.30 * book_imb + 0.10 * mdev_norm
+        feats.update({
+            "taker_imb_5m": taker,
+            "book_imb_10": book_imb,
+            "microprice_dev": mdev,
+            "spread_bps": spread,
+            "flow_score": round(flow_score, 4),
+        })
+
+        is_bullish_absorption = (taker <= -ABSORPTION_TAKER_THRESHOLD and book_imb >= ABSORPTION_BOOK_THRESHOLD)
+        is_bearish_absorption = (taker >= ABSORPTION_TAKER_THRESHOLD and book_imb <= -ABSORPTION_BOOK_THRESHOLD)
 
         if spread > SPREAD_MAX_BPS:
             vote, reason = "HOLD", "spread_wide"
-        elif taker >= TAKER_IMB_MIN and book_imb >= BOOK_IMB_MIN and mdev >= MICROPRICE_DEV_MIN_BPS:
-            vote, reason = "BUY", "flow_buy_confirmed"
-        elif taker <= -TAKER_IMB_MIN and book_imb <= -BOOK_IMB_MIN and mdev <= -MICROPRICE_DEV_MIN_BPS:
-            vote, reason = "SELL", "flow_sell_confirmed"
+        elif is_bullish_absorption:
+            vote, reason = "BUY", "absorption_buy_confirmed"
+        elif is_bearish_absorption:
+            vote, reason = "SELL", "absorption_sell_confirmed"
+        elif self.use_continuous_flow:
+            if flow_score >= FLOW_SCORE_MIN:
+                vote, reason = "BUY", "flow_buy_confirmed"
+            elif flow_score <= -FLOW_SCORE_MIN:
+                vote, reason = "SELL", "flow_sell_confirmed"
+            else:
+                vote, reason = "HOLD", "no_flow_confluence"
         else:
-            vote, reason = "HOLD", "no_flow_confluence"
+            if taker >= TAKER_IMB_MIN and book_imb >= BOOK_IMB_MIN and mdev >= MICROPRICE_DEV_MIN_BPS:
+                vote, reason = "BUY", "flow_buy_confirmed"
+            elif taker <= -TAKER_IMB_MIN and book_imb <= -BOOK_IMB_MIN and mdev <= -MICROPRICE_DEV_MIN_BPS:
+                vote, reason = "SELL", "flow_sell_confirmed"
+            else:
+                vote, reason = "HOLD", "no_flow_confluence"
+
         conf = 0.0
         if vote != "HOLD":
-            conf = float(min(1.0, 0.5 * min(1.0, abs(taker) / (2 * TAKER_IMB_MIN))
-                             + 0.5 * min(1.0, abs(book_imb) / (2 * BOOK_IMB_MIN))))
+            if "absorption" in reason:
+                conf = float(min(1.0, 0.5 * (abs(taker) / 0.50) + 0.5 * (abs(book_imb) / 0.30)))
+            elif self.use_continuous_flow:
+                conf = float(min(1.0, abs(flow_score) / (2.0 * FLOW_SCORE_MIN)))
+            else:
+                conf = float(min(1.0, 0.5 * min(1.0, abs(taker) / (2 * TAKER_IMB_MIN))
+                                 + 0.5 * min(1.0, abs(book_imb) / (2 * BOOK_IMB_MIN))))
         return self._finish({
             "agent_name": self.name, "symbol": sym, "vote": vote, "status": "OK", "confidence": conf,
             "features": feats, "reason": reason, "timestamp": now_ms,

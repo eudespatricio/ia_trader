@@ -759,3 +759,23 @@ def test_educational_card_dynamic_render(make_page):
     assert "Breakeven" in txt
     assert "64200" not in txt and "64,200" not in txt
     assert p.page_errors == [] and p.console_errors == []
+
+
+def test_tradingview_chart_enhancements(make_page):
+    p = make_page()
+    # 1. HUD superior esquerdo populado sem NaN/undefined
+    hud_txt = p.page.inner_text("#tvChartHud")
+    assert "BTCUSDT" in hud_txt and "SMA20" in hud_txt and "NaN" not in hud_txt
+    # 2. Botões de timeframe 3m e 5m presentes
+    assert p.page.locator("#btnTf_3m").count() == 1
+    assert p.page.locator("#btnTf_5m").count() == 1
+    # 3. Zoom In / Pan Step / Auto Y funcionam e ajustam xaxis.range e yaxis.range
+    p.page.evaluate("chartZoomIn()")
+    rng = p.page.evaluate("document.getElementById('chartContainer').layout.xaxis.range")
+    assert rng and (rng[1] - rng[0]) < 119
+    p.page.evaluate("chartPanStep(-1)")
+    assert not p.page.locator("#btnJumpToLatest").get_attribute("class").__contains__("hidden")
+    p.page.click("#btnJumpToLatest")
+    assert "hidden" in p.page.locator("#btnJumpToLatest").get_attribute("class")
+    assert p.page_errors == [] and p.console_errors == []
+

@@ -131,6 +131,28 @@ class TestFlaskInterfaceEndpoints:
         assert data["symbol"] == "NONEXISTENT_PAIR"
         assert data["open"] == []
 
+    def test_api_chart_tradingview_payload_and_exit_ladder(self, client):
+        """Verifica se /api/chart retorna tv_data formatado para Lightweight Charts e active_position."""
+        response = client.get("/api/chart/BTCUSDT/1h?limit=30")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert "tv_data" in data
+        assert "candles" in data["tv_data"]
+        assert "volume" in data["tv_data"]
+        assert "indicators" in data["tv_data"]
+        assert "active_position" in data
+        if data["count"] > 0:
+            c0 = data["tv_data"]["candles"][0]
+            assert "time" in c0
+            assert "open" in c0
+            assert "high" in c0
+            assert "low" in c0
+            assert "close" in c0
+            v0 = data["tv_data"]["volume"][0]
+            assert "time" in v0
+            assert "value" in v0
+            assert "color" in v0
+
     def test_api_config_get_and_post(self, client):
         """Verifica obtenção mascarada e salvamento seguro de configurações."""
         # 1. GET /api/config

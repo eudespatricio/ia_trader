@@ -47,7 +47,9 @@ class ConsensusJudge:
         self,
         min_consensus_threshold: float = 0.30,
         default_weights: Optional[Dict[str, float]] = None,
-        llm_timeout_seconds: float = 2.5,
+        llm_timeout_seconds: float = 4.5,
+        allow_contextual_abstain: bool = True,
+        contextual_agents: Optional[set] = None,
     ):
         self.min_consensus_threshold = min_consensus_threshold
         self.default_weights = default_weights or {
@@ -59,6 +61,8 @@ class ConsensusJudge:
             "OnChainAgent": 0.5,
         }
         self.llm_timeout_seconds = llm_timeout_seconds
+        self.allow_contextual_abstain = allow_contextual_abstain
+        self.contextual_agents = contextual_agents or {"SentimentAgent", "MacroAgent", "OnChainAgent"}
 
     def judge_deterministic(
         self,
@@ -93,6 +97,12 @@ class ConsensusJudge:
         total_weight = 0.0
 
         for sig in signals:
+            # Abstenção não-punitiva: agentes sem sinal ou contextuais neutros não diluem o denominador
+            if sig.direction == "ABSTAIN":
+                continue
+            if self.allow_contextual_abstain and sig.agent_name in self.contextual_agents and sig.direction == "HOLD":
+                continue
+
             w = float(weights.get(sig.agent_name, sig.weight))
             total_weight += w
 
@@ -101,7 +111,7 @@ class ConsensusJudge:
             elif sig.direction == "SELL":
                 weighted_score -= (w * sig.confidence)
             elif sig.direction == "HOLD":
-                # HOLD contribui para neutralidade (aproxima score de 0)
+                # HOLD de agente primário ativo contribui para neutralidade (aproxima score de 0)
                 pass
 
         norm_score = (weighted_score / total_weight) if total_weight > 0 else 0.0
@@ -159,7 +169,7 @@ class ConsensusJudge:
     ) -> ConsensusDecision:
         """
         Orquestra o julgamento com suporte opcional a árbitro LLM em caso de discórdia acentuada.
-        Se `use_llm=False` ou ocorrer timeout (>2.5s), utiliza estritamente o julgamento determinístico.
+        Se `use_llm=False` ou ocorrer timeout (>4.5s), utiliza estritamente o julgamento determinístico.
         """
         base_decision = self.judge_deterministic(signals, weights_override)
 
@@ -168,10 +178,16 @@ class ConsensusJudge:
             return base_decision
 
         # Checa se há discórdia (ex: votos conflitantes BUY e SELL entre agentes com alta convicção)
+        # ou se o consenso é limítrofe com setup técnico ativo
         directions = {s.direction for s in signals if s.direction in ["BUY", "SELL"] and s.confidence >= 0.60}
         has_discordance = len(directions) > 1
+        is_borderline = (
+            base_decision.direction == "HOLD"
+            and abs(base_decision.aggregated_score) >= 0.20
+            and any(s.direction in ["BUY", "SELL"] and s.confidence >= 0.65 for s in signals)
+        )
 
-        if not has_discordance:
+        if not has_discordance and not is_borderline:
             return base_decision
 
         # Tentativa de arbitragem LLM com timeout rigoroso de 2.5s

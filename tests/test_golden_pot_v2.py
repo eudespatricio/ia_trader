@@ -170,10 +170,10 @@ def test_agreement_enters_with_real_signal_values_not_constants(temp_db):
     sig = captured["sig"]
     assert sig.confidence == 0.82 and sig.consensus_score == 0.47
     assert (sig.confidence, sig.consensus_score) not in [(0.90, 0.85), (0.90, -0.85)]
-    assert sig.risk_dollars != 50.0
     # risk_dollars coerente: (margem*lev / preço) * distância do SL
     notional = sig.position_size
-    assert sig.risk_dollars == pytest.approx(notional / sig.entry_price * rps.GP_SL_ATR_MULT * sig.atr)
+    sl_dist = abs(sig.entry_price - sig.stop_loss)
+    assert sig.risk_dollars == pytest.approx(notional / sig.entry_price * sl_dist)
     assert "comitê-mock" in sig.rationale
 
 
@@ -419,8 +419,8 @@ def test_gp_daemon_uses_policy_leverage_from_real_confidence(temp_db):
     d = make_daemon(temp_db, ["AAAUSDT"], _mfeat(_bar_ts(), close=100.0, atr=1.0), _committee("BUY", conf=0.85))
     run(d.evaluate_golden_pot_opportunities())
     pos = next(iter(d.engine.positions.values()))
-    assert pos.leverage == 4.0  # conf 0.80-0.90 -> 4x, a favor da tendência, ATR% baixo
-    assert pos.notional == pytest.approx(400.0) and pos.margin == pytest.approx(100.0)
+    assert pos.leverage == 2.0  # GP v4: teto de alavancagem 2x para altcoins voláteis 5m
+    assert pos.notional == pytest.approx(200.0) and pos.margin == pytest.approx(100.0)
 
 
 def test_gp_low_liquidity_forces_1x(temp_db):

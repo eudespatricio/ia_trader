@@ -74,5 +74,16 @@ flowchart TD
 | **Fase 9** | `pair_scanner.py`, `voice_commands.py`, `educational_module.py`, `auth_module.py` | Scanner de pares voláteis/delistagens, comandos de voz, módulo educativo, auth e termos | 🟢 Homologado (21/21 testes) |
 | **Fase 10** | `launcher.py`, `ia_trader.spec`, `dist/ia_trader/ia_trader` | Simulação ininterrupta 24h, segurança de credenciais e empacotamento standalone | 🟢 Homologado (3/3 testes, total 208/208) |
 
+---
+
+## 🧭 Backlog de Brainstorms & Próximas Evoluções (Pós-Piloto)
+
+Todas as melhorias de experiência visual, refinamento de microestrutura e calibrações de estratégias (como o diagnóstico forense do `GOLDEN_POT` e o benchmark de gráficos estilo TradingView) estão catalogadas e detalhadas em:
+
+👉 **[docs/ROADMAP_BRAINSTORMS.md](file:///home/eudespatricio/ia_trader/docs/ROADMAP_BRAINSTORMS.md)**
+
+Consulte este arquivo para sincronização imediata de contexto em novas sessões de trabalho.
+
+
 
 

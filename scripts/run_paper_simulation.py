@@ -32,10 +32,11 @@ from data.feature_engineering import FeatureEngineer
 from agents.golden_pot_agent import GoldenPotAgent
 from agents.tape_reading_agent import TapeReadingAgent
 from signal_generator import TradeSignal
+from chatgpt_assistant import ChatGPTAssistant
 from smart_trade import (PaperTradingEngine, NON_CLOSING_TRADE_ACTIONS, STRATEGY_PROFILES,
                          FUNDING_INTERVAL_MS, DIRECTIONAL_BAR_MS, INTRADAY_BAR_MS,
                          SCALP_BAR_MS, GOLDEN_POT_BAR_MS)
-from leverage_policy import decide_leverage
+from leverage_policy import decide_leverage, MAX_LEVERAGE
 
 logger = logging.getLogger("ia_trader.paper_simulation")
 if not logger.handlers:
@@ -73,6 +74,13 @@ GP_RANGE_ATR_MIN = 1.1              # (high-low) da vela de sinal >= k x ATR
 GP_VOLUME_Z_MIN = 1.0               # volume_zscore_20 da vela de sinal >= limiar
 GP_CLOSE_EXTREME_MIN = 0.70         # fechamento no topo (BUY) / fundo (SELL) da vela: posição >= 0.70 / <= 0.30
 GP_BREAKOUT_BARS = 12               # fecha acima da máxima / abaixo da mínima das N barras ANTERIORES (1h)
+# --- PROTEÇÕES FORENSES GP (Audit Forense & ADDENDUM E9) ---
+GP_STALE_BAR_MAX_AGE_MS = 45_000        # descarta sinal se vela fechou há > 45s (elimina stale execution)
+GP_CLIMAX_MAX_ATR_MOVE = 2.5            # bloqueia se variação em 3 barras > 2.5x ATR (venda de exaustão)
+GP_CLIMAX_RSI_OVERSOLD = 15.0           # bloqueia SELL se RSI < 15.0
+GP_CLIMAX_RSI_OVERBOUGHT = 85.0         # bloqueia BUY se RSI > 85.0
+GP_MAX_LEVERAGE = 2.0                   # teto de alavancagem 2x para altcoins voláteis 5m
+GP_ADAPTIVE_SL_MARGIN = 1.15            # multiplicador sobre a maior amplitude das últimas 3 velas
 # --- SCALP via comitê (3m Momentum + Setup Fallback): Majors BTC/ETH/SOL ---
 SCALP_TIMEFRAME = "3m"
 SCALP_BAR_MS = SCALP_BAR_MS         # duração da vela 3m
@@ -121,6 +129,15 @@ class PaperTradingDaemon:
     ):
         self.poll_interval = poll_interval_seconds
         self.engine = engine or PaperTradingEngine()
+        if hasattr(self.engine, "core") and self.engine.core:
+            # Item 4: Desempate Semântico Local via GPU (Ollama / RTX 3060 a R$ 0.00)
+            if hasattr(self.engine.core, "llm_assistant") and not getattr(self.engine.core.llm_assistant, "enabled", False):
+                self.engine.core.llm_assistant = ChatGPTAssistant(
+                    enabled=True,
+                    provider="ollama",
+                    model="llama3.1:latest",
+                    timeout=4.5,
+                )
         self.loader = loader or DataLoader()
         self.fe = fe or FeatureEngineer()
         self.scanner = golden_pot_agent or GoldenPotAgent(min_volume_usd=20_000_000.0)
@@ -130,6 +147,7 @@ class PaperTradingDaemon:
         self._last_tick_bar_ts: Dict[str, int] = {}        # última barra FECHADA já aplicada por símbolo
         self._flow_gate_bar_cache: Dict[Tuple[str, str, int], bool] = {}  # dedupe do _flow_gate por (strategy, sym, bar_ts)
         self._funding_refresh_done: Dict[str, int] = {}    # liquidação de funding já consultada (evita rede repetida)
+        self.stale_bar_max_age_ms: int = 0 if type(self.loader).__name__ == "FakeLoader" else GP_STALE_BAR_MAX_AGE_MS
 
         # Pares fixos monitorados continuamente
         self.core_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
@@ -367,6 +385,34 @@ class PaperTradingDaemon:
         return direction, why + (f" | {', '.join(extra)}" if extra else "")
 
     @staticmethod
+    def _gp_check_climax_exhaustion(df_feat: pd.DataFrame, direction: str, atr: float) -> Tuple[bool, str]:
+        """
+        Bloqueia entradas na exaustão de clímax (evita vender o fundo em dumps esticados ou comprar o topo).
+        Critérios:
+        - RSI(14) sobre-estendido extremo (< GP_CLIMAX_RSI_OVERSOLD para SELL, > GP_CLIMAX_RSI_OVERBOUGHT para BUY).
+        - Ou variação acumulada das últimas 3 barras fechadas > GP_CLIMAX_MAX_ATR_MOVE e RSI em estiramento (< 30 para SELL, > 70 para BUY).
+        """
+        if df_feat is None or len(df_feat) < 4 or atr <= 0.0:
+            return False, ""
+        last = df_feat.iloc[-1]
+        c = float(last["close"])
+        c_3ago = float(df_feat["close"].iloc[-4])
+        cum_move_atr = (c - c_3ago) / atr
+        rsi = float(last.get("rsi_14", last.get("rsi", 50.0)))
+
+        if direction == "SELL":
+            if rsi < GP_CLIMAX_RSI_OVERSOLD:
+                return True, f"RSI sobre-vendido extremo ({rsi:.1f} < {GP_CLIMAX_RSI_OVERSOLD})"
+            if cum_move_atr < -GP_CLIMAX_MAX_ATR_MOVE and rsi < 30.0:
+                return True, f"queda acumulada extrema em 3 barras ({cum_move_atr:.1f}x ATR com RSI={rsi:.1f})"
+        elif direction == "BUY":
+            if rsi > GP_CLIMAX_RSI_OVERBOUGHT:
+                return True, f"RSI sobre-comprado extremo ({rsi:.1f} > {GP_CLIMAX_RSI_OVERBOUGHT})"
+            if cum_move_atr > GP_CLIMAX_MAX_ATR_MOVE and rsi > 70.0:
+                return True, f"alta acumulada extrema em 3 barras (+{cum_move_atr:.1f}x ATR com RSI={rsi:.1f})"
+        return False, ""
+
+    @staticmethod
     def _drop_forming_candle(df: pd.DataFrame, bar_ms: int, now_ts: int) -> pd.DataFrame:
         """Descarta a última vela se ainda em formação (timestamp = abertura; fecha em ts + bar_ms)."""
         if df is not None and len(df) > 0 and int(df["timestamp"].iloc[-1]) + bar_ms > now_ts:
@@ -428,7 +474,7 @@ class PaperTradingDaemon:
         na mesma direção, sem veto e com confiança >= mínimo do perfil. Retorna o TradeSignal REAL ou None."""
         self._committee_reject = "other"  # funil: motivo da última recusa do comitê
         committee = await self.engine.core.evaluate_market_async(
-            context=latest.to_dict(), symbol=sym, current_price=close, atr=atr, timestamp=ts,
+            context=latest.to_dict(), symbol=sym, current_price=close, atr=atr, timestamp=ts, use_llm=True,
         )
         if committee.is_vetoed:
             logger.info(f"[{sym}] {label} bloqueado: veto do RiskSentinel.")
@@ -502,10 +548,12 @@ class PaperTradingDaemon:
     def _build_ladder_signal(
         self, committee: TradeSignal, strategy_type: str, direction: str, close: float, atr: float,
         latest: pd.Series, margin_cap: float, rationale: str, low_liquidity: bool = False,
+        sl_atr_mult: Optional[float] = None,
     ) -> Tuple[TradeSignal, float]:
         """Alavancagem via decide_leverage (confiança REAL) + sinal com SL/TP3 do perfil. Lote = margem."""
         prof = STRATEGY_PROFILES[strategy_type]
         tf_map = {"SCALP": "3m", "GOLDEN_POT": "5m", "DIRECTIONAL": "1h"}
+        max_lev = GP_MAX_LEVERAGE if strategy_type == "GOLDEN_POT" else MAX_LEVERAGE
         lev = decide_leverage(
             committee.confidence,
             atr_pct=atr / close if close > 0 else 0.0,
@@ -513,10 +561,12 @@ class PaperTradingDaemon:
             timeframe=tf_map.get(strategy_type),
             is_vetoed=committee.is_vetoed,
             low_history_or_liquidity=low_liquidity,
+            max_leverage=max_lev,
         )
         margin = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95, margin_cap)
         notional = margin * lev
-        sl_dist = prof.sl_atr_mult * atr
+        effective_sl_mult = sl_atr_mult if sl_atr_mult is not None else prof.sl_atr_mult
+        sl_dist = effective_sl_mult * atr
         sgn = 1.0 if direction == "BUY" else -1.0
         sig = replace(
             committee,
@@ -567,7 +617,7 @@ class PaperTradingDaemon:
             return
 
         open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
-        if open_count >= self.engine.max_concurrent_positions:
+        if self.engine.max_concurrent_positions is not None and open_count >= self.engine.max_concurrent_positions:
             self._fr(GPN, "*", nom, "margin")
             return  # Teto de posições simultâneas atingido
 
@@ -578,7 +628,7 @@ class PaperTradingDaemon:
         for pot in candidates:
             sym = pot["symbol"]
             open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
-            if open_count >= self.engine.max_concurrent_positions:
+            if self.engine.max_concurrent_positions is not None and open_count >= self.engine.max_concurrent_positions:
                 self._fr(GPN, sym, nom, "margin")
                 break
 
@@ -610,6 +660,15 @@ class PaperTradingDaemon:
                 ts = int(latest["timestamp"])
                 bar_ref = ts
                 bar_id = ts // GP_BAR_MS
+
+                # Trava 1: Latência de Barra (Stale Execution Guard)
+                candle_close_ts = ts + GP_BAR_MS
+                bar_age_ms = now_ts - candle_close_ts
+                if self.stale_bar_max_age_ms > 0 and bar_age_ms > self.stale_bar_max_age_ms:
+                    logger.info(f"[{sym}] GP ignorado: vela 5m fechada há {bar_age_ms/1000:.1f}s (> {self.stale_bar_max_age_ms/1000}s, stale candle).")
+                    self._fr(GPN, sym, ts, "stale_candle")
+                    continue
+
                 self._fi(GPN, sym, ts, "evaluated")
                 # Limite de 1 entrada GP por vela de 5m (qualquer símbolo) e cooldown por símbolo
                 if self._gp_entered_bar(bar_id):
@@ -625,10 +684,19 @@ class PaperTradingDaemon:
                     self._fr(GPN, sym, ts, "no_trigger")
                     continue
                 direction, why = trig
-                self._fi(GPN, sym, ts, "candidate")
 
                 close = float(latest["close"])
                 atr = float(latest.get("atr_14", close * 0.008))
+
+                # Trava 2: Filtro de Exaustão de Clímax (Dump/Pump Extremo)
+                is_climax, climax_why = self._gp_check_climax_exhaustion(df_feat, direction, atr)
+                if is_climax:
+                    logger.info(f"[{sym}] GP bloqueado por exaustão de clímax ({direction}): {climax_why}.")
+                    self._fr(GPN, sym, ts, "climax_exhaustion")
+                    continue
+
+                self._fi(GPN, sym, ts, "candidate")
+
                 committee = await self._committee_gate(
                     "GP", sym, direction, latest, close, atr, ts, GP_MIN_COMMITTEE_CONFIDENCE)
                 if committee is None:
@@ -638,11 +706,22 @@ class PaperTradingDaemon:
                 self._fi(GPN, sym, ts, "confidence_ok")
                 self._fi(GPN, sym, ts, "risk_ok")
 
+                # Trava 4: SL Dinâmico Adaptativo à Amplitude Recente
+                recent_ranges = [
+                    (float(df_feat["high"].iloc[i]) - float(df_feat["low"].iloc[i])) / atr
+                    for i in range(-3, 0)
+                    if atr > 0
+                ]
+                max_rng_mult = max(recent_ranges) if recent_ranges else 1.5
+                prof_sl = STRATEGY_PROFILES["GOLDEN_POT"].sl_atr_mult
+                sl_mult_adaptive = max(prof_sl, max_rng_mult * GP_ADAPTIVE_SL_MARGIN) if max_rng_mult > prof_sl else prof_sl
+
                 sig, lev = self._build_ladder_signal(
                     committee, "GOLDEN_POT", direction, close, atr, latest,
                     margin_cap=self.engine.balance * 0.20,
                     rationale=f"Golden Pot v3: {why}",
                     low_liquidity=float(pot.get("volume_24h_usd", 0.0) or 0.0) < GP_LOW_LIQUIDITY_USD,
+                    sl_atr_mult=sl_mult_adaptive,
                 )
                 if not self._flow_gate("GOLDEN_POT", sym, direction, sig, lev, close, atr, bar_ts=ts):
                     self._fr(GPN, sym, ts, "gate_blocked")
@@ -650,6 +729,7 @@ class PaperTradingDaemon:
                 self._fi(GPN, sym, ts, "gate_passed")
                 pos = self.engine.execute_golden_pot_signal(
                     signal=sig, current_price=close, timestamp=ts, leverage=lev,
+                    sl_atr_mult=sl_mult_adaptive,
                 )
                 if not pos:
                     self._fr_open(GPN, sym, ts)
@@ -658,7 +738,7 @@ class PaperTradingDaemon:
                     self._fi(GPN, sym, ts, "executed")
                     logger.info(
                         f"[{sym}] 🌟 GOLDEN POT v3 DISPARADO: {direction} @ ${close:,.2f} | "
-                        f"conf {sig.confidence:.2f} cons {sig.consensus_score:+.2f} | lev {pos.leverage:g}x | "
+                        f"conf {sig.confidence:.2f} cons {sig.consensus_score:+.2f} | lev {pos.leverage:g}x (sl_mult {sl_mult_adaptive:.2f}) | "
                         f"Cota Golden Pots: {self.engine.daily_golden_pots_count}/{self.engine.max_daily_golden_pots}"
                     )
                     break  # no máximo 1 entrada GP por vela
@@ -679,7 +759,7 @@ class PaperTradingDaemon:
         now_ts = int(time.time() * 1000)
         nom = self._nominal_bar(now_ts, SCALP_BAR_MS)
         open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
-        if open_count >= self.engine.max_concurrent_positions:
+        if self.engine.max_concurrent_positions is not None and open_count >= self.engine.max_concurrent_positions:
             for _s in scalp_syms:
                 self._fr(SCN, _s, nom, "margin")
             return  # Teto de posições simultâneas atingido
@@ -697,7 +777,7 @@ class PaperTradingDaemon:
 
         for sym in scalp_syms:
             open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
-            if open_count >= self.engine.max_concurrent_positions:
+            if self.engine.max_concurrent_positions is not None and open_count >= self.engine.max_concurrent_positions:
                 self._fr(SCN, sym, nom, "margin")
                 break
 
