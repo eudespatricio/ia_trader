@@ -24,7 +24,7 @@ from signal_generator import TradeSignal  # noqa: E402
 import run_paper_simulation as rps  # noqa: E402
 from run_paper_simulation import PaperTradingDaemon  # noqa: E402
 
-BAR = rps.GP_BAR_MS
+BAR = st.STRATEGY_PROFILES["SCALP"].bar_ms
 TS0 = 1_700_000_000_000
 
 
@@ -70,7 +70,9 @@ def tick(e, side, k, hi, lo, close=None, ts_off=0):
 
 def open_scalp(e, side="BUY", **kw):
     sig = _sig(direction=side)
-    return e.execute_scalp_signal(sig, 100.0, TS0, **kw)
+    params = {"tp1_atr_mult": 1.0, "tp2_atr_mult": 2.0, "tp3_atr_mult": 3.0, "sl_atr_mult": 1.0}
+    params.update(kw)
+    return e.execute_scalp_signal(sig, 100.0, TS0, **params)
 
 
 def non_open(e, pos):
@@ -97,7 +99,7 @@ def test_ladder_tp1_tp2_tp3_sequence_and_breakeven(temp_db, side):
     assert pos.stop_loss == pytest.approx(be)           # breakeven (+fees) após TP1
     assert (pos.stop_loss - pos.entry_price) * sgn > 0
 
-    t = tick(e, side, 2, hi=101.9, lo=101.2)
+    t = tick(e, side, 2, hi=102.1, lo=101.2)
     assert [x.action for x in t] == ["TP2_PARTIAL"]
     assert pos.tp2_hit and pos.trailing_active and pos.quantity == pytest.approx(init * 0.3)
     assert pos.remaining_fraction == pytest.approx(0.3)
@@ -144,17 +146,17 @@ def test_trailing_rises_never_falls_and_uses_only_previous_bars(temp_db, side):
     sgn = 1.0 if side == "BUY" else -1.0
     m = mirror(side)
     tick(e, side, 1, hi=101.2, lo=100.5)
-    tick(e, side, 2, hi=101.9, lo=101.2)                 # TP2 -> trailing ativo
+    tick(e, side, 2, hi=102.1, lo=101.2)                 # TP2 -> trailing ativo
     assert pos.trailing_active
     trail0 = pos.trailing_stop_price
-    assert trail0 == pytest.approx(m(101.01))             # tp2 - 0.8 x ATR
+    assert trail0 == pytest.approx(m(101.21))             # tp2 - 0.8 x ATR
     assert pos.trailing_atr_mult == STRATEGY_PROFILES["SCALP"].trail_atr_mult
 
     # Barra 3 tem máxima 105 e mínima 103: com stop calculado da PRÓPRIA barra (104.2) sairia; não pode.
-    # Ao chegar a barra 3, a barra 2 (fechada, máx 101.9) entra: 101.9 - 0.8 = 101.1; a barra 3 NÃO.
+    # Ao chegar a barra 3, a barra 2 (fechada, máx 102.1) entra: 102.1 - 0.8 = 101.3; a barra 3 NÃO.
     assert tick(e, side, 3, hi=105.0, lo=103.0) == []
     trail1 = pos.trailing_stop_price
-    assert trail1 == pytest.approx(m(101.1))
+    assert trail1 == pytest.approx(m(101.3))
     assert (trail1 - trail0) * sgn > 0
     assert tick(e, side, 3, hi=104.0, lo=103.5) == []   # tick repetido da MESMA barra (mesmo timestamp de abertura)
     assert pos.trailing_stop_price == pytest.approx(trail1)

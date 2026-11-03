@@ -32,7 +32,15 @@ BASE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 SYMBOLS = list(BASE_SYMBOLS)
 BITGET = "https://api.bitget.com/api/v2/mix/market"
 BINANCE = "https://fapi.binance.com/futures/data"
+BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
 PT = "USDT-FUTURES"
+BINANCE_ONLY_SYMBOLS = set()
+EXCLUDED_GP_BASES = frozenset({
+    "SKHYNIX", "SKHY", "SAMSUNG", "KORU", "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
+    "TSLA", "NVDA", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NFLX", "AMD", "INTC",
+    "COIN", "MSTR", "HOOD", "PLTR", "BABA", "TSM", "SPY", "QQQ", "IWM", "GLD", "SLV", "USO",
+    "SNXX", "SNDK", "UNITREE", "OPENAI", "SPACEX", "ANTHROPIC", "STRIPE", "FIGMA",
+})
 BOOK_EVERY = 15.0
 FILLS_EVERY = 6.0
 DERIV_EVERY = 60.0
@@ -72,6 +80,15 @@ CREATE TABLE IF NOT EXISTS active_symbols (
 """
 
 
+def _is_excluded_gp(sym: str) -> bool:
+    s = str(sym or "").upper().strip()
+    for suf in ("USDT", "USDC", "USD", "PERP"):
+        if s.endswith(suf) and len(s) > len(suf):
+            s = s[:-len(suf)]
+            break
+    return s in EXCLUDED_GP_BASES
+
+
 def get_active_golden_pot_symbols(top_n: int = 3) -> list:
     """Descobre até top_n altcoins mais frequentes/recentes na tabela golden_pots de market_cache.db."""
     if not os.path.exists(CACHE_DB):
@@ -84,9 +101,19 @@ def get_active_golden_pot_symbols(top_n: int = 3) -> list:
                 WHERE symbol NOT IN ('BTCUSDT', 'ETHUSDT', 'SOLUSDT')
                 GROUP BY symbol 
                 ORDER BY max(timestamp) DESC, cnt DESC 
-                LIMIT ?
-            """, (top_n,)).fetchall()
-            return [str(r[0]).upper() for r in rows if r[0]]
+                LIMIT 20
+            """).fetchall()
+            out = []
+            for r in rows:
+                if not r[0]:
+                    continue
+                sym = str(r[0]).upper()
+                if _is_excluded_gp(sym):
+                    continue
+                out.append(sym)
+                if len(out) >= top_n:
+                    break
+            return out
     except Exception as e:
         log.warning("Falha ao consultar golden_pots no market_cache.db: %s", e)
         return []
@@ -132,23 +159,48 @@ def depth_notional(levels, mid, windows, side):
     return out
 
 
-def book_snapshot(sym):
-    fine = get_json(BITGET + "/merge-depth", {"symbol": sym, "productType": PT, "precision": "scale1", "limit": "max"})["data"]
-    coarse = get_json(BITGET + "/merge-depth", {"symbol": sym, "productType": PT, "precision": "scale2", "limit": "max"})["data"]
-    # topo do livro preciso: usa a melhor precisão disponível
-    top = get_json(BITGET + "/merge-depth", {"symbol": sym, "productType": PT, "precision": "scale0", "limit": "5"})["data"]
-    ba, bb = float(top["asks"][0][0]), float(top["bids"][0][0])
-    sa, sb = float(top["asks"][0][1]), float(top["bids"][0][1])
+def book_snapshot_binance(sym):
+    d = get_json(BINANCE_FAPI + "/depth", {"symbol": sym, "limit": 500}, retries=1)
+    asks, bids = d.get("asks") or [], d.get("bids") or []
+    if not asks or not bids:
+        raise RuntimeError(f"binance depth vazio para {sym}")
+    ba, bb = float(asks[0][0]), float(bids[0][0])
+    sa, sb = float(asks[0][1]), float(bids[0][1])
     mid = (ba + bb) / 2
     micro = (ba * sb + bb * sa) / (sa + sb) if (sa + sb) > 0 else mid
-    f_a = depth_notional(fine["asks"], mid, BOOK_WINDOWS_FINE, "ask")
-    f_b = depth_notional(fine["bids"], mid, BOOK_WINDOWS_FINE, "bid")
-    c_a = depth_notional(coarse["asks"], mid, BOOK_WINDOWS_COARSE, "ask")
-    c_b = depth_notional(coarse["bids"], mid, BOOK_WINDOWS_COARSE, "bid")
-    ts = int(top.get("ts") or time.time() * 1000)
+    f_a = depth_notional(asks, mid, BOOK_WINDOWS_FINE, "ask")
+    f_b = depth_notional(bids, mid, BOOK_WINDOWS_FINE, "bid")
+    c_a = depth_notional(asks, mid, BOOK_WINDOWS_COARSE, "ask")
+    c_b = depth_notional(bids, mid, BOOK_WINDOWS_COARSE, "bid")
+    ts = int(d.get("T") or d.get("E") or time.time() * 1000)
     return (ts, sym, mid, (ba - bb) / mid * 1e4, (micro - mid) / mid * 1e4, sb, sa,
             f_b[2], f_a[2], f_b[5], f_a[5], f_b[10], f_a[10],
             c_b[25], c_a[25], c_b[50], c_a[50], c_b[100], c_a[100])
+
+
+def book_snapshot(sym):
+    if sym in BINANCE_ONLY_SYMBOLS:
+        return book_snapshot_binance(sym)
+    try:
+        fine = get_json(BITGET + "/merge-depth", {"symbol": sym, "productType": PT, "precision": "scale1", "limit": "max"}, retries=1)["data"]
+        coarse = get_json(BITGET + "/merge-depth", {"symbol": sym, "productType": PT, "precision": "scale2", "limit": "max"}, retries=1)["data"]
+        # topo do livro preciso: usa a melhor precisão disponível
+        top = get_json(BITGET + "/merge-depth", {"symbol": sym, "productType": PT, "precision": "scale0", "limit": "5"}, retries=1)["data"]
+        ba, bb = float(top["asks"][0][0]), float(top["bids"][0][0])
+        sa, sb = float(top["asks"][0][1]), float(top["bids"][0][1])
+        mid = (ba + bb) / 2
+        micro = (ba * sb + bb * sa) / (sa + sb) if (sa + sb) > 0 else mid
+        f_a = depth_notional(fine["asks"], mid, BOOK_WINDOWS_FINE, "ask")
+        f_b = depth_notional(fine["bids"], mid, BOOK_WINDOWS_FINE, "bid")
+        c_a = depth_notional(coarse["asks"], mid, BOOK_WINDOWS_COARSE, "ask")
+        c_b = depth_notional(coarse["bids"], mid, BOOK_WINDOWS_COARSE, "bid")
+        ts = int(top.get("ts") or time.time() * 1000)
+        return (ts, sym, mid, (ba - bb) / mid * 1e4, (micro - mid) / mid * 1e4, sb, sa,
+                f_b[2], f_a[2], f_b[5], f_a[5], f_b[10], f_a[10],
+                c_b[25], c_a[25], c_b[50], c_a[50], c_b[100], c_a[100])
+    except Exception:
+        BINANCE_ONLY_SYMBOLS.add(sym)
+        return book_snapshot_binance(sym)
 
 
 class TickAggregator:
@@ -156,8 +208,38 @@ class TickAggregator:
         self.last_id = {s: 0 for s in BASE_SYMBOLS}
         self.buckets = {}   # (sym, minute_ms) -> dict
 
+    def _poll_binance(self, sym):
+        rows = get_json(BINANCE_FAPI + "/aggTrades", {"symbol": sym, "limit": 200}, retries=1)
+        last_seen = self.last_id.setdefault(sym, 0)
+        new = [r for r in rows if int(r["a"]) > last_seen]
+        if not new:
+            return 0
+        saturated = (len(new) == len(rows) and last_seen != 0)
+        for r in sorted(new, key=lambda r: int(r["a"])):
+            ts = int(r["T"])
+            m = ts - ts % 60000
+            b = self.buckets.setdefault((sym, m), dict(bq=0.0, sq=0.0, bn=0.0, sn=0.0, n=0, sat=0))
+            p, q = float(r["p"]), float(r["q"])
+            # m=True no aggTrades da Binance significa que o comprador é o maker -> agressão de VENDA (sell)
+            if not r.get("m", False):
+                b["bq"] += q; b["bn"] += p * q
+            else:
+                b["sq"] += q; b["sn"] += p * q
+            b["n"] += 1
+        if saturated:
+            last_ts = int(max(new, key=lambda r: int(r["a"]))["T"])
+            self.buckets[(sym, last_ts - last_ts % 60000)]["sat"] = 1
+        self.last_id[sym] = max(int(r["a"]) for r in new)
+        return len(new)
+
     def poll(self, sym):
-        rows = get_json(BITGET + "/fills", {"symbol": sym, "productType": PT, "limit": "100"})["data"]
+        if sym in BINANCE_ONLY_SYMBOLS:
+            return self._poll_binance(sym)
+        try:
+            rows = get_json(BITGET + "/fills", {"symbol": sym, "productType": PT, "limit": "100"}, retries=1)["data"]
+        except Exception:
+            BINANCE_ONLY_SYMBOLS.add(sym)
+            return self._poll_binance(sym)
         last_seen = self.last_id.setdefault(sym, 0)
         new = [r for r in rows if int(r["tradeId"]) > last_seen]
         if not new:
@@ -194,11 +276,33 @@ class TickAggregator:
         return len(out)
 
 
+def deriv_snapshot_binance(sym):
+    prem = get_json(BINANCE_FAPI + "/premiumIndex", {"symbol": sym}, retries=1)
+    oi = get_json(BINANCE_FAPI + "/openInterest", {"symbol": sym}, retries=1)
+    t24 = get_json(BINANCE_FAPI + "/ticker/24hr", {"symbol": sym}, retries=1)
+    ts = int(prem.get("time") or time.time() * 1000)
+    return (
+        ts, sym,
+        float(prem.get("lastFundingRate") or 0.0),
+        float(oi.get("openInterest") or 0.0),
+        float(prem.get("markPrice") or 0.0),
+        float(prem.get("indexPrice") or 0.0),
+        float(t24.get("lastPrice") or prem.get("markPrice") or 0.0),
+        float(t24.get("quoteVolume") or 0.0),
+    )
+
+
 def deriv_snapshot(sym):
-    d = get_json(BITGET + "/ticker", {"symbol": sym, "productType": PT})["data"][0]
-    oi = get_json(BITGET + "/open-interest", {"symbol": sym, "productType": PT})["data"]["openInterestList"][0]["size"]
-    return (int(d["ts"]), sym, float(d["fundingRate"]), float(oi), float(d["markPrice"]), float(d["indexPrice"]),
-            float(d["lastPr"]), float(d["quoteVolume"]))
+    if sym in BINANCE_ONLY_SYMBOLS:
+        return deriv_snapshot_binance(sym)
+    try:
+        d = get_json(BITGET + "/ticker", {"symbol": sym, "productType": PT}, retries=1)["data"][0]
+        oi = get_json(BITGET + "/open-interest", {"symbol": sym, "productType": PT}, retries=1)["data"]["openInterestList"][0]["size"]
+        return (int(d["ts"]), sym, float(d["fundingRate"]), float(oi), float(d["markPrice"]), float(d["indexPrice"]),
+                float(d["lastPr"]), float(d["quoteVolume"]))
+    except Exception:
+        BINANCE_ONLY_SYMBOLS.add(sym)
+        return deriv_snapshot_binance(sym)
 
 
 def binance_fetch(conn, sym, endpoint, kind, start_ms=None, end_ms=None, limit=500):

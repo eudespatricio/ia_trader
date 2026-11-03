@@ -190,6 +190,43 @@ class TestRollbackGuard:
         assert status.is_rollback_active is True
         assert "ROLLBACK_TO_DEFENSIVE_MODE" in status.actions_taken
 
+        # P0: Auto-rollback emite política defensiva e restringe estratégias
+        policy = guard.get_risk_policy()
+        assert policy.is_rollback_active is True
+        assert policy.max_leverage == 2.0
+        assert policy.min_confidence == 0.65
+
+        # Permite DIRECTIONAL mas bloqueia GOLDEN_POT
+        allowed_dir, _ = guard.can_open_new_position("BTCUSDT", "DIRECTIONAL")
+        assert allowed_dir is True
+        allowed_gp, reason_gp = guard.can_open_new_position("BTCUSDT", "GOLDEN_POT")
+        assert allowed_gp is False
+        assert "bloqueada pelo Auto-Rollback Defensivo" in reason_gp
+
+    def test_circuit_breaker_daily_drawdown_limit_trips(self, temp_db):
+        """P0 (C-03): Trava de drawdown diário real com baseline e bloqueio de novas posições."""
+        guard = RollbackGuard(db_path=temp_db, max_daily_drawdown_pct=5.0, max_total_drawdown_pct=15.0)
+        guard.set_day_baseline(10000.0)
+
+        # Equity caiu para $9,400 (queda de 6.0% em relação ao baseline diário)
+        metrics = {
+            "current_equity": 9400.0,
+            "current_drawdown_pct": 6.0,
+            "total_trades": 5,
+            "win_rate": 50.0,
+            "profit_factor": 1.2
+        }
+
+        status = guard.evaluate_telemetry(metrics)
+        assert status.state == "TRIPPED"
+        assert status.is_trading_allowed is False
+        assert status.daily_drawdown_pct >= 5.0
+        assert "CIRCUIT BREAKER DIÁRIO DISPARADO" in status.reason
+
+        allowed, reason = guard.can_open_new_position("BTCUSDT", "SCALP")
+        assert allowed is False
+        assert "CIRCUIT BREAKER DIÁRIO DISPARADO" in reason
+
     def test_emergency_stop_and_manual_reset(self, temp_db):
         guard = RollbackGuard(db_path=temp_db)
 

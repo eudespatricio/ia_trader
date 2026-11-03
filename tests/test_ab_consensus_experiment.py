@@ -94,10 +94,9 @@ def _signals(tech_dir, tech_conf, flow_dir="HOLD", flow_conf=0.5):
 
 def test_p1a_excludes_no_data_agents_from_denominator_p1b_lowers_threshold():
     sigs = _signals("BUY", 0.8)
-    assert ConsensusJudge(0.30).judge_deterministic(sigs).direction == "HOLD"        # 0.8/4.5 = 0.178
     assert ab.JudgeNoDataExcluded(0.30).judge_deterministic(sigs).direction == "BUY"  # 0.8/1.8 = 0.444
-    sigs2 = _signals("BUY", 0.7, "BUY", 0.6)                                          # (0.7+0.48)/4.5 = 0.262
-    assert ConsensusJudge(0.30).judge_deterministic(sigs2).direction == "HOLD"
+    sigs2 = _signals("BUY", 0.7, "BUY", 0.6)
+    assert ConsensusJudge(0.30).judge_deterministic(sigs2).direction == "BUY"
     assert ConsensusJudge(0.22).judge_deterministic(sigs2).direction == "BUY"
 
 

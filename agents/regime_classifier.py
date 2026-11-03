@@ -114,7 +114,10 @@ class MarketRegimeClassifier:
         last_price = float(close.iloc[-1])
         sma20 = float(close.rolling(20, min_periods=5).mean().iloc[-1])
         sma50 = float(close.rolling(50, min_periods=10).mean().iloc[-1])
-        sma200 = float(close.rolling(200, min_periods=20).mean().iloc[-1])
+        
+        # P0: Exigir histórico completo de 200 barras para SMA200 real
+        has_real_sma200 = len(close) >= 200
+        sma200 = float(close.rolling(200, min_periods=200).mean().iloc[-1]) if has_real_sma200 else None
 
         # RSI 14
         delta = close.diff()
@@ -150,6 +153,7 @@ class MarketRegimeClassifier:
             "sma_20": sma20,
             "sma_50": sma50,
             "sma_200": sma200,
+            "has_real_sma200": has_real_sma200,
             "rsi_14": rsi,
             "atr_14": curr_atr,
             "atr_ratio": atr_ratio,
@@ -165,18 +169,18 @@ class MarketRegimeClassifier:
             rationale = f"Volatilidade extrema detectada (ATR ratio {atr_ratio:.2f}x). Pânico ou choque de liquidez no mercado."
 
         # 2. Tendência de Alta Consolidada (Bull Trend)
-        elif last_price > sma50 and (last_price > sma200 or sma20 > sma50) and rsi >= 50.0 and ret_24p >= 1.5:
+        elif last_price > sma50 and (sma20 > sma50 or (sma200 is not None and last_price > sma200)) and rsi >= 50.0 and ret_24p >= 1.5:
             regime = "BULL_TREND"
             bias = "BULLISH"
-            confidence = 0.85 if (last_price > sma200 and sma50 > sma200) else 0.70
+            confidence = 0.85 if (sma200 is not None and last_price > sma200 and sma50 > sma200) else 0.70
             recs = ["SWING_BREAKOUT", "MOMENTUM_TREND", "SCALP_LONG"]
             rationale = f"Estrutura altista dominante: Preço acima das médias (SMA50: ${sma50:,.2f}), RSI em {rsi:.1f} e retorno de {ret_24p:+.2f}%."
 
         # 3. Tendência de Baixa Consolidada (Bear Trend)
-        elif last_price < sma50 and (last_price < sma200 or sma20 < sma50) and rsi <= 50.0 and ret_24p <= -1.5:
+        elif last_price < sma50 and (sma20 < sma50 or (sma200 is not None and last_price < sma200)) and rsi <= 50.0 and ret_24p <= -1.5:
             regime = "BEAR_TREND"
             bias = "BEARISH"
-            confidence = 0.85 if (last_price < sma200 and sma50 < sma200) else 0.70
+            confidence = 0.85 if (sma200 is not None and last_price < sma200 and sma50 < sma200) else 0.70
             recs = ["SWING_SHORT", "SCALP_SHORT", "DEFENSIVE_REDUCE_SIZE"]
             rationale = f"Pressão vendedora macro: Preço abaixo da SMA50 (${sma50:,.2f}), RSI fraco ({rsi:.1f}) e retorno de {ret_24p:+.2f}%."
 

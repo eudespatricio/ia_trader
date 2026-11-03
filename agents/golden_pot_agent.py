@@ -187,18 +187,20 @@ class GoldenPotAgent:
                         low_p = float(item.get("low24h", 0.0))
                         vol_usd = float(item.get("usdtVolume", 0.0))
                         chg_pct = float(item.get("change24h", 0.0)) * 100.0 # Bitget fornece decimal
-                        vwap = (high_p + low_p + last_p) / 3.0 # Aproximação se não houver VWAP nativo
+                        # Bitget não fornece weightedAvgPrice no ticker 24h; utiliza Preço Típico (H+L+C)/3 como proxy
+                        typical_price = (high_p + low_p + last_p) / 3.0
                         if last_p <= 0.0 or vol_usd < self.min_volume_usd:
                             continue
                         normalized.append({
                             "symbol": sym,
                             "last_price": last_p,
-                            "vwap_24h": vwap,
+                            "vwap_24h": typical_price,
+                            "is_true_vwap": False,
                             "high_24h": high_p,
                             "low_24h": low_p,
                             "volume_24h_usd": vol_usd,
                             "price_change_pct": chg_pct,
-                            "source": "bitget",
+                            "source": "bitget_typical_price",
                         })
                     except (ValueError, TypeError):
                         continue

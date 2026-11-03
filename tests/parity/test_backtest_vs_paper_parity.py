@@ -165,9 +165,6 @@ def test_pilot_context_feeds_macro_sentiment_onchain():
     assert all(ctx.get(k) is not None for k in ("fear_and_greed", "dxy_ret_5d", "vix_value", "stablecoin_growth_pct_30d"))
 
 
-@pytest.mark.xfail(reason="TechnicalAgent do piloto roda sem modelo (core.py: TechnicalAgent()); phase4 usa probas LGBM "
-                          "walk-forward (proba_buy/proba_sell) com confidence_threshold=0.55. models/*.joblib nunca são carregados.",
-                   strict=False)
 def test_pilot_technical_agent_uses_ml_model():
     from core import TradingCore
     assert TradingCore().technical_agent.model is not None

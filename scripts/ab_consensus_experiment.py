@@ -206,6 +206,9 @@ class OnChainAgentP3(OnChainAgent):
 class JudgeNoDataExcluded(ConsensusJudge):
     """P1a: exclui do denominador agentes SEM DADOS (Sentiment/Macro/OnChain sem contexto; Sentinel sem veto)."""
 
+    def __init__(self, min_consensus_threshold: float = 0.30, min_directional_agents: int = 1, **kwargs):
+        super().__init__(min_consensus_threshold=min_consensus_threshold, min_directional_agents=min_directional_agents, **kwargs)
+
     @staticmethod
     def has_no_data(sig: AgentSignal) -> bool:
         if sig.is_veto:

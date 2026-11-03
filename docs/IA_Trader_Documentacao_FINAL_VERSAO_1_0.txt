@@ -1,0 +1,491 @@
+﻿Documentação Oficial do Projeto: IA Autônoma para Trading
+# 📃 Documentação Oficial do Projeto: IA Autônoma para Trading
+🌟 Objetivo Geral
+Criar uma Inteligência Artificial autônoma, confiável e evolutiva, capaz de operar no mercado futuro com alavancagem ajustável, aprendendo com os dados, validando suas ações via assistência do ChatGPT, e convertendo lucros em operações spot para crescimento de capital.
+**Meta de desempenho: Obter uma performance de acertos superior a 70% nos sinais de trading.**
+🔨 Estrutura de Módulos e Objetivos
+1. core.py – Núcleo de Decisão Inteligente (Modularizado)
+
+
+Objetivo: Atuar como coordenador entre os módulos responsáveis por carregar dados, gerar features, treinar modelos e emitir sinais de trading `buy/sell/hold` com base em machine learning e dados de mercado.
+
+Estrutura Modularizada:
+
+O novo `core.py` não concentra mais toda a lógica. Ele orquestra os seguintes submódulos:
+| Módulo                                 | Função                                                                 
+| `feature_engineering.py`         | Geração de features (RSI, MACD, SMA, ATR, liquidez, macro, sentimento) 
+| `model_trainer.py`                      | Treinamento, validação, salvamento e carregamento do modelo ML         
+| `signal_generator.py`           | Geração de sinal com probabilidade, razão explicativa e SL/TP         
+| `data_loader.py`                      | Coleta e pré-processamento de dados brutos (exchanges, APIs externas)
+
+Modelos utilizados:
+
+- Inicial: `Random Forest`
+- Otimizado: `LightGBM` com grid search e validação cruzada temporal.
+
+Entradas:
+- Dados históricos de velas OHLCV
+- Indicadores técnicos: RSI, MACD, SMA, ATR
+- Dados de liquidez via Bitget
+- Fatores macroeconômicos (FRED, CoinMarketCal)
+- Sentimento de mercado (X/Twitter)
+Saídas:
+- Sinal: `buy`, `sell` ou `hold`
+- Confiança (probabilidade do modelo)
+- Justificativa textual do sinal
+- Alvos de `stop_loss` e `take_profit` dinâmicos (baseados em ATR)
+Funcionalidades: 
+- Inicialização completa com reuso de modelo treinado (via pickle)
+- Suporte a múltiplos pares e timeframes
+- Re-treinamento diário com dados mais recentes
+- Exportação estruturada do sinal para o painel Flask e bots de execução
+2. backtesting.py – Validador de Performance Histórica
+Objetivo: Validar o modelo com dados passados, simulando operações com risco real e regras do Smart Trade.
+* - Métricas: Acurácia, F1, lucro simulado, drawdown
+* - Suporte a trailing stop, slippage, diferentes timeframes
+* - Base para comparação entre versões de modelo
+3. smart_trade.py – Executor no Mercado Futuro
+Objetivo: Operar no mercado futuro com alavancagem ajustável, seguindo sinais do core.py, e converter lucros em operações spot para crescimento de capital.
+* - Alavancagem: Variável com base em confiança e volatilidade
+* - Lote mínimo por operação: Configurável manualmente com base no capital disponível em USDT
+* - Proteções: Trail stop, limite de drawdown, máx. perdas consecutivas
+* - Conversão de lucro em spot após % definida
+4. chatgpt_assistant.py – Validador Inteligente
+Objetivo: Auxiliar com validações, sugestões e interpretações do mercado, funcionando como pai do sistema.
+* - Atua automaticamente em baixa confiança ou ambiguidade
+* - Atua manualmente via painel Flask para perguntas técnicas ou interpretativas
+* - Ajuda em ajustes de parâmetros, features ou explicações semânticas
+5. flask_interface.py – Painel de Controle
+Objetivo: Permitir interação com o sistema, visualização de sinais, ajuste de parâmetros e acionamento do assistente.
+* - Endpoints: /predict, /set_params, /report, /ask_chatgpt
+* - Suporte a operação via desktop e mobile (responsivo)
+* - Integração com Plotly para visualização gráfica
+6. scheduler.py – Orquestrador de Tarefas
+Objetivo: Agendar tarefas periódicas como coleta de dados, re-treinamento, atualizações de modelo e limpeza de cache.
+* - Baseado em APScheduler ou cron
+* - Cria logs automáticos por ciclo de execução
+7. learning_tracker.py – Memória e Autoaperfeiçoamento
+Objetivo: Registrar e avaliar todas as decisões da IA, gerando feedbacks de aprendizado e ajustando comportamento.
+* - Histórico de sinais e resultados reais
+* - Análise de erros e acertos para melhorar features
+* - Gera sugestões de mutação no código para aprovação
+8. rollback_guard.py – Protetor de Código e Estabilidade
+Objetivo: Monitorar mudanças no sistema e garantir reversão imediata em caso de falha, mantendo operações contínuas sem interrupções.
+* - Valida qualquer versão nova com backtest rápido
+* - Se falhar: ativa versão anterior automaticamente
+* - Mantém modelo/código backup sempre carregado
+9. performance_tracker.py – Monitor de Performance Consolidada
+Objetivo: Acompanhar e registrar a performance atualizada da IA em tempo real, tanto para operações em futuros quanto em spot.
+* - Fonte de dados: API da Bitget e registros internos do Jarvis Junior
+* - Métricas separadas por tipo de operação (futures / spot)
+* - Cálculo de lucro líquido, drawdown, taxa de acerto, retorno sobre o capital
+* - Atualização periódica (configurável), com exportação em CSV/JSON
+10. pair_scanner.py – Varredura Estratégica de Pares
+Objetivo: Identificar pares de moedas com alta volatilidade e oportunidades especiais (ex.: delistagens), reservando capital de risco proporcional para operações mais agressivas.
+* - Varredura contínua ou periódica via API da Bitget
+* - Detecta picos de volatilidade incomuns com base em histórico recente
+* - Reserva pequena parte do capital (configurável) para operar nesses pares
+* - Identifica pares com risco elevado e sinaliza operações especiais
+* - Inclui mecanismo para detectar eventos de delistagem de grandes exchanges
+11. data_integrations.py – Integração com Fontes de Dados Externos
+Objetivo: Centralizar a coleta e atualização de dados a partir de fontes externas cruciais para decisões do modelo e contexto de mercado.
+📊 Preço & OHLCV
+🔹 Fonte: Binance API
+📌 Tipo de Dados: Preço, volume, trades
+📝 Observação: Alternativa à Bitget para validação cruzada
+
+
+🧭 Indicadores Técnicos
+🔹 Fonte: TradingView (tvdatafeed)
+📌 Tipo de Dados: RSI, MACD, SMA, etc.
+📝 Observação: API não oficial, útil para validação externa
+
+
+💰 Open Interest & Liquidez
+🔹 Fonte: CoinGlass
+📌 Tipo de Dados: OI, funding, zonas de liquidez
+📝 Observação: Scraping necessário, dados valiosos
+
+
+📈 Volume/Heatmaps
+🔹 Fonte: Bookmap
+📌 Tipo de Dados: Heatmaps institucionais
+📝 Observação: Profundo, mas acesso limitado sem plano
+
+
+📰 Notícias
+🔹 Fonte: CryptoPanic API
+📌 Tipo de Dados: Notícias, tags bullish/bearish
+📝 Observação: Boa para sentimento e contexto
+
+
+💬 Sentimento
+🔹 Fonte: Twitter + Tweepy
+📌 Tipo de Dados: Hashtags, % bullish
+📝 Observação: Já previsto, precisa refinamento de parsing
+
+
+📅 Eventos Futuros
+🔹 Fonte: CoinMarketCal API
+📌 Tipo de Dados: Forks, lançamentos, listagens
+📝 Observação: Evita operar em dias de risco
+
+
+📊 Macroeconomia
+🔹 Fonte: FRED API
+📌 Tipo de Dados: CPI, juros, macroeconômicos
+📝 Observação: Base sólida para contexto macro (já incluída)
+
+
+📉 Índices Tradicionais
+🔹 Fonte: Yahoo Finance
+📌 Tipo de Dados: SP500, DXY, VIX
+📝 Observação: Usar como input de correlação macro
+
+
+📈 On-chain Activity
+🔹 Fonte: CryptoQuant (free tier)
+📌 Tipo de Dados: Transferências, miner flows
+📝 Observação: Usar como proxy de pressão institucional
+
+
+🏦 DeFi & Liquidez
+🔹 Fonte: DefiLlama
+📌 Tipo de Dados: TVL, stablecoin flow
+📝 Observação: Rastrear entrada/saída de capital no ecossistema
+
+
+🧠 Dados derivativos
+🔹 Fonte: Glassnode
+📌 Tipo de Dados: On-chain + derivativos
+📝 Observação: Sem API aberta; requer scraping
+
+
+* - Mecanismo de fallback via scraping
+
+
+12. educational_module.py – Módulo Educacional Interativo
+Objetivo: Ensinar usuários sobre as operações realizadas pela IA, explicando decisões de
+compra, venda, indicadores utilizados e análise de risco de forma acessível.
+* Geração automática de explicações em linguagem simples
+* Históricos de decisões com justificativas por operação
+* Suporte a conteúdo em texto e áudio (narrativas explicativas)
+
+
+13. voice_commands.py – Módulo de Comandos de Voz
+Objetivo: Permitir que o usuário interaja com o sistema por meio de comandos de voz para consultar status, solicitar explicações e ativar/desativar operações.
+* Reconhecimento de comandos por microfone
+* Integração com assistentes locais (ex.: Whisper/OpenAI Speech)
+Comandos: "status do robô", "mostrar últimas operações", "pausar operações", etc.
+
+14. Integrações e Dependências – Módulos Copyright & Gestão de Usuários
+🔐 Módulo: Gestão de Usuários e Assinaturas
+* Este módulo é responsável por controlar o acesso de usuários ao sistema, autenticar identidades, gerenciar permissões com base no tipo de plano (Free, Pro, Premium), e registrar a atividade do usuário.
+* 📌 Integrações Diretas:
+* - flask_interface.py: endpoints para login, cadastro, validação de token e painel do usuário.
+* - smart_trade.py: restringe ou permite execução de ordens com base no plano.
+* - chatgpt_assistant.py: controle de acesso ao assistente por tipo de plano.
+* - performance_tracker.py: registro e exibição da performance por usuário.
+* - rollback_guard.py: logs por usuário e controle de alterações indevidas.
+* 📌 Tecnologias e Dependências:
+* - Flask
+* - Flask-JWT-Extended
+* - Flask-Limiter (limite de chamadas por plano)
+* - SQLite/PostgreSQL
+* - bcrypt/passlib para hashing de senha
+* 🧱 Estrutura Recomendada:
+* - /auth/register
+* - /auth/login
+* - /auth/user-info
+* - /auth/validate-token
+* Tabela de usuários: id, email, senha_hash, plano, validade, termos_aceitos, data_criacao
+⚖️ Módulo: Copyright & Legal
+* Responsável por proteger o sistema contra uso não autorizado, garantir a conformidade com LGPD/GDPR e implementar mecanismos de aceite de termos, proteção de código e controle de licenciamento.
+* 📌 Integrações Diretas:
+* - flask_interface.py: renderiza páginas de termos e privacidade (/terms, /privacy).
+* - rollback_guard.py: atua em caso de violação dos termos de uso.
+* - setup (PyInstaller): empacota com cláusulas legais embutidas.
+* - auth: exige aceite de termos para ativação de conta.
+* 📁 Estrutura Recomendada:
+* - /legal/terms_of_use.html
+* - /legal/privacy_policy.html
+* - LICENSE.txt
+* 📌 Tecnologias:
+* - Middleware de validação de aceite (Flask)
+* - logger para auditoria
+* - PyInstaller para empacotamento com proteção básica
+
+
+🔒 Restrições do Projeto
+* Todas as integrações e operações devem utilizar dados gratuitos.
+* Não serão utilizadas APIs premium ou serviços por assinatura.
+* Sempre que necessário, será implementado fallback com scraping ou fontes alternativas open source.
+Estrutura de Pastas e Arquivos
+/ia_trader
+├── core.py                  # Motor de decisão inteligente
+├── backtesting.py           # Simulador de performance histórica
+├── smart_trade.py           # Executor no mercado futuro com gestão de capital
+├── chatgpt_assistant.py     # Integração com ChatGPT para validações
+├── flask_interface.py       # Painel Flask para controle e visualização
+├── scheduler.py             # Agendador de tarefas e rotinas diárias
+├── learning_tracker.py      # Memória de decisões e feedback do sistema
+├── rollback_guard.py        # Proteção contra falhas e reversão de código
+├── performance_tracker.py   # Monitor de performance real
+├── pair_scanner.py          # Varredura de pares com alta volatilidade
+├── data_integrations.py     # Integração com CoinGlass, FRED, Investing, etc.
+├── /models                  # Modelos treinados (.pkl)
+├── /logs                    # Logs gerais e de rollback
+├── /datasets                # Dados salvos localmente (CSV/JSON)
+├── /config                  # Arquivos .yaml ou .json com parâmetros do sistema
+├── /tests                   # Scripts para validação dos módulos
+└── /templates               # Templates HTML para interface Flask
+📦 Bibliotecas, Instalação e Dependências
+📦 Bibliotecas Necessárias (Python)
+pip install -r requirements.txt
+requirements.txt:
+# Núcleo de IA e Machine Learning
+scikit-learn
+lightgbm
+pandas
+numpy
+joblib
+# Indicadores técnicos e análise
+ta
+yfinance
+# Visualização
+Matplotlib
+Plotly
+# Web e API
+Flask
+flask-cors
+flask-jwt-extended
+flask-limiter
+requests
+aiohttp
+beautifulsoup4
+python-dotenv
+# Criptografia e segurança
+Bcrypt
+Passlib
+# Reconhecimento de voz (módulo opcional)
+speechrecognition
+pyaudio
+# Empacotamento
+pyinstaller
+# Logs e monitoramento
+loguru
+# Agendamento
+Apscheduler
+🖥️ Empacotamento como Executável
+Objetivo: Permitir que o sistema seja executado em qualquer máquina Windows como um aplicativo independente (.exe).
+1. Instale o PyInstaller:
+pip install pyinstaller
+2. Gere o executável principal:
+pyinstaller --onefile flask_interface.py
+3. Incluir templates e configs:
+pyinstaller --add-data "templates;templates" --add-data "config;config" flask_interface.py
+No Windows use ; como separador. No Linux/macOS use :.
+4. O executável estará na pasta /dist
+5. Teste o aplicativo com permissões de rede e dados locais acessíveis
+🖥️Fluxo de Programação e Cronograma
+1. Configuração Inicial (1-2 dias)
+* - Ambiente de desenvolvimento, repositório Git, .env com APIs (Bitget, FRED).
+* - Instalação de dependências via requirements.txt.
+* - Estrutura de pastas e controle de versão.
+2. Desenvolvimento dos Módulos de Dados (4-6 dias)
+* - `data_loader.py`: coleta de dados OHLCV, liquidez, macro, sentimento.
+* - `liquidity_zones.py`, `macro_data.py`, `twitter_sentiment.py`.
+3. Engenharia de Features e Indicadores (3-4 dias)
+* - `feature_engineering.py`: RSI, MACD, SMA, ATR, volatilidade, macro codificada.
+* - Integração com dados externos (Bitget, FRED, CoinGlass, etc).
+4. Treinamento e Validação do Modelo (5-7 dias)
+* - `model_trainer.py`: Random Forest inicial, LightGBM otimizado.
+* - Validação cruzada, persistência via joblib, controle de overfitting.
+5. Núcleo Inteligente de Sinal (2-3 dias)
+* - `core.py`: coordenação de dados, modelo e predição.
+* - `signal_generator.py`: geração de sinais com probabilidade, SL/TP, motivo.
+6. Backtesting e Gestão de Risco (3-4 dias)
+* - `backtesting.py`: simulação com métricas (acurácia, lucro, drawdown).
+* - Estratégias de TP/SL e controle de risco (ex: evitar eventos macro).
+7. Integração com Interface (3-4 dias)
+* - `flask_interface.py`: visualização de sinais, endpoints de controle.
+* - Plotly para gráficos, HTML responsivo para desktop/mobile.
+8. Módulo Smart Trade (4-6 dias)
+* - `smart_trade.py`: operação em futuros, alavancagem, conversão de lucro para spot.
+* - Lote mínimo configurável, limites de drawdown, trail stop.
+9. Módulo de Performance (2-3 dias)
+* - `performance_tracker.py`: métricas de lucro, acurácia, drawdown por tipo de operação.
+* - Exportação para JSON/CSV, visualização no painel.
+10. Módulo Educacional (2 dias)
+* - `educational_module.py`: explica operações, decisões e estratégias ao usuário.
+11. Módulo de Comandos de Voz (2-3 dias)
+* - `voice_commands.py`: reconhecimento de comandos simples com integração ao core.
+12. Módulo de Gestão de Usuários e Assinaturas (3-4 dias)
+* - Autenticação JWT, controle de plano (Free, Pro, Premium), logs por usuário.
+* - Flask-JWT-Extended, banco SQLite/PostgreSQL, restrições por plano.
+13. Módulo Legal e Copyright (1-2 dias)
+* - Exibição de termos, aceite obrigatório, empacotamento com licença.
+* - LICENSE.txt, HTML de termos e privacidade, proteção via PyInstaller.
+14. Otimização Final e Testes (3-5 dias)
+* - Monitoramento, rollback seguro, cache, tunagem do modelo.
+* - Logs, testes integrados e preparação do .exe final.
+Total estimado: 40 a 55 dias (dependendo do ritmo e ajustes iterativos)
+✨ Próximos Passos
+* - Finalizar estrutura de código
+* - Criar testes unitários
+* - Iniciar modo de simulação em tempo real
+Versão: 1.0 – Maio/2025
+________________
+
+
+📘 Glossário Técnico
+OI (Open Interest): Número total de contratos futuros ou opções abertos e não liquidados.
+SL/TP (Stop Loss / Take Profit): Níveis definidos para limitar perdas e realizar lucros automaticamente.
+LightGBM: Framework de aprendizado de máquina baseado em árvores de decisão, otimizado para desempenho.
+Drawdown: Queda percentual do pico de capital até o ponto mínimo subsequente.
+CoinGlass: Ferramenta que fornece dados de liquidez, OI e mapas de ordens em exchanges.
+ATR (Average True Range): Indicador de volatilidade do mercado baseado na média da faixa de preços.
+FRED: Base de dados macroeconômicos do Federal Reserve Bank dos EUA.
+________________
+
+
+📋 Checklist Final de Entrega
+✅ Estrutura modular definida e documentada
+✅ Integração com fontes de dados gratuitas (Bitget, FRED, CoinGlass)
+✅ Pipeline de machine learning com reuso de modelo
+✅ Sistema de rollback e monitoramento incluídos
+✅ Painel Flask com visualização e endpoints
+✅ Módulo de comandos de voz e educacional planejado
+✅ Empacotamento como executável (PyInstaller)
+✅ Versão e glossário técnico adicionados
+________________
+
+
+📌 Observações Técnicas Finais e Melhorias Sugeridas
+🔐 Validação de Licenças: implementar verificação automática da validade de assinatura no backend e impedir uso após expiração.
+🔁 Endpoint de Renovação: sugerido endpoint `/auth/renew` ou painel com integração futura a gateways de pagamento (Stripe, PagSeguro).
+📓 Logger Centralizado: criação de módulo `log_handler.py` com padronização para `loguru`, registrando atividades críticas, erros e sinais.
+🛡️ Segurança do .env: remover ou criptografar automaticamente arquivos `.env` no processo de empacotamento `.exe` para proteger chaves.
+🔍 Assinatura de Build: gerar hash SHA256 ou ID de versão embutido no `.exe` para controle de integridade e atualizações.
+📶 Health Check: criar endpoint `/health` no `flask_interface.py` para retornar status da API e integridade dos módulos principais.
+📄 Licença de Uso: definir e documentar (MIT, Apache 2.0, Proprietária) para incluir oficialmente no `LICENSE.txt` e nos builds.
+📅 Agenda Diária de Desenvolvimento – IA Trader
+Dia 1: Setup e Estrutura Inicial
+Carga horária estimada: 4h
+Tarefas principais:
+• Clonar repo
+• criar pastas
+• preparar `.env`
+• validar dependências (`requirements`)
+Dia 2: `data_loader.py` – Coleta e pré-processamento
+Carga horária estimada: 6h
+Tarefas principais:
+• Bitget API
+• FRED
+• CoinGlass (scraping)
+• Yahoo Finance
+• cache e sanitização
+Dia 3: `feature_engineering.py` – Indicadores e codificação macro
+Carga horária estimada: 6h
+Tarefas principais:
+• RSI
+• MACD
+• SMA
+• ATR
+• CPI/FED codificados
+• volatilidade
+• normalizações
+Dia 4: `model_trainer.py` (Random Forest)
+Carga horária estimada: 5h
+Tarefas principais:
+• Train/test split temporal
+• joblib
+• métricas iniciais
+• tunagem básica
+Dia 5: `signal_generator.py`
+Carga horária estimada: 5h
+Tarefas principais:
+• Classificação buy/sell/hold
+• confiança
+• explicação textual
+• SL/TP com ATR
+Dia 6: `core.py` (orquestrador modular)
+Carga horária estimada: 4h
+Tarefas principais:
+• Integração dos módulos anteriores
+• fluxo de decisão completo
+Dia 7: Revisão + Teste parcial com 1 par
+Carga horária estimada: 4h
+Tarefas principais:
+• Validação com BTC/USDT em timeframe 1h
+• logs
+• análise de acurácia inicial
+Dia 8: `backtesting.py` + Gestão de Risco
+Carga horária estimada: 6h
+Tarefas principais:
+• Simulador
+• lucros
+• F1
+• drawdown
+• evitar trades em eventos macro
+Dia 9: `smart_trade.py` – Operações em futuros
+Carga horária estimada: 5h
+Tarefas principais:
+• Trail stop
+• alavancagem ajustável
+• lote mínimo
+• lucro convertido para spot
+Dia 10: `performance_tracker.py`
+Carga horária estimada: 3h
+Tarefas principais:
+• Histórico de acertos
+• drawdown
+• % lucro
+• CSV/JSON export
+Dia 11: `flask_interface.py` – Painel e endpoints
+Carga horária estimada: 5h
+Tarefas principais:
+• `/signal`
+• `/set_params`
+• visual gráfico com Plotly
+• responsivo
+Dia 12: `auth_module.py` + JWT e planos
+Carga horária estimada: 6h
+Tarefas principais:
+• Login
+• cadastro
+• planos Free/Pro/Premium
+• restrição por plano
+Dia 13: Legal: termos, licença, proteção do build
+Carga horária estimada: 3h
+Tarefas principais:
+• `/terms`
+• LICENSE.txt
+• aceite obrigatório
+• PyInstaller c/ proteção mínima
+Dia 14: Testes completos + rollback/versão + logs centralizados
+Carga horária estimada: 5h
+Tarefas principais:
+• `rollback_guard.py`
+• logs com `loguru`
+• fallback automático
+• validação modular
+Dia 15: Testes simulados por 24h + ajustes finais
+Carga horária estimada: 4h
+Tarefas principais:
+• Execução contínua
+• análise de memória/CPU
+• ajustes em parâmetros e thresholds
+Dia 16: Documentação técnica final + empacotamento como `.exe`
+Carga horária estimada: 3h
+Tarefas principais:
+• PyInstaller
+• versionamento
+• readme e doc Word/pdf finalizadas
+________________
+
+
+Resumo Final
+Total estimado: 75 a 80 horas
+Duração com ritmo diário (4–6h/dia): aproximadamente 3 semanas úteis
+Backup mínimo funcional (MVP): até o Dia 7 (~1 semana)

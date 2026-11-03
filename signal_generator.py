@@ -34,6 +34,7 @@ class TradeSignal:
     rationale: str
     is_vetoed: bool = False
     contributing_agents: List[Dict[str, Any]] = field(default_factory=list)
+    metrics: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

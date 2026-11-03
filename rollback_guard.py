@@ -36,12 +36,42 @@ if not logger.handlers:
 
 
 @dataclass
+class RiskPolicy:
+    """Política operacional emitida pelo Guardião de Risco."""
+    min_confidence: float = 0.60
+    max_leverage: float = 5.0
+    lot_multiplier: float = 1.0
+    allowed_strategies: List[str] = field(default_factory=lambda: ["DIRECTIONAL", "SCALP", "GOLDEN_POT", "CARRY"])
+    require_tape_gate: bool = False
+    is_rollback_active: bool = False
+    policy_version: int = 1
+    reason: str = "Política operacional normal (Fase 4/7)."
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DefensiveRiskPolicy(RiskPolicy):
+    """Política defensiva calibrada para S2 (régua ajustada de 0.80 para 0.65)."""
+    min_confidence: float = 0.65
+    max_leverage: float = 2.0
+    lot_multiplier: float = 0.50
+    allowed_strategies: List[str] = field(default_factory=lambda: ["DIRECTIONAL"])
+    require_tape_gate: bool = True
+    is_rollback_active: bool = True
+    policy_version: int = 2
+    reason: str = "Modo defensivo calibrado (confiança mínima 0.65 para permitir trades na S2)."
+
+
+@dataclass
 class CircuitBreakerStatus:
     """Estado do Guardião de Circuit Breakers e Rollback."""
     state: str = "CLEAR"                   # "CLEAR", "COOLDOWN", "TRIPPED", "EMERGENCY_HALT"
     is_trading_allowed: bool = True
     reason: str = "Sistema operacional dentro dos limites normais de risco."
     current_drawdown_pct: float = 0.0
+    daily_drawdown_pct: float = 0.0
     consecutive_losses: int = 0
     cooldown_until: int = 0               # Timestamp ms
     is_rollback_active: bool = False
@@ -77,6 +107,11 @@ class RollbackGuard:
         self.min_win_rate_threshold = float(min_win_rate_threshold)
         self.min_trades_for_degradation = int(min_trades_for_degradation)
         self.auto_rollback_enabled = auto_rollback_enabled
+
+        self.day_start_equity: Optional[float] = None
+        self.high_water_equity_day: Optional[float] = None
+        self.current_day_str: Optional[str] = None
+        self.active_policy: RiskPolicy = RiskPolicy()
 
         self._ensure_tables()
         self._load_persisted_state()
@@ -116,6 +151,15 @@ class RollbackGuard:
                         updated_at INTEGER NOT NULL
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS circuit_breaker_daily (
+                        day_str TEXT PRIMARY KEY,
+                        day_start_equity REAL NOT NULL,
+                        high_water_equity REAL NOT NULL,
+                        daily_drawdown_pct REAL NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                """)
                 conn.commit()
         except Exception as e:
             logger.warning(f"Aviso ao inicializar tabelas do RollbackGuard: {e}")
@@ -142,6 +186,17 @@ class RollbackGuard:
                         self.status.reason = str(row["reason"])
                         self.status.cooldown_until = cd_until
                         self.status.is_rollback_active = bool(row["is_rollback_active"])
+
+                    if self.status.is_rollback_active:
+                        self.active_policy = DefensiveRiskPolicy()
+
+                # Carrega baseline diário mais recente
+                drow = conn.execute("SELECT * FROM circuit_breaker_daily ORDER BY updated_at DESC LIMIT 1").fetchone()
+                if drow:
+                    self.current_day_str = str(drow["day_str"])
+                    self.day_start_equity = float(drow["day_start_equity"])
+                    self.high_water_equity_day = float(drow["high_water_equity"])
+                    self.status.daily_drawdown_pct = float(drow["daily_drawdown_pct"])
         except Exception as e:
             logger.warning(f"Aviso ao carregar estado do RollbackGuard: {e}")
 
@@ -162,6 +217,18 @@ class RollbackGuard:
                     1 if self.status.is_rollback_active else 0,
                     now_ms
                 ))
+                if self.current_day_str and self.day_start_equity:
+                    conn.execute("""
+                        INSERT OR REPLACE INTO circuit_breaker_daily (
+                            day_str, day_start_equity, high_water_equity, daily_drawdown_pct, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        self.current_day_str,
+                        self.day_start_equity,
+                        self.high_water_equity_day or self.day_start_equity,
+                        self.status.daily_drawdown_pct,
+                        now_ms
+                    ))
                 conn.commit()
         except Exception as e:
             logger.warning(f"Erro ao persistir estado do circuit breaker: {e}")
@@ -201,6 +268,24 @@ class RollbackGuard:
         win_rate = float(m.get("win_rate", 0.0))
         profit_factor = float(m.get("profit_factor", 0.0))
 
+        # -------------------------------------------------------------
+        # Cálculo de Drawdown Diário com baseline persistido
+        # -------------------------------------------------------------
+        current_equity = float(m.get("current_equity", m.get("equity", 0.0)))
+        today_str = time.strftime("%Y-%m-%d", time.gmtime(now_ms / 1000.0))
+        if self.current_day_str != today_str or self.day_start_equity is None or self.day_start_equity <= 0:
+            self.current_day_str = today_str
+            self.day_start_equity = current_equity if current_equity > 0 else 10000.0
+            self.high_water_equity_day = self.day_start_equity
+
+        if current_equity > (self.high_water_equity_day or 0.0):
+            self.high_water_equity_day = current_equity
+
+        daily_dd = 0.0
+        if self.day_start_equity and self.day_start_equity > 0 and current_equity > 0:
+            daily_dd = max(0.0, ((self.day_start_equity - current_equity) / self.day_start_equity) * 100.0)
+
+        self.status.daily_drawdown_pct = daily_dd
         self.status.current_drawdown_pct = current_dd
         self.status.consecutive_losses = active_losses
 
@@ -227,10 +312,29 @@ class RollbackGuard:
                 self._persist_state()
 
         # -------------------------------------------------------------
-        # 2. Circuit Breaker de Drawdown Total (> 10.0%)
+        # 2a. Circuit Breaker de Drawdown Diário (ex: >= 5.0%)
+        # -------------------------------------------------------------
+        if daily_dd >= self.max_daily_drawdown_pct:
+            reason = (
+                f"CIRCUIT BREAKER DIÁRIO DISPARADO: Drawdown do dia ({daily_dd:.2f}%) "
+                f"atingiu o limite crítico ({self.max_daily_drawdown_pct:.1f}%). "
+                f"Baseline: ${self.day_start_equity:,.2f}, Atual: ${current_equity:,.2f}."
+            )
+            self.status.state = "TRIPPED"
+            self.status.is_trading_allowed = False
+            self.status.reason = reason
+            self.status.tripped_timestamp = now_ms
+            self.status.actions_taken = ["HALT_NEW_POSITIONS", "FLATTEN_RISK", "NOTIFY_OPERATOR"]
+            self._log_event("DAILY_DRAWDOWN_BREAKER", reason, daily_dd, active_losses, actions=self.status.actions_taken)
+            self._persist_state()
+            logger.error(f"🚨 {reason}")
+            return self.status
+
+        # -------------------------------------------------------------
+        # 2b. Circuit Breaker de Drawdown Total (> 10.0%)
         # -------------------------------------------------------------
         if current_dd >= self.max_total_drawdown_pct:
-            reason = f"CIRCUIT BREAKER DISPARADO: Drawdown atual ({current_dd:.2f}%) atingiu o limite crítico ({self.max_total_drawdown_pct:.1f}%). Novas operações bloqueadas compulsoriamente."
+            reason = f"CIRCUIT BREAKER DISPARADO: Drawdown total ({current_dd:.2f}%) atingiu o limite crítico ({self.max_total_drawdown_pct:.1f}%). Novas operações bloqueadas compulsoriamente."
             self.status.state = "TRIPPED"
             self.status.is_trading_allowed = False
             self.status.reason = reason
@@ -265,6 +369,7 @@ class RollbackGuard:
                 if not self.status.is_rollback_active:
                     reason = f"DEGRADAÇÃO DETECTADA: Win Rate={win_rate:.1f}% e Profit Factor={profit_factor:.2f} abaixo do limiar de segurança. Ativando rollback para modo defensivo ultra-conservador."
                     self.status.is_rollback_active = True
+                    self.active_policy = DefensiveRiskPolicy()
                     self.status.actions_taken.append("ROLLBACK_TO_DEFENSIVE_MODE")
                     self._log_event("DEGRADATION_ROLLBACK_ACTIVATED", reason, current_dd, active_losses, actions=["ROLLBACK_TO_DEFENSIVE_MODE"])
                     self._persist_state()
@@ -278,6 +383,17 @@ class RollbackGuard:
             self._persist_state()
 
         return self.status
+
+    def set_day_baseline(self, equity: float, day_str: Optional[str] = None):
+        """Define explicitamente o baseline diário de equity (útil para auditoria, resets e testes)."""
+        self.day_start_equity = float(equity)
+        self.high_water_equity_day = float(equity)
+        self.current_day_str = day_str or time.strftime("%Y-%m-%d", time.gmtime())
+        self._persist_state()
+
+    def get_risk_policy(self) -> RiskPolicy:
+        """Retorna o objeto versionado de política de risco ativa."""
+        return self.active_policy if self.status.is_rollback_active else RiskPolicy()
 
     def can_open_new_position(self, symbol: str, strategy: str = "SCALP") -> Tuple[bool, str]:
         """
@@ -299,6 +415,11 @@ class RollbackGuard:
         if not self.status.is_trading_allowed or self.status.state in ("TRIPPED", "EMERGENCY_HALT"):
             return False, f"Trading bloqueado pelo Circuit Breaker: {self.status.reason}"
 
+        # Se Auto-Rollback estiver ativo, verifica restrição de estratégias autorizadas
+        if self.status.is_rollback_active:
+            if strategy not in self.active_policy.allowed_strategies:
+                return False, f"Estratégia {strategy} bloqueada pelo Auto-Rollback Defensivo (permitidas: {self.active_policy.allowed_strategies})."
+
         return True, "Trading autorizado pelo Guardião de Risco."
 
     def trigger_emergency_stop(self, reason: str = "Parada manual de emergência disparada pelo operador."):
@@ -319,8 +440,11 @@ class RollbackGuard:
             state="CLEAR",
             is_trading_allowed=True,
             reason=f"Circuit Breaker resetado manualmente. Nota: {operator_note}",
+            is_rollback_active=False,
             actions_taken=["MANUAL_RESET"]
         )
+        self.day_start_equity = None
+        self.active_policy = RiskPolicy()
         self._log_event("MANUAL_RESET", operator_note, 0.0, 0)
         self._persist_state()
         logger.info(f"🔄 Circuit Breaker resetado com sucesso: {operator_note}")

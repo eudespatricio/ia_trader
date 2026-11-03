@@ -26,8 +26,8 @@ class AgentSignal:
 
     def __post_init__(self):
         self.direction = self.direction.upper()
-        if self.direction not in ["BUY", "SELL", "HOLD"]:
-            raise ValueError(f"Direção inválida no AgentSignal: '{self.direction}'. Deve ser BUY, SELL ou HOLD.")
+        if self.direction not in ["BUY", "SELL", "HOLD", "ABSTAIN"]:
+            raise ValueError(f"Direção inválida no AgentSignal: '{self.direction}'. Deve ser BUY, SELL, HOLD ou ABSTAIN.")
         # NaN-safe: max(0, min(1, nan)) devolveria 1.0 (confiança máxima) -> força 0.0
         conf = float(self.confidence)
         self.confidence = 0.0 if conf != conf else float(max(0.0, min(1.0, conf)))

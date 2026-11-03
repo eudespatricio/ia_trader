@@ -103,7 +103,9 @@ class PairScanner:
         volume_ratio = (curr_vol / (mean_vol + 1e-12))
 
         curr_price = float(closes[-1])
-        price_24h_ago = float(closes[0])
+        # P0: Para velas de 15m, 24 horas correspondem a 96 barras (24 * 4)
+        bars_24h = 96
+        price_24h_ago = float(closes[-bars_24h]) if len(closes) >= bars_24h else float(closes[0])
         change_pct = ((curr_price - price_24h_ago) / price_24h_ago) * 100.0
 
         # 1. Detecção de Risco de Colapso / Delistagem Iminente
@@ -175,7 +177,7 @@ class PairScanner:
             loader = DataLoader(db_path=self.db_path)
             for symbol in symbols_or_candles:
                 try:
-                    df = loader.get_cached_candles(symbol, "15m", limit=50)
+                    df = loader.get_cached_candles(symbol, "15m", limit=96)
                     if not df.empty:
                         opp = self.analyze_pair_candles(symbol, df)
                         if opp is not None:

@@ -37,7 +37,7 @@ import pandas as pd
 
 from core import TradingCore
 from signal_generator import TradeSignal
-from leverage_policy import MAX_LEVERAGE, clamp_leverage
+from leverage_policy import MAX_LEVERAGE, clamp_leverage, decide_leverage
 
 # Lote padrão = MARGEM (capital alocado, USD) por trade em TODA ordem do paper trading
 # (GP, Scalp, Directional); notional = lote x alavancagem (decidida pelo Smart Trader, <= MAX_LEVERAGE).
@@ -79,7 +79,7 @@ MAKER_EXIT_REASONS = frozenset({"TAKE_PROFIT_1", "TAKE_PROFIT_2", "TAKE_PROFIT_3
 #   i.e. o horizonte é definido em barras do timeframe de decisão, como no backtest (max_holding_bars).
 DIRECTIONAL_BAR_MS = 60 * 60 * 1000
 INTRADAY_BAR_MS = 15 * 60 * 1000
-SCALP_BAR_MS = 3 * 60 * 1000
+SCALP_BAR_MS = 15 * 60 * 1000  # S2: Migrado de 3m para 15m (reduz atrito de taxas de 0.79R para 0.16R)
 GOLDEN_POT_BAR_MS = 5 * 60 * 1000
 DIRECTIONAL_MAX_HOLDING_BARS = 48
 SCALP_MAX_HOLDING_BARS = 30
@@ -126,14 +126,14 @@ class StrategyProfile:
 
 
 STRATEGY_PROFILES: Dict[str, StrategyProfile] = {
-    # alvos curtos: Scalp 3m em majors (BTC, ETH, SOL)
-    "SCALP": StrategyProfile(sl_atr_mult=0.9, tp1_atr_mult=1.0, tp2_atr_mult=1.8, tp3_atr_mult=3.0, trail_atr_mult=0.8,
+    # alvos curtos: Scalp 15m em majors (BTC, ETH, SOL) - R:R: TP1 1.2x (1.33R), TP2 2.0x (2.22R), TP3 3.6x (4.0R)
+    "SCALP": StrategyProfile(sl_atr_mult=0.9, tp1_atr_mult=1.2, tp2_atr_mult=2.0, tp3_atr_mult=3.6, trail_atr_mult=0.8,
                              bar_ms=SCALP_BAR_MS, max_holding_bars=SCALP_MAX_HOLDING_BARS),
-    # day trade 1h (SL efetivo = o do comitê/SignalGenerator; sl_atr_mult é o fallback)
+    # day trade 1h (SL efetivo = o do comitê/SignalGenerator; sl_atr_mult é o fallback) - R:R: TP1 1.5x, TP2 2.5x, TP3 4.0x
     "DIRECTIONAL": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=4.0, trail_atr_mult=1.2,
                                    bar_ms=DIRECTIONAL_BAR_MS, max_holding_bars=DIRECTIONAL_MAX_HOLDING_BARS),
-    # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails)
-    "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.5, tp1_atr_mult=1.2, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
+    # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails) - R:R: TP1 1.0x (BE), TP2 1.67x, TP3 4.0x
+    "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.5, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
                                   bar_ms=GOLDEN_POT_BAR_MS, max_holding_bars=GOLDEN_POT_MAX_HOLDING_BARS),
 }
 
@@ -319,6 +319,7 @@ class PaperTradingEngine:
         self.max_margin_utilization_pct: float = 0.85 if max_margin_utilization_pct is None else float(max_margin_utilization_pct)
 
         self.paper_lot_usd: float = PAPER_LOT_USD
+        self.risk_per_trade_pct: Optional[float] = None   # None = modo lote fixo ($100 USD); >0 = dimensionamento por volatilidade (1% da banca)
 
         self._lock = threading.RLock()
 
@@ -335,19 +336,24 @@ class PaperTradingEngine:
         self._last_snapshot_equity: float = -1.0
         self._last_snapshot_open_count: int = -1
 
-        # Telemetria & Circuit Breakers (Fase 7) & Aprendizado Adaptativo
+        # Telemetria & Circuit Breakers (Fase 7) & Aprendizado Adaptativo & OMS (P0)
         try:
             from performance_tracker import PerformanceTracker
             from rollback_guard import RollbackGuard
             from learning_tracker import LearningTracker
+            from oms import OrderManagementSystem, OrderState
             self.performance_tracker = PerformanceTracker(db_path=self.db_path, initial_capital=self.initial_capital)
             self.rollback_guard = RollbackGuard(db_path=self.db_path)
             self.learning_tracker = LearningTracker(db_path=self.db_path)
+            self.oms = OrderManagementSystem(db_path=self.db_path)
+            if self.core is not None:
+                self.core.learning_tracker = self.learning_tracker
         except Exception as e:
-            logger.warning(f"Aviso ao inicializar módulos da Fase 7: {e}")
+            logger.warning(f"Aviso ao inicializar módulos da Fase 7/OMS: {e}")
             self.performance_tracker = None
             self.rollback_guard = None
             self.learning_tracker = None
+            self.oms = None
 
 
         self._init_database_tables()
@@ -665,6 +671,14 @@ class PaperTradingEngine:
                             self.daily_golden_pots_count += 1
 
             self.sync_settings_from_db()  # limites atuais + eventual reset de cotas pendente
+            
+            # P0: Reconciliação compulsória do OMS no restore de startup
+            if getattr(self, "oms", None) is not None:
+                try:
+                    self.oms.reconcile_on_startup(self.positions, self.trade_history)
+                except Exception as _e:
+                    logger.warning(f"Aviso na reconciliação do OMS durante restore: {_e}")
+
             logger.info(
                 f"[RESTORE] Saldo ${self.balance:,.2f} | {len(open_pos)} posições abertas | "
                 f"{len(history)} trades | cotas {self.daily_scalps_count}/{self.daily_golden_pots_count} ({self.current_day_utc})"
@@ -1076,20 +1090,70 @@ class PaperTradingEngine:
             lev -= 0.5
         return max(1.0, lev)
 
-    def _lot_margin(self, signal: TradeSignal, lev_req: float, balance_cap_pct: float) -> Tuple[float, float]:
-        """Margem do trade = min(lote, margem livre*0.95, cap do saldo, position_size(notional)/alavancagem)."""
+    def _lot_margin(
+        self,
+        signal: TradeSignal,
+        lev_req: float,
+        balance_cap_pct: float,
+        sl_distance_pct: Optional[float] = None,
+        risk_scale: float = 1.0,
+        current_price: float = 1.0,
+    ) -> Tuple[float, float]:
+        """Margem do trade com suporte a dimensionamento de volatilidade (risco escalonado por estratégia)."""
         max_margin = self.balance * self.max_margin_utilization_pct
         free_margin = max(0.0, max_margin - self.margin_used)
-        margin = min(self.paper_lot_usd, free_margin * 0.95, self.balance * balance_cap_pct,
-                     signal.position_size / lev_req)
+
+        risk_pct = getattr(self, "risk_per_trade_pct", None)
+        if (
+            risk_pct is not None
+            and risk_pct > 0.0
+            and sl_distance_pct is not None
+            and sl_distance_pct > 1e-4
+            and lev_req >= 1.0
+        ):
+            target_risk_usd = self.balance * risk_pct * max(0.05, float(risk_scale))
+            # Proteção contra stops microscópicos (< 50 bps / 0.50%): stops colados no spread têm alta
+            # probabilidade de violinada por ruído; amortecemos a margem em vez de inflá-la até o cap.
+            if sl_distance_pct < 0.005:
+                noise_scale = max(0.20, float(sl_distance_pct) / 0.005)
+                ideal_margin = (target_risk_usd / (0.025 * lev_req)) * noise_scale
+            else:
+                ideal_margin = target_risk_usd / (sl_distance_pct * lev_req)
+            margin = min(ideal_margin, free_margin * 0.95, self.balance * balance_cap_pct)
+        else:
+            # P0: Separação consistente entre quantidade base, notional e margem
+            px = current_price if current_price > 0 else (signal.entry_price or 1.0)
+            sig_notional = signal.position_size * px
+            sig_margin = sig_notional / max(1.0, lev_req)
+            margin = min(self.paper_lot_usd, free_margin * 0.95, self.balance * balance_cap_pct, sig_margin)
         return margin, free_margin
+
+    def is_in_cooldown(self, symbol: str, bar_id: int, cooldown_bars: int, bar_ms: int) -> bool:
+        """True se o símbolo teve fechamento (qualquer saída total) há < cooldown_bars velas.
+        Centralizado no PaperTradingEngine para governança única em paper, live e backtest."""
+        with self._lock:
+            for t in self.trade_history:
+                if t.symbol != symbol or t.action.startswith("OPEN_") or t.action in NON_CLOSING_TRADE_ACTIONS:
+                    continue
+                if bar_id - int(self._ts_ms(t.timestamp)) // bar_ms < cooldown_bars:
+                    return True
+            return False
+
+    def has_entered_bar(self, action_prefix: str, bar_id: int, max_per_bar: int, bar_ms: int) -> bool:
+        """True se já foram realizadas >= max_per_bar entradas nesta vela fechada."""
+        with self._lock:
+            n = sum(
+                1 for t in self.trade_history
+                if t.action.startswith(action_prefix) and int(self._ts_ms(t.timestamp)) // bar_ms - 1 == bar_id
+            )
+            return n >= max_per_bar
 
     # Metadados de entrada por tipo de oportunidade. A MECÂNICA de saída (ladder) é idêntica para todos.
     _ENTRY_META: Dict[str, Dict[str, Any]] = {
-        # DIRECTIONAL (day trade 1h): entrada a mercado (taker + slippage), como antes; saídas = ladder comum.
-        "DIRECTIONAL": {"label": "Ordem Direcional", "cap": 0.5, "maker_entry": False, "atr_fallback_pct": 0.01},
-        "SCALP": {"label": "Scalp", "cap": 0.25, "maker_entry": True, "atr_fallback_pct": 0.005},
-        "GOLDEN_POT": {"label": "Golden Pot", "cap": 0.20, "maker_entry": True, "atr_fallback_pct": 0.008},
+        # DIRECTIONAL (day trade 1h): entrada a mercado (taker + slippage), como contratado na Fase 6; saídas = ladder comum.
+        "DIRECTIONAL": {"label": "Ordem Direcional", "cap": 0.5, "maker_entry": False, "atr_fallback_pct": 0.01, "risk_scale": 1.0},
+        "SCALP": {"label": "Scalp", "cap": 0.25, "maker_entry": True, "atr_fallback_pct": 0.005, "risk_scale": 1.0},
+        "GOLDEN_POT": {"label": "Golden Pot", "cap": 0.12, "maker_entry": True, "atr_fallback_pct": 0.008, "risk_scale": 0.30},
     }
 
     def _open_ladder_position(
@@ -1120,6 +1184,58 @@ class PaperTradingEngine:
                 self.last_open_reject = "veto"
                 return None
 
+            # P0 (C-08): Validação de confiança mínima do perfil estratégico
+            min_conf = getattr(prof, "min_committee_confidence", 0.60)
+            if signal.confidence < min_conf:
+                logger.info(f"[{signal.symbol}] {label} Rejeitado: Confiança {signal.confidence:.2f} < mínimo do perfil ({min_conf:.2f}).")
+                self.last_open_reject = "confidence"
+                return None
+
+            # P0 (C-04): Auto-Rollback Defensivo e Circuit Breakers
+            can_fn = {
+                "DIRECTIONAL": self.can_execute_directional,
+                "SCALP": self.can_execute_scalp,
+                "GOLDEN_POT": self.can_execute_golden_pot,
+            }.get(strategy_type)
+            if can_fn is not None:
+                allowed, cb_reason = can_fn(timestamp)
+                if not allowed:
+                    logger.info(f"[{signal.symbol}] {label} Rejeitado: {cb_reason}")
+                    if "Limite diário" in cb_reason or "cota" in cb_reason.lower():
+                        self.last_open_reject = "quota"
+                    elif "Margem" in cb_reason or "posições simultâneas" in cb_reason:
+                        self.last_open_reject = "margin"
+                    else:
+                        self.last_open_reject = "breaker"
+                    return None
+
+            if self.rollback_guard is not None:
+                if hasattr(self.rollback_guard, "get_risk_policy"):
+                    policy = self.rollback_guard.get_risk_policy()
+                    status = getattr(self.rollback_guard, "status", None)
+                    if status and getattr(status, "is_rollback_active", False) and policy:
+                        if strategy_type not in policy.allowed_strategies:
+                            logger.info(f"[{signal.symbol}] {label} Rejeitado: Estratégia {strategy_type} bloqueada sob Auto-Rollback.")
+                            self.last_open_reject = "breaker"
+                            return None
+                        if signal.confidence < policy.min_confidence:
+                            logger.info(f"[{signal.symbol}] {label} Rejeitado: Confiança {signal.confidence:.2f} < mínimo defensivo ({policy.min_confidence:.2f}).")
+                            self.last_open_reject = "confidence"
+                            return None
+
+            # P0 (C-10): Gate de dados defasados (fail-closed contra stale data)
+            sig_metrics = getattr(signal, "metrics", None) or {}
+            if sig_metrics.get("is_stale", False):
+                logger.info(f"[{signal.symbol}] {label} Rejeitado: Dados de mercado defasados (stale data).")
+                self.last_open_reject = "stale_data"
+                return None
+
+            # P0 (C-09): Gate de Tape Reading para estratégias dependentes
+            if sig_metrics.get("tape_decision") == "VETO":
+                logger.info(f"[{signal.symbol}] {label} Rejeitado por Veto de Tape Reading.")
+                self.last_open_reject = "tape_veto"
+                return None
+
             symbol = signal.symbol
             if any(p.symbol == symbol and p.status == "OPEN" for p in self.positions.values()):
                 self.last_open_reject = "margin"  # posição já aberta no par (evita colisão entre estratégias)
@@ -1136,27 +1252,6 @@ class PaperTradingEngine:
             # o registro usa ts(t+1) = ts(t) + bar_ms (mesma convenção do BacktestEngine).
             decision_ts = timestamp
             timestamp = self.entry_timestamp_for(decision_ts, strategy_type)
-
-            # Dimensionamento: lote = margem (limitada pela margem livre); notional = margem x alavancagem
-            max_margin = self.balance * self.max_margin_utilization_pct
-            lev_req = clamp_leverage(leverage, MAX_LEVERAGE)
-            margin, free_margin = self._lot_margin(signal, lev_req, meta["cap"])
-            if margin < 10.0:  # Mínimo de $10 USD de margem
-                logger.info(f"[{symbol}] {label} Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
-                self.last_open_reject = "margin"
-                return None
-
-            if strategy_type == "SCALP":
-                can_exec, reason = self.can_execute_scalp(timestamp, notional=margin)
-            elif strategy_type == "GOLDEN_POT":
-                can_exec, reason = self.can_execute_golden_pot(timestamp, notional=margin)
-            else:
-                can_exec, reason = self.can_execute_directional(timestamp, notional=margin)   # P6a
-            if not can_exec:
-                logger.info(f"[{symbol}] {label} Rejeitado: {reason}")
-                self.last_open_reject = (
-                    "breaker" if "Circuit Breaker" in reason else "quota" if reason.startswith("Limite diário") else "margin")
-                return None
 
             side = "LONG" if signal.direction == "BUY" else "SHORT"
             if meta["maker_entry"]:
@@ -1180,6 +1275,52 @@ class PaperTradingEngine:
             tp2_p = exec_price + sgn * m_tp2 * atr
             tp3_p = exec_price + sgn * m_tp3 * atr
 
+            sl_dist_pct = abs(exec_price - sl_price) / exec_price if exec_price > 0 else 0.01
+
+            # Dimensionamento: ponderado pela volatilidade/distância do stop loss
+            max_margin = self.balance * self.max_margin_utilization_pct
+
+            # P0 (C-08): Alavancagem e escala decididas soberanamente pelo executor
+            atr_pct = (atr / current_price) if current_price > 0 else 0.01
+            regime_ok = True
+            if "regime_alignment" in sig_metrics:
+                regime_ok = bool(sig_metrics["regime_alignment"])
+            calc_lev = decide_leverage(
+                confidence=signal.confidence,
+                atr_pct=atr_pct,
+                regime_alignment=regime_ok,
+                timeframe="15m" if strategy_type == "SCALP" else "1h",
+            )
+            lev_req = min(clamp_leverage(leverage, MAX_LEVERAGE), calc_lev)
+            risk_scale = float(meta.get("risk_scale", 1.0))
+
+            if self.rollback_guard and getattr(getattr(self.rollback_guard, "status", None), "is_rollback_active", False):
+                if hasattr(self.rollback_guard, "get_risk_policy"):
+                    policy = self.rollback_guard.get_risk_policy()
+                    lev_req = min(lev_req, policy.max_leverage)
+                    risk_scale *= policy.lot_multiplier
+
+            margin, free_margin = self._lot_margin(
+                signal, lev_req, meta["cap"], sl_distance_pct=sl_dist_pct, risk_scale=risk_scale,
+                current_price=exec_price
+            )
+            if margin < 10.0:  # Mínimo de $10 USD de margem
+                logger.info(f"[{symbol}] {label} Rejeitado: Margem livre insuficiente (${free_margin:,.2f}).")
+                self.last_open_reject = "margin"
+                return None
+
+            if strategy_type == "SCALP":
+                can_exec, reason = self.can_execute_scalp(timestamp, notional=margin)
+            elif strategy_type == "GOLDEN_POT":
+                can_exec, reason = self.can_execute_golden_pot(timestamp, notional=margin)
+            else:
+                can_exec, reason = self.can_execute_directional(timestamp, notional=margin)   # P6a
+            if not can_exec:
+                logger.info(f"[{symbol}] {label} Rejeitado: {reason}")
+                self.last_open_reject = (
+                    "breaker" if "Circuit Breaker" in reason else "quota" if reason.startswith("Limite diário") else "margin")
+                return None
+
             lev = self._resolve_leverage(side, exec_price, sl_price, lev_req)   # SL sempre antes da liquidação
             notional = margin * lev
             qty = notional / exec_price
@@ -1191,6 +1332,32 @@ class PaperTradingEngine:
                 return None
 
             pos_id = str(uuid.uuid4())[:8]
+
+            # P0: Kill Switch externo e registro de intenção idempotente no OMS
+            order_intent = None
+            if getattr(self, "oms", None) is not None:
+                kill_active, kill_reason = self.oms.is_kill_switch_active()
+                if kill_active:
+                    logger.warning(f"[{symbol}] {label} Rejeitado pelo Kill Switch do OMS: {kill_reason}")
+                    self.last_open_reject = "kill_switch"
+                    return None
+
+                order_intent, is_new = self.oms.register_order_intent(
+                    symbol=symbol,
+                    side=side,
+                    price=exec_price,
+                    quantity=qty,
+                    notional=notional,
+                    leverage=lev,
+                    strategy_type=strategy_type,
+                    timestamp_ms=self._ts_ms(timestamp),
+                    position_id=pos_id,
+                )
+                if not is_new and order_intent is not None and order_intent.state not in (OrderState.CLOSED, OrderState.RECONCILED):
+                    logger.warning(f"[{symbol}] Ordem duplicada detectada pelo OMS (idempotência ativada). Rejeitando reexecução.")
+                    self.last_open_reject = "duplicate_order"
+                    return None
+
             pos = PaperPosition(
                 position_id=pos_id, symbol=symbol, side=side, entry_price=exec_price, current_price=exec_price,
                 quantity=qty, notional=notional, stop_loss=sl_price, take_profit=tp3_p,
@@ -1218,11 +1385,30 @@ class PaperTradingEngine:
 
             # Persistência atômica no SQLite com integridade e rollback garantidos
             try:
-                self._save_position(pos)
-                self._save_trade(trade)
+                self._save_position_and_trade(pos, trade)
             except Exception as exc:
                 logger.error(f"Falha ao persistir {label} no SQLite: {exc}. Rollback do estado em memória.")
                 return None
+
+            if getattr(self, "oms", None) is not None and order_intent is not None:
+                from oms import OrderState
+                self.oms.transition_state(
+                    order_intent.client_order_id,
+                    to_state=OrderState.SENT,
+                    reason="Ordem enviada ao roteador de execução",
+                )
+                self.oms.transition_state(
+                    order_intent.client_order_id,
+                    to_state=OrderState.ACKED,
+                    reason="Ordem aceita pelo motor de execução",
+                )
+                self.oms.transition_state(
+                    order_intent.client_order_id,
+                    to_state=OrderState.FILLED,
+                    reason="Execução com ladder confirmada e gravada no ledger SQLite",
+                    filled_qty=qty,
+                    avg_fill_price=exec_price,
+                )
 
             self.balance -= fee
             self.total_fees_paid += fee
@@ -1233,10 +1419,17 @@ class PaperTradingEngine:
             self.positions[pos_id] = pos
             self.trade_history.append(trade)
 
+            self._record_learning_decision(signal, pos_id, symbol, side, timestamp)
+            try:
+                self._record_portfolio_snapshot(decision_ts)
+            except Exception as _e:
+                logger.debug(f"Aviso snapshot abertura: {_e}")
+
+            actual_risk_usd = qty * abs(exec_price - sl_price)
             logger.info(
-                f"[{symbol}] {label} {side} ABERTO @ ${exec_price:,.2f} | Lev: {lev:g}x | Margem: ${margin:,.2f} | "
-                f"SL: ${sl_price:,.2f} | TP1: ${tp1_p:,.2f} | TP2: ${tp2_p:,.2f} | TP3: ${tp3_p:,.2f} | "
-                f"Trail: {m_trail:g}xATR | Risco: ${signal.risk_dollars:.2f}"
+                f"[{symbol}] {label} {side} ABERTO @ ${exec_price:,.5g} | Lev: {lev:g}x | Margem: ${margin:,.2f} | "
+                f"SL: ${sl_price:,.5g} | TP1: ${tp1_p:,.5g} | TP2: ${tp2_p:,.5g} | TP3: ${tp3_p:,.5g} | "
+                f"Trail: {m_trail:g}xATR | Risco: ${actual_risk_usd:.2f}"
             )
             return pos
 
@@ -1305,8 +1498,21 @@ class PaperTradingEngine:
         allocation_usd: float = 2000.0,
         rationale: str = "Carry Delta-Neutro Spot+Perp Ativado",
     ) -> Optional[PaperPosition]:
-        """Abre estrutura delta-neutra spot long + perp short."""
+        """Abre estrutura delta-neutra spot long + perp short com proteção integral de risco."""
         with self._lock:
+            # P0 (10): Verificação de Circuit Breakers e limites de concentração para Carry
+            if self.rollback_guard is not None:
+                allowed, reason = self.rollback_guard.can_open_new_position(symbol, strategy="CARRY")
+                if not allowed:
+                    logger.info(f"[{symbol}] Carry Rejeitado pelo RollbackGuard: {reason}")
+                    return None
+
+            if self.max_concurrent_positions is not None and self.max_concurrent_positions > 0:
+                open_count = len([p for p in self.positions.values() if p.status == "OPEN"])
+                if open_count >= self.max_concurrent_positions:
+                    logger.info(f"[{symbol}] Carry Rejeitado: Limite de posições simultâneas atingido ({open_count}/{self.max_concurrent_positions}).")
+                    return None
+
             # Verifica se já há carry ativo no par
             existing = [p for p in self.positions.values() if p.symbol == symbol and p.strategy_type == "CARRY" and p.status == "OPEN"]
             if existing:
@@ -1366,8 +1572,7 @@ class PaperTradingEngine:
             )
 
             try:
-                self._save_position(pos)
-                self._save_trade(trade)
+                self._save_position_and_trade(pos, trade)
             except Exception as exc:
                 logger.error(f"Falha ao persistir carry no SQLite: {exc}. Rollback executado.")
                 return None
@@ -1442,8 +1647,7 @@ class PaperTradingEngine:
             )
 
             try:
-                self._save_position(pos)
-                self._save_trade(trade)
+                self._save_position_and_trade(pos, trade)
             except Exception as exc:
                 logger.error(f"Falha ao persistir encerramento de posição no SQLite: {exc}. Rollback executado.")
                 pos.status = prev_status
@@ -1461,7 +1665,30 @@ class PaperTradingEngine:
             self.closed_positions.append(pos)
             del self.positions[position_id]
 
+            if getattr(self, "oms", None) is not None:
+                from oms import OrderState
+                try:
+                    with self.oms._get_connection() as _oms_conn:
+                        _ord_rows = _oms_conn.execute(
+                            "SELECT client_order_id FROM oms_orders WHERE position_id = ? AND state = ?",
+                            (pos.position_id, OrderState.FILLED.value),
+                        ).fetchall()
+                        for _r in _ord_rows:
+                            self.oms.transition_state(
+                                _r["client_order_id"],
+                                to_state=OrderState.CLOSED,
+                                reason=f"Posição encerrada por {reason}",
+                            )
+                except Exception as _e:
+                    logger.debug(f"Aviso transição OMS pós-fechamento: {_e}")
+
             logger.info(f"[{pos.symbol}] Posição {pos.side} FECHADA ({reason}) @ ${exec_price:,.2f} | PnL: ${net_pnl:+.2f}")
+
+            # Persiste snapshot de portfólio e telemetria imediatamente pós-fechamento
+            try:
+                self._record_portfolio_snapshot(timestamp, force=True)
+            except Exception as _e:
+                logger.debug(f"Aviso snapshot fechamento: {_e}")
 
             # Telemetria & Circuit Breakers (Fase 7)
             if getattr(self, "performance_tracker", None):
@@ -1522,7 +1749,7 @@ class PaperTradingEngine:
             rationale=f"{label} Parcial ({fraction:.0%}) atingido @ ${price:,.2f} | {note}",
         )
         self.trade_history.append(trade)
-        self._save_trade(trade)
+        self._save_position_and_trade(pos, trade)
         triggered.append(trade)
         logger.info(f"[{pos.symbol}] {action} ({label}, {fraction:.0%}) @ ${price:,.2f} | PnL: ${net:+.2f} | {note}")
         return trade
@@ -1572,7 +1799,8 @@ class PaperTradingEngine:
             triggered.append(t)
 
     def _process_ladder_bar(self, pos: PaperPosition, high: float, low: float, close: float,
-                            timestamp: int, triggered: List[PaperTrade], open_price: Optional[float] = None) -> None:
+                            timestamp: int, triggered: List[PaperTrade], open_price: Optional[float] = None,
+                            gap_open_price: Optional[float] = None) -> None:
         """Processa UMA barra para posição com ladder. Ordem conservadora e sem lookahead:
 
         0. barra anterior (já fechada no timeframe nativo da estratégia) é incorporada ao trailing -> stop efetivo desta barra;
@@ -1601,7 +1829,8 @@ class PaperTradingEngine:
             return level > 0.0 and ((high >= level) if long else (low <= level))
 
         if stop_hit():
-            self._close_ladder_on_stop(pos, high, low, timestamp, triggered, open_price=open_price)
+            eff_open = open_price if open_price is not None else (gap_open_price if pos.trailing_active else None)
+            self._close_ladder_on_stop(pos, high, low, timestamp, triggered, open_price=eff_open)
             return
 
         label = {"GOLDEN_POT": "Golden Pot", "SCALP": "Scalp"}.get(pos.strategy_type, "Direcional")
@@ -1612,7 +1841,15 @@ class PaperTradingEngine:
             self._ladder_partial(pos, pos.tp1_price, pos.tp1_fraction, "TP1_PARTIAL", timestamp,
                                  f"TP1 {label}", "SL elevado para Breakeven", triggered)
             pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
-            if stop_hit():
+            # Se a barra abriu abaixo do BE (em drawdown), subiu até TP1 e fechou acima do BE,
+            # o low/high pré-rally da abertura ocorreu ANTES do TP1 e não deve disparar BREAKEVEN_STOP na mesma barra.
+            pre_be_open = (
+                open_price is not None
+                and open_price > 0.0
+                and ((open_price < pos.stop_loss) if long else (open_price > pos.stop_loss))
+            )
+            closed_safe = (close > pos.stop_loss) if long else (close < pos.stop_loss)
+            if stop_hit() and not (pre_be_open and closed_safe):
                 self._close_ladder_on_stop(pos, high, low, timestamp, triggered)
                 return
 
@@ -1691,7 +1928,7 @@ class PaperTradingEngine:
                 rationale=f"Funding {rate:+.4%} ({src}) {'paga' if amount < 0 else 'recebe'} ${abs(amount):.4f}",
             )
             self.trade_history.append(trade)
-            self._save_trade(trade)
+            self._save_position_and_trade(pos, trade)
             last_applied = float(settle)
             n += 1
             settle += FUNDING_INTERVAL_MS
@@ -1813,7 +2050,10 @@ class PaperTradingEngine:
 
             # 1. LADDER comum (SCALP / GOLDEN_POT / DIRECTIONAL): TP1 40% + BE, TP2 30% + trailing, TP3/trailing no runner
             if self._uses_ladder(pos):
-                self._process_ladder_bar(pos, high, low, close, timestamp, triggered_trades, open_price=bar_open)
+                self._process_ladder_bar(
+                    pos, high, low, close, timestamp, triggered_trades,
+                    open_price=bar_open, gap_open_price=(bar_open or prev_bar_close)
+                )
                 continue
 
             # 2. DIRECTIONAL LEGADO (posição aberta antes do E7, sem tp1_price): SL/TP único, taker
@@ -1863,9 +2103,11 @@ class PaperTradingEngine:
     # PERSISTÊNCIA EM BANCO DE DADOS SQLITE (WAL MODE)
     # =========================================================================
 
-    def _save_position(self, pos: PaperPosition) -> None:
-        with self._get_connection() as con:
-            con.execute("""
+    def _save_position(self, pos: PaperPosition, con: Optional[sqlite3.Connection] = None) -> None:
+        owns = con is None
+        c = self._get_connection() if owns else con
+        try:
+            c.execute("""
                 INSERT OR REPLACE INTO paper_positions (
                     position_id, symbol, side, entry_price, current_price, quantity,
                     notional, stop_loss, take_profit, unrealized_pnl, realized_pnl,
@@ -1883,12 +2125,17 @@ class PaperTradingEngine:
                 pos.tp3_price, 1 if pos.tp2_hit else 0, pos.tp1_fraction, pos.tp2_fraction,
                 1 if pos.trailing_active else 0, pos.trailing_stop_price, pos.trailing_atr_mult, pos.entry_atr,
             ))
-            con.commit()
+            if owns:
+                c.commit()
+        finally:
+            if owns and c is not None:
+                c.close()
 
-
-    def _save_trade(self, trade: PaperTrade) -> None:
-        with self._get_connection() as con:
-            con.execute("""
+    def _save_trade(self, trade: PaperTrade, con: Optional[sqlite3.Connection] = None) -> None:
+        owns = con is None
+        c = self._get_connection() if owns else con
+        try:
+            c.execute("""
                 INSERT OR REPLACE INTO paper_trades (
                     trade_id, position_id, symbol, action, price, quantity, fee, pnl, timestamp, rationale
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1896,7 +2143,61 @@ class PaperTradingEngine:
                 trade.trade_id, trade.position_id, trade.symbol, trade.action,
                 trade.price, trade.quantity, trade.fee, trade.pnl, trade.timestamp, trade.rationale
             ))
+            if owns:
+                c.commit()
+        finally:
+            if owns and c is not None:
+                c.close()
+
+    def _save_position_and_trade(
+        self,
+        pos: Optional[PaperPosition] = None,
+        trade: Optional[PaperTrade] = None,
+    ) -> None:
+        """P0 (C-05): Persistência atômica de posição e trade sob transação única BEGIN IMMEDIATE."""
+        con = self._get_connection()
+        try:
+            con.execute("BEGIN IMMEDIATE;")
+            if pos is not None:
+                self._save_position(pos, con=con)
+            if trade is not None:
+                self._save_trade(trade, con=con)
             con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
+    def _record_learning_decision(self, signal: TradeSignal, pos_id: str, symbol: str, side: str, timestamp: int) -> None:
+        """Grava a deliberação do comitê (votos por agente + regime) em `agent_learning_memory`.
+
+        Sem esta chamada a tabela fica vazia e o `LearningTracker` nunca recalibra pesos por regime
+        (o desfecho é fechado depois por `update_trade_outcome`, via position_id). Falha nunca bloqueia o trade.
+        """
+        lt = getattr(self, "learning_tracker", None)
+        if lt is None:
+            return
+        try:
+            ts_ms = self._ts_ms(timestamp)
+            regime = (getattr(signal, "metrics", None) or {}).get("regime")
+            if not regime:
+                try:
+                    with self._get_connection() as con:
+                        row = con.execute(
+                            "SELECT regime FROM market_regime WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1", (ts_ms,)
+                        ).fetchone()
+                    regime = row[0] if row else "SIDEWAYS_RANGE"
+                except Exception:
+                    regime = "SIDEWAYS_RANGE"   # tabela market_regime ainda inexistente
+            lt.record_decision(
+                decision_id=f"dec_{pos_id}", symbol=symbol, regime=regime,
+                consensus_direction=signal.direction, consensus_confidence=float(signal.confidence),
+                agent_signals=list(getattr(signal, "contributing_agents", []) or []),
+                position_id=pos_id, timestamp=ts_ms,
+            )
+        except Exception as exc:
+            logger.debug(f"Aviso learning pré-trade ({symbol}): {exc}")
 
     def _record_portfolio_snapshot(self, timestamp: int, force: bool = False) -> None:
         """
@@ -1935,3 +2236,15 @@ class PaperTradingEngine:
                 self.total_realized_pnl, self.total_fees_paid, open_count
             ))
             con.commit()
+
+        # Telemetria institucional (performance_snapshots): no máx. 1 a cada 5 min (tempo do relógio de simulação)
+        pt = getattr(self, "performance_tracker", None)
+        if pt is not None:
+            last_pt = getattr(self, "_last_perf_snapshot_time", 0.0)
+            gap = abs(timestamp - last_pt) / (1000.0 if is_ms else 1.0) if last_pt > 0 else 999999.0
+            if force or gap >= 300.0:
+                self._last_perf_snapshot_time = float(timestamp)
+                try:
+                    pt.record_snapshot(open_positions=open_count)
+                except Exception as exc:
+                    logger.debug(f"Aviso snapshot de performance: {exc}")

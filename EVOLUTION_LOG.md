@@ -29,6 +29,13 @@
 
 ## 📜 Histórico Detalhado de Entregas e Iterações
 
+### [Sprint S2 - Patch S2 (v1.0.4): Calibração Convexa & Homologação de Agentes] - 2026-11-03
+- **Exit Ladder & Funil:** Asserções de trailing stop em [`tests/test_exit_ladder_e7.py`](file:///home/eudespatricio/ia_trader/tests/test_exit_ladder_e7.py) e timestamp do funil em [`tests/test_signal_funnel.py`](file:///home/eudespatricio/ia_trader/tests/test_signal_funnel.py) 100% verdes.
+- **Otimização Convexa Restrita (L2/Ridge):** Em [`learning_tracker.py`](file:///home/eudespatricio/ia_trader/learning_tracker.py), pesos de voto com prior bayesiano, soma normalizada, pesos não-negativos e preservação estrita do veto do `RiskSentinelAgent` (`w = 1.5`).
+- **Dampening em Range:** Em [`consensus_judge.py`](file:///home/eudespatricio/ia_trader/consensus_judge.py), confiança limitada cirurgicamente a 0.55 quando ECE > 0.15 ou acurácia < 45% no regime `SIDEWAYS_RANGE`.
+- **Retreinamento 50k:** Champion mantido após Walk-Forward de 29.848 velas em LGBM (74.44%) e RF (89.55%).
+- **Homologação:** 577 testes passando 100% verde (`.venv/bin/pytest -q --ignore=tests/ui`).
+
 ### [Fase 0: Setup, Diretrizes de Arquitetura e Governança] - 2026-10-14
 - **Responsável:** Engenheiro de Software Sênior
 - **Objetivo:** Estabelecer a base formal do projeto, arquitetura modular, diretrizes de segurança de dados e instrumentos de controle de qualidade.
@@ -958,3 +965,45 @@ Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:
   - **Homologação & Zero Regressões:**
     - Suíte completa de **228 testes passando (0 falhas)** (`test_agents_and_consensus.py`, `test_tape_reading_gate.py`, `test_golden_pot_forensic_protections.py`, `test_pre_entry_regression.py`, `test_exit_ladder_e7.py`, `test_signal_funnel.py`, `test_paper_trading_engine.py`, `test_flask_interface.py`, `test_system_supervisor.py`).
     - Daemons atualizados e saudáveis sob o supervisor (4/4 `HEALTHY`): `microstructure_collector` (PID 357867) e `paper_trading_daemon` (PID 357947). Logs ao vivo confirmam expansão dinâmica para `['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'AGTUSDT', 'QUSDT', 'BTWUSDT']` e bloqueio de fluxos contrários em tempo real.
+
+- **Sprint Estratégica: Homologação para Lucratividade Real (Prazo: 10 de Dezembro de 2026):**
+  - **Meta:** Homologação completa de um ecossistema quantitativo rentável e de baixo risco para operação com capital institucional/real até 10/12/2026 (52 dias / 7 semanas).
+  - **Semana 1 Iniciada (19 a 25/Out) - Microestrutura, Risco & Custos:**
+    - **1. Dimensionamento por Volatilidade (1% Risco da Banca):** Substituição do lote fixo em dólar pelo dimensionamento ajustado pelo stop loss ($R = \text{Balance} \times 0.01 / (\text{Distância SL} \times \text{Lev})$).
+    - **2. Assimetria Matemática Estrita (R:R $\ge 2.0$):** Calibração de alvos em `STRATEGY_PROFILES` garantindo expectativa matemática positiva em Scalp, Golden Pot e Directional.
+    - **3. Transição Maker-First:** Minimização de taxas e slippage via ordens passivas (Post-Only) em todas as estratégias, reduzindo atrito de execução em até 60%.
+  - **Fechamento da Semana 1 (S1), Aprendizado Contínuo Fechado e Matriz ML Multi-Estratégia (2026-10-24):**
+    - **1. Blindagem contra Stops Microscópicos (`smart_trade.py` & `scripts/run_paper_simulation.py`):** Amortecedor proporcional para `sl_distance_pct < 0.005` (`50 bps`) no denominador de `_lot_margin` e piso de `0.25%` (`25 bps`) de ATR em Scalps S1, impedindo que compressões de volatilidade em 3m gerem posições de ~\$9.400 com stop de 6 bps.
+    - **2. Governança de Alavancagem e Cooldown Pós-Stop (`scripts/run_paper_simulation.py`):** Teto de alavancagem de `3.0x` em Scalp/Swing no modo S1 (eliminando a faixa de 4.0x) e cooldown estendido (`2x`) após 2 `STOP_LOSS` consecutivos no mesmo par.
+    - **3. Alinhamento Estrito entre `LearningTracker`, `PerformanceTracker` e `TradingCore` (`smart_trade.py`, `core.py`, `learning_tracker.py`, `performance_tracker.py`):**
+      - Votos neutros/abstenção (`direction == "HOLD"`) ignorados na recalibração de acurácia direcional em `LearningTracker.recalibrate_agent_weights()`, preservando o peso de veto (`1.5`) do `RiskSentinelAgent` e evitando falsa penalização de `0%` em agentes macro/sentimento neutros.
+      - `close_position()` agora força gravação imediata em `paper_portfolio` e `performance_snapshots` antes de `compute_metrics_from_db()` / `rollback_guard`, e `_compute_strategy_breakdown()` calcula o `profit_factor` por estratégia.
+      - `TradingCore` consome automaticamente `get_calibrated_weights_for_regime(regime)` do `LearningTracker`.
+    - **4. Otimização de Janela Histórica (`50.000` velas), Hardware (`n_jobs=8`) e Matriz ML Multi-Estratégia (`learning_tracker.py`, `model_trainer.py`, `scheduler.py`):**
+      - Janela ótima identificada em **50.000 velas (~5,7 anos, 2021–2026)**, superando 6k (`45,81%`) e 81,8k (`65,44%` com regime drift de 2017–2020).
+      - Hiperparâmetros e paralelismo calibrados em `model_trainer.py` (`n_jobs=min(n_jobs, 8)` no LightGBM elimina contenção OpenMP/Hyper-Threading no `i7-11800H`, reduzindo treino de `8,47s` para `1,51s`).
+      - Modelos de 50k velas promovidos com backup em `models/archive/`:
+        - `lgbm_model_v1.joblib`: acurácia em sinais emitidos subiu de **36,69%** para **71,64%** ($\mathbb{E}[R] = +0,91R$ líquido de fees).
+        - `rf_model_v1.joblib`: acurácia em sinais emitidos subiu de **28,00%** para **89,55%–91,30%** ($\mathbb{E}[R] = +1,46R$ líquido de fees).
+
+  - **Auditoria de Rollback, Curva Empírica de Confiança e Calibração S2 (2026-10-26):**
+    - **Diagnóstico da Inércia Operacional:** Em 25/Out (12:03), 3 stops em posições de contra-tendência em `SIDEWAYS_RANGE` derrubaram o Profit Factor para 0.60 e o Win Rate para 40.4%, disparando o `Auto-Rollback Defensivo` do `RollbackGuard`. A régua de confiança defensiva fixa em `0.80` gerou um "efeito penhasco" (*cliff effect*), congelando o motor e rejeitando sinais de alta convicção (ex: BTC 0.73 às 13:53).
+    - **Varredura Empírica em 6.000 Velas 1h (BTCUSDT):** Confirmou que thresholds de 0.80 geram colapso de amostragem (-50% de trades) com queda no Win Rate (41,3% vs 43,3% em 0.65/0.75) devido a atraso de entrada (*late entry* em topo/fundo esticado). A faixa ótima (*sweet spot*) situa-se entre 0.65 e 0.72.
+    - **Ações Imediatas para o Ciclo S2:**
+      - Régua de confiança defensiva baixada de `0.80` para `0.65` em [`rollback_guard.py`](file:///home/eudespatricio/ia_trader/rollback_guard.py#L57) e estado de circuit breaker restabelecido no banco de dados, liberando a geração de trades com sizing prudente para alimentar a amostragem semanal.
+      - Backlog de pesquisa registrado para o fim da S2: Grid Search multivariado nos datasets amplos de 50.000 velas em degraus de 0.05 (`0.60, 0.65, 0.70, 0.75, 0.80`) por regime para modelar a expectativa matemática líquida $\mathbb{E}[R]$ e implementar a máquina de estados de risco gradual.
+    - **Transição Operacional e Ativação do Setup S2 (2026-10-27):**
+    - **1. Migração do Scalp para 15m (`smart_trade.py` & `scripts/run_paper_simulation.py`):**
+      - `SCALP_BAR_MS = 15 * 60 * 1000` (15m) e `SCALP_TIMEFRAME = '15m'` (reduzindo impacto de fees de 0.79R para 0.16R).
+      - Perfil `SCALP` em `STRATEGY_PROFILES`: TP1 1.2x ATR (1.33R + Breakeven), TP2 2.0x ATR (2.22R + Trailing), TP3 3.6x ATR (4.0R).
+      - Cooldowns de scalp ajustados para velas de 15m: 4 barras (60 min) após fechamento e 8 barras (120 min) após 2 stops seguidos.
+      - Polling de posições padronizado no grid fino de `5m`, checando SL/TP/trailing de GP 5m, Scalp 15m e Directional 1h sem atraso.
+    - **2. Ensemble 50k Velas Conectado no `TechnicalAgent` (`agents/technical_agent.py`):**
+      - `confidence_threshold` ajustado para `0.55` no `TechnicalAgent`, sincronizado com a calibração dos modelos `lgbm_model_v1.joblib` e `rf_model_v1.joblib` treinados em 50.000 velas no WSL.
+    - **3. Reset de Saldo para $10.000 com Preservação Integral de Dados (`performance_tracker.py` & `market_cache.db`):**
+      - **Zero perda de histórico:** Todos os 148 trades de `paper_trades`, histórico de posições, registros de `agent_learning_memory` e eventos de auditoria permanecem preservados no banco para aprendizado e evolução do modelo.
+      - Marco de epoch (`ledger_epoch_trade_rowid`) registrado em `simulation_settings` e `performance_tracker.py` atualizado para isolar o epoch da S2.
+      - Inserido snapshot limpo de $10.000,00 USD em `paper_portfolio` (Drawdown zerado a 0.0%, Equity $10.000,00).
+      - `RollbackGuard.reset_circuit_breaker()` executado com sucesso: estado restaurado para `CLEAR` (`is_trading_allowed = True`).
+    - **4. Reinício e Liberação dos Daemons:**
+      - Supervisor reiniciou o `paper_trading_daemon` com o novo código e saldo renovado. Status: 100% operante e escaneando o mercado.

@@ -622,3 +622,78 @@ class TestDecisionAuditRegressions:
         dec = ConsensusDecision(direction="BUY", confidence=0.8, aggregated_score=0.5)
         s = SignalGenerator().generate(dec, "BTCUSDT", 100.0, 1.0, 1, capital_override=0.0)
         assert s.position_size == 0.0
+
+    def test_single_buy_agent_never_approves_without_directional_quorum(self):
+        """P0 (C-02): Um único BUY com todos os demais HOLD nunca aprova operação; exige quórum >= 2."""
+        from consensus_judge import ConsensusJudge
+        from agents.base_agent import AgentSignal
+
+        judge = ConsensusJudge(min_consensus_threshold=0.30, min_directional_agents=2)
+        signals = [
+            AgentSignal("RiskSentinelAgent", "HOLD", 0.50, 1.0, "Sem veto"),
+            AgentSignal("TechnicalAgent", "BUY", 1.0, 1.0, "Compra isolada com confiança máxima"),
+            AgentSignal("OrderFlowAgent", "HOLD", 0.50, 0.8, "Fluxo neutro"),
+            AgentSignal("SentimentAgent", "HOLD", 0.50, 0.6, "Neutro"),
+            AgentSignal("MacroAgent", "ABSTAIN", 0.0, 0.6, "Abstenção explícita"),
+            AgentSignal("OnChainAgent", "HOLD", 0.50, 0.5, "Neutro"),
+        ]
+        decision = judge.judge_deterministic(signals)
+        assert decision.direction == "HOLD"
+        assert decision.is_vetoed is False
+        assert "Quórum direcional insuficiente" in decision.consensus_summary
+
+    def test_agent_signal_supports_abstain(self):
+        """P0: AgentSignal aceita estado canônico ABSTAIN."""
+        from agents.base_agent import AgentSignal
+        sig = AgentSignal("MacroAgent", "ABSTAIN", 0.0, 0.5, "Sem evento no calendário")
+        assert sig.direction == "ABSTAIN"
+
+    @pytest.mark.asyncio
+    async def test_llm_cannot_create_buy_without_quantitative_quorum(self):
+        """P0 (C-02/C-03): LLM auditando não pode converter HOLD determinístico em BUY/SELL."""
+        from consensus_judge import ConsensusJudge
+        from agents.base_agent import AgentSignal
+
+        judge = ConsensusJudge(min_consensus_threshold=0.30, min_directional_agents=2)
+        signals = [
+            AgentSignal("RiskSentinelAgent", "HOLD", 0.50, 1.0, "Sem veto"),
+            AgentSignal("TechnicalAgent", "BUY", 1.0, 1.0, "Compra isolada"),
+            AgentSignal("OrderFlowAgent", "HOLD", 0.50, 0.8, "Fluxo neutro"),
+        ]
+        
+        class FakeLLMAssistant:
+            async def analyze_async(self, prompt: str):
+                return {"direction": "BUY", "confidence": 0.95, "rationale": "Forçando compra via LLM"}
+
+        decision = await judge.judge_async(signals, llm_assistant=FakeLLMAssistant(), use_llm=True)
+        assert decision.direction == "HOLD"
+        assert decision.llm_arbitrated is False
+
+    def test_sideways_overconfidence_dampening_s2(self):
+        """Protocolo S2: Dampening de confiança em SIDEWAYS_RANGE para ECE > 0.15 ou acurácia < 45%."""
+        from consensus_judge import ConsensusJudge
+        from agents.base_agent import AgentSignal
+
+        judge = ConsensusJudge(min_consensus_threshold=0.30, min_directional_agents=2)
+        calib = {
+            "TechnicalAgent": {"accuracy": 0.40, "ece": 0.20},
+            "OrderFlowAgent": {"accuracy": 0.65, "ece": 0.05},
+        }
+
+        # 1. Em SIDEWAYS_RANGE, TechnicalAgent (overconfident) tem confiança limitada a 0.55
+        sigs = [
+            AgentSignal("TechnicalAgent", "BUY", 0.85, 1.0, "Tech BUY"),
+            AgentSignal("OrderFlowAgent", "BUY", 0.80, 0.8, "Flow BUY"),
+        ]
+        decision = judge.judge_deterministic(sigs, regime="SIDEWAYS_RANGE", agent_calibration=calib)
+        tech_sig = next(s for s in decision.agent_signals if s.agent_name == "TechnicalAgent")
+        flow_sig = next(s for s in decision.agent_signals if s.agent_name == "OrderFlowAgent")
+        assert tech_sig.confidence == pytest.approx(0.55)
+        assert tech_sig.metrics.get("calibrated_dampened") is True
+        assert flow_sig.confidence == pytest.approx(0.80)
+
+        # 2. Em BULL_TREND, nenhum dampening ocorre
+        decision_bull = judge.judge_deterministic(sigs, regime="BULL_TREND", agent_calibration=calib)
+        tech_bull = next(s for s in decision_bull.agent_signals if s.agent_name == "TechnicalAgent")
+        assert tech_bull.confidence == pytest.approx(0.85)
+

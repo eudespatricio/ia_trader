@@ -100,7 +100,8 @@ class TaskScheduler:
                 
                 if manager.should_trigger_retraining(last_ts, now_ms, new_candles_count=1200):
                     logger.info("🚀 Condições de retreinamento satisfeitas. Executando protocolo Champion-Challenger...")
-                    # Simulação de retreinamento walk-forward controlado
+                    report = manager.run_retraining_cycle()
+                    logger.info(f"📊 Resultado Champion-Challenger: {report.get('status')} — {report.get('rationale')}")
                     self._last_retrain_time = time.time()
                 else:
                     logger.debug("Modelo Champion continua atualizado e aderente ao fluxo recente.")

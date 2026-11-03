@@ -257,6 +257,7 @@ def test_engine_open_reject_reasons(temp_db):
 def test_scalp_funnel_no_trigger_and_executed(temp_db):
     d = gp(temp_db)
     d.engine.max_concurrent_positions = 20
+    d.stale_bar_max_age_ms = 0
 
     async def fetch(sym, now):
         import pandas as pd
@@ -272,7 +273,8 @@ def test_scalp_funnel_no_trigger_and_executed(temp_db):
     assert t[("SCALP", "evaluated")] >= 1
 
     # sem gatilho (volume baixo) em barra nova => reject:no_trigger
-    feat2 = g._feat(g._bar_ts() + g.BAR, side="BUY", close=100.0, rsi=50.0)
+    scalp_bar = st.STRATEGY_PROFILES["SCALP"].bar_ms
+    feat2 = g._feat(g._bar_ts() + scalp_bar, side="BUY", close=100.0, rsi=50.0)
     feat2["volume_zscore_20"] = -5.0
     d._compute_swing_features = lambda df: feat2.copy()
     d.engine.positions.clear()

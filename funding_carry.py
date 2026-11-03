@@ -358,30 +358,40 @@ class FundingCarrySimulator:
         """
         Executa stress test determinístico:
         Se em posição alavancada (50% spot, 50% margem perp short 1x),
-        o preço dá um salto de +30% em 24h sem tempo de rebalanceamento.
+        o preço dá um salto de +30% ou -30% em 24h sem tempo de rebalanceamento.
         """
-        initial_colateral = 5000.0  # 50% de 10000
-        initial_notional = 5000.0   # 50% de 10000
+        initial_colateral = self.initial_capital * 0.50
+        initial_notional = initial_colateral * self.leverage_perp
         
         # Choque de +30% no preço
-        # Perda não realizada na perna perp short: -30% do notional = -1500 USD
+        # Perda não realizada na perna perp short: -30% do notional
         pnl_perp_loss = -0.30 * initial_notional
-        remaining_colateral = initial_colateral + pnl_perp_loss  # 3500 USD
-        new_notional = initial_notional * 1.30                   # 6500 USD
+        remaining_colateral = initial_colateral + pnl_perp_loss
+        new_notional = initial_notional * 1.30
         
-        margin_at_plus_30 = remaining_colateral / new_notional   # 3500 / 6500 = 53.8%
+        margin_at_plus_30 = remaining_colateral / new_notional if new_notional > 0 else 0.0
+
+        # Choque de -30% no preço (ganho no perp short, perda patrimonial no spot)
+        pnl_perp_gain = 0.30 * initial_notional
+        rem_colateral_minus_30 = initial_colateral + pnl_perp_gain
+        notional_minus_30 = initial_notional * 0.70
+        margin_at_minus_30 = rem_colateral_minus_30 / notional_minus_30 if notional_minus_30 > 0 else 0.0
 
         # Choque de +60% (extremo)
-        pnl_perp_extreme = -0.60 * initial_notional              # -3000 USD
-        rem_colateral_ext = initial_colateral + pnl_perp_extreme # 2000 USD
-        notional_ext = initial_notional * 1.60                   # 8000 USD
-        margin_at_plus_60 = rem_colateral_ext / notional_ext     # 2000 / 8000 = 25.0%
+        pnl_perp_extreme = -0.60 * initial_notional
+        rem_colateral_ext = initial_colateral + pnl_perp_extreme
+        notional_ext = initial_notional * 1.60
+        margin_at_plus_60 = rem_colateral_ext / notional_ext if notional_ext > 0 else 0.0
 
-        passed = (margin_at_plus_30 >= self.min_safe_margin_pct) and (margin_at_plus_30 > self.maint_margin_pct)
+        passed = (
+            (margin_at_plus_30 >= self.min_safe_margin_pct) and (margin_at_plus_30 > self.maint_margin_pct)
+            and (margin_at_minus_30 > self.maint_margin_pct)
+        )
 
         return {
             "passed": bool(passed),
             "margin_plus_30": float(margin_at_plus_30),
+            "margin_minus_30": float(margin_at_minus_30),
             "margin_plus_60": float(margin_at_plus_60),
             "colateral_remaining_30": float(remaining_colateral),
         }

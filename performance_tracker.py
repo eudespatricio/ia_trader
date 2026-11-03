@@ -82,12 +82,27 @@ class PerformanceTracker:
     Lê o SQLite em modo read-only e processa séries temporais de equity e histórico de trades.
     """
 
-    def __init__(self, db_path: str = "datasets/market_cache.db", initial_capital: float = 10000.0):
+    def __init__(
+        self,
+        db_path: str = "datasets/market_cache.db",
+        initial_capital: float = 10000.0,
+        read_only: bool = False,
+    ):
         self.db_path = db_path
         self.initial_capital = float(initial_capital)
-        self._ensure_telemetry_tables()
+        self.read_only = read_only
+        if not self.read_only:
+            self._ensure_telemetry_tables()
 
     def _get_connection(self) -> sqlite3.Connection:
+        if self.read_only and os.path.exists(self.db_path):
+            conn = sqlite3.connect(f"file:{os.path.abspath(self.db_path)}?mode=ro", uri=True, timeout=15.0)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA query_only = ON;")
+            except Exception:
+                pass
+            return conn
         conn = sqlite3.connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
@@ -128,20 +143,61 @@ class PerformanceTracker:
         
         try:
             with self._get_connection() as conn:
+                # 0. Lê marcos de epoch de reset manual (P0 C-07 / 14)
+                trade_epoch = 0
+                has_sim = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='simulation_settings'").fetchone()
+                has_paper = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_settings'").fetchone()
+                if has_sim:
+                    epoch_row = conn.execute("SELECT value FROM simulation_settings WHERE key='ledger_epoch_trade_rowid'").fetchone()
+                    if epoch_row and epoch_row[0]:
+                        try:
+                            trade_epoch = int(float(epoch_row[0]))
+                        except Exception:
+                            trade_epoch = 0
+                elif has_paper:
+                    epoch_row = conn.execute("SELECT value FROM paper_settings WHERE key='ledger_epoch_trade_rowid'").fetchone()
+                    if epoch_row and epoch_row[0]:
+                        try:
+                            trade_epoch = int(float(epoch_row[0]))
+                        except Exception:
+                            trade_epoch = 0
+
                 # 1. Posições e Portfolio atual
                 port_row = conn.execute(
                     "SELECT * FROM paper_portfolio ORDER BY timestamp DESC LIMIT 1"
                 ).fetchone()
                 
-                # 2. Histórico de Trades
-                trades_rows = conn.execute(
-                    "SELECT * FROM paper_trades ORDER BY timestamp ASC"
-                ).fetchall()
+                # 2. Histórico de Trades respeitando o epoch do reset
+                if trade_epoch > 0:
+                    trades_rows = conn.execute(
+                        "SELECT rowid, * FROM paper_trades WHERE rowid > ? ORDER BY timestamp ASC", (trade_epoch,)
+                    ).fetchall()
+                else:
+                    trades_rows = conn.execute(
+                        "SELECT rowid, * FROM paper_trades ORDER BY timestamp ASC"
+                    ).fetchall()
                 
                 # 3. Série temporal de Equity para cálculo de Sharpe e Drawdown
-                equity_rows = conn.execute(
-                    "SELECT timestamp, equity FROM paper_portfolio ORDER BY timestamp ASC"
-                ).fetchall()
+                first_trade_ts = trades_rows[0]["timestamp"] if trades_rows else 0
+                if trade_epoch > 0:
+                    if first_trade_ts > 0:
+                        equity_rows = conn.execute(
+                            "SELECT timestamp, equity FROM paper_portfolio WHERE timestamp >= ? ORDER BY timestamp ASC",
+                            (first_trade_ts,)
+                        ).fetchall()
+                    else:
+                        equity_rows = [port_row] if port_row else []
+                else:
+                    equity_rows = conn.execute(
+                        "SELECT timestamp, equity FROM paper_portfolio ORDER BY timestamp ASC"
+                    ).fetchall()
+
+                # P0 (10): Mapeamento estruturado de estratégias diretamente de paper_positions
+                pos_strategies = {}
+                has_pos = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_positions'").fetchone()
+                if has_pos:
+                    p_rows = conn.execute("SELECT position_id, strategy_type FROM paper_positions").fetchall()
+                    pos_strategies = {str(r["position_id"]): str(r["strategy_type"]) for r in p_rows if r["position_id"]}
 
             # Caso ainda não haja dados no banco, retorna métricas neutras iniciais
             if not port_row and not trades_rows:
@@ -285,8 +341,28 @@ class PerformanceTracker:
                 mean_r = np.mean(returns)
                 std_r = np.std(returns) + 1e-12
 
-                # Anualização baseada em snapshots periódicos (~5min ou horários)
-                periods_per_year = 365 * 24 * 12  # Snapshots de 5 min
+                # Anualização dinâmica baseada na cadência real observada nos dados
+                days_elapsed = 1.0
+                if equity_rows and len(equity_rows) >= 2:
+                    try:
+                        first_row = dict(equity_rows[0])
+                        last_row = dict(equity_rows[-1])
+                        t0 = float(first_row.get("timestamp", 0.0))
+                        t1 = float(last_row.get("timestamp", 0.0))
+                        if t0 > 1e11:
+                            t0 /= 1000.0
+                            t1 /= 1000.0
+                        if t1 > t0:
+                            days_elapsed = max((t1 - t0) / 86400.0, 0.1)
+                            snapshots_per_day = len(returns) / days_elapsed
+                            periods_per_year = snapshots_per_day * 365.25
+                        else:
+                            periods_per_year = 365.25 * 24 * 4  # 15 min default
+                    except Exception:
+                        periods_per_year = 365.25 * 24 * 4
+                else:
+                    periods_per_year = 365.25 * 24 * 4
+
                 sharpe_ratio = float((mean_r / std_r) * np.sqrt(periods_per_year))
 
                 # Sortino (apenas desvio padrão dos retornos negativos)
@@ -299,13 +375,17 @@ class PerformanceTracker:
 
                 # Calmar (Retorno Anualizado / Max Drawdown %)
                 if max_drawdown_pct > 0.01:
-                    annualized_return_pct = (mean_r * periods_per_year) * 100.0
+                    tot_ret = (eq_vals[-1] / (eq_vals[0] + 1e-12)) - 1.0
+                    if days_elapsed < 30.0:
+                        annualized_return_pct = (tot_ret * (365.25 / max(days_elapsed, 0.5))) * 100.0
+                    else:
+                        annualized_return_pct = (((1.0 + max(tot_ret, -0.99)) ** (365.25 / days_elapsed)) - 1.0) * 100.0
                     calmar_ratio = float(annualized_return_pct / max_drawdown_pct)
 
             # ------------------------------------------------------------------
             # Breakdown por Estratégia
             # ------------------------------------------------------------------
-            strategy_metrics = self._compute_strategy_breakdown(closing_trades)
+            strategy_metrics = self._compute_strategy_breakdown(closing_trades, pos_strategies=pos_strategies)
 
             return PerformanceMetrics(
                 initial_capital=self.initial_capital,
@@ -343,45 +423,74 @@ class PerformanceTracker:
             logger.error(f"Erro ao computar métricas de performance do banco: {e}")
             return PerformanceMetrics(initial_capital=self.initial_capital, timestamp=now_ms)
 
-    def _compute_strategy_breakdown(self, closing_trades: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        """Decompõe métricas entre SCALP, GOLDEN_POT e CARRY."""
+    def _compute_strategy_breakdown(
+        self,
+        closing_trades: List[Dict[str, Any]],
+        pos_strategies: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Decompõe métricas agrupando por coluna estruturada strategy_type de paper_positions."""
         breakdown = {
             "SCALP": {"trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0, "profit_factor": 0.0},
             "GOLDEN_POT": {"trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0, "profit_factor": 0.0},
+            "DIRECTIONAL": {"trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0, "profit_factor": 0.0},
             "CARRY": {"trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0, "profit_factor": 0.0},
         }
 
+        pos_strategies = pos_strategies or {}
+        gp_gl: Dict[str, List[float]] = {k: [0.0, 0.0] for k in breakdown}
         for t in closing_trades:
-            rationale = str(t.get("rationale", "")).upper()
-            action = str(t.get("action", "")).upper()
+            pid = str(t.get("position_id", ""))
+            stype = pos_strategies.get(pid)
+            if not stype:
+                rationale = str(t.get("rationale", "")).upper()
+                action = str(t.get("action", "")).upper()
+                if "GOLDEN_POT" in rationale or "GOLDEN_POT" in action:
+                    stype = "GOLDEN_POT"
+                elif "CARRY" in rationale or "CARRY" in action:
+                    stype = "CARRY"
+                elif "DIRECTIONAL" in rationale or "DIRECTIONAL" in action:
+                    stype = "DIRECTIONAL"
+                else:
+                    stype = "SCALP"
+
+            if stype not in breakdown:
+                breakdown[stype] = {"trades": 0, "wins": 0, "pnl": 0.0, "win_rate": 0.0, "profit_factor": 0.0}
+                gp_gl[stype] = [0.0, 0.0]
+
             pnl = float(t.get("pnl", 0.0))
-
-            if "GOLDEN_POT" in rationale or "GOLDEN_POT" in action:
-                stype = "GOLDEN_POT"
-            elif "CARRY" in rationale or "CARRY" in action:
-                stype = "CARRY"
-            else:
-                stype = "SCALP"
-
             entry = breakdown[stype]
             entry["trades"] += 1
             entry["pnl"] += pnl
             if pnl > 0:
                 entry["wins"] += 1
+                gp_gl[stype][0] += pnl
+            elif pnl < 0:
+                gp_gl[stype][1] += abs(pnl)
 
         for stype, data in breakdown.items():
             if data["trades"] > 0:
                 data["win_rate"] = (data["wins"] / data["trades"]) * 100.0
+                gp, gl = gp_gl.get(stype, [0.0, 0.0])
+                data["profit_factor"] = round(gp / gl, 2) if gl > 0 else (99.0 if gp > 0 else 0.0)
 
         return breakdown
 
-    def record_snapshot(self, metrics: Optional[PerformanceMetrics] = None) -> None:
+    def record_snapshot(self, metrics: Optional[PerformanceMetrics] = None, open_positions: Optional[int] = None) -> None:
         """Persiste um snapshot periódico de telemetria na tabela `performance_snapshots`."""
         if metrics is None:
             metrics = self.compute_metrics_from_db()
 
         try:
             with self._get_connection() as conn:
+                if open_positions is None:
+                    try:
+                        row = conn.execute(
+                            "SELECT count(*) FROM paper_positions WHERE status = 'OPEN'"
+                        ).fetchone()
+                        open_positions = int(row[0]) if row else 0
+                    except Exception:
+                        open_positions = 0
+
                 conn.execute("""
                     INSERT INTO performance_snapshots (
                         timestamp, equity, balance, net_pnl, net_pnl_pct,
@@ -398,7 +507,7 @@ class PerformanceTracker:
                     metrics.win_rate,
                     metrics.profit_factor,
                     metrics.total_trades,
-                    0,
+                    int(open_positions),
                     metrics.total_fees_paid
                 ))
                 conn.commit()

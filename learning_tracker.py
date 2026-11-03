@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize
 
 logger = logging.getLogger("ia_trader.learning_tracker")
 if not logger.handlers:
@@ -115,6 +116,17 @@ class LearningTracker:
                         weight REAL NOT NULL,
                         accuracy REAL NOT NULL,
                         total_samples INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY (regime, agent_name)
+                    )
+                """)
+                # 3. Métricas avançadas de calibração probabilística (ECE / Brier)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_regime_calibration (
+                        regime TEXT NOT NULL,
+                        agent_name TEXT NOT NULL,
+                        ece REAL DEFAULT 0.0,
+                        brier_score REAL DEFAULT 0.0,
                         updated_at INTEGER NOT NULL,
                         PRIMARY KEY (regime, agent_name)
                     )
@@ -202,8 +214,12 @@ class LearningTracker:
 
     def recalibrate_agent_weights(self) -> Dict[str, Dict[str, float]]:
         """
-        Analisa o histórico de decisões e desfechos para recalibrar
-        os pesos de voto de cada agente em cada regime de mercado.
+        Nível 1 & Nível 2 do Protocolo S2 (docs/S2_CALIBRACAO_AGENTES_BACKTEST.md):
+        Calcula os pesos dos agentes por regime usando Otimização Convexa Restrita
+        (Ridge / L2 com prior bayesiano DEFAULT_BASE_WEIGHTS), minimizando o erro quadrático direcional,
+        garantindo soma de pesos normalizada, pesos não-negativos e preservação estrita do veto
+        do RiskSentinelAgent (w = 1.5).
+        Calcula também a acurácia empírica e o ECE (Expected Calibration Error).
         Retorna dicionário: {regime: {agent_name: weight}}
         """
         now_ms = int(time.time() * 1000)
@@ -224,74 +240,143 @@ class LearningTracker:
                     all_weights[r] = dict(self.DEFAULT_BASE_WEIGHTS)
                 return all_weights
 
-            # Agrupa estatísticas por (regime, agent_name)
+            # Agrupa estatísticas por (regime, agent_name) e amostras por regime
             stats: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            regime_samples: Dict[str, List[Dict[str, Any]]] = {r: [] for r in regimes}
 
             for row in rows:
                 regime = row["regime"]
                 outcome = row["outcome"]
+                cons_dir = row["consensus_direction"]
                 try:
                     signals = json.loads(row["agent_signals_json"])
                 except Exception:
                     continue
 
+                # Direção alvo realizada: +1.0 para BUY vencedor ou SELL perdedor, -1.0 para o inverso
+                y_target = 1.0 if (
+                    (outcome == "WIN" and cons_dir == "BUY") or (outcome == "LOSS" and cons_dir == "SELL")
+                ) else -1.0
+
+                agent_votes: Dict[str, float] = {}
                 for sig in signals:
                     name = sig.get("agent_name", "")
                     direction = sig.get("direction", "HOLD")
+                    if direction not in ("BUY", "SELL"):
+                        continue
                     conf = float(sig.get("confidence", 0.5))
+                    s_vote = conf if direction == "BUY" else -conf
+                    agent_votes[name] = s_vote
 
                     key = (regime, name)
                     if key not in stats:
-                        stats[key] = {"total": 0, "correct": 0, "brier_sum": 0.0}
+                        stats[key] = {"total": 0, "correct": 0, "brier_sum": 0.0, "predictions": []}
 
                     stats[key]["total"] += 1
-
-                    # O agente acertou se votou na mesma direção que resultou em WIN,
-                    # ou se votou na direção oposta ao que resultou em LOSS.
-                    is_correct = False
-                    if outcome == "WIN" and direction == row["consensus_direction"]:
-                        is_correct = True
-                    elif outcome == "LOSS" and direction != row["consensus_direction"] and direction != "HOLD":
-                        is_correct = True
-
+                    is_correct = (s_vote * y_target > 0)
                     if is_correct:
                         stats[key]["correct"] += 1
 
-                    # Brier score do voto direcional (p - 1)^2 se correto, p^2 se incorreto
-                    target = 1.0 if is_correct else 0.0
-                    brier = (conf - target) ** 2
-                    stats[key]["brier_sum"] += brier
+                    stats[key]["predictions"].append((conf, is_correct))
+                    target_brier = 1.0 if is_correct else 0.0
+                    stats[key]["brier_sum"] += (conf - target_brier) ** 2
 
-            # Atualiza pesos ponderados por performance empírica
+                if regime in regime_samples and agent_votes:
+                    regime_samples[regime].append({
+                        "y": y_target,
+                        "votes": agent_votes,
+                    })
+
+            # Calcula ECE (Expected Calibration Error) para cada (regime, agente)
+            for key, s in stats.items():
+                preds = s.get("predictions", [])
+                tot = len(preds)
+                if tot >= 5:
+                    bins = [[] for _ in range(5)]
+                    for conf, corr in preds:
+                        b_idx = min(4, max(0, int((conf - 0.50) / 0.10)))
+                        bins[b_idx].append((conf, corr))
+                    ece = 0.0
+                    for b in bins:
+                        if b:
+                            b_acc = sum(1 for _, c in b if c) / len(b)
+                            b_conf = sum(c for c, _ in b) / len(b)
+                            ece += (len(b) / tot) * abs(b_acc - b_conf)
+                    s["ece"] = round(ece, 4)
+                else:
+                    s["ece"] = 0.0
+
+            # Otimização Convexa Restrita (Ridge / L2 com prior bayesiano) por regime
             with self._get_connection() as conn:
                 for r in regimes:
                     all_weights[r] = dict(self.DEFAULT_BASE_WEIGHTS)
-                    for agent_name in self.DEFAULT_BASE_WEIGHTS:
+                    active_agents = [
+                        name for name in self.DEFAULT_BASE_WEIGHTS
+                        if (r, name) in stats and stats[(r, name)]["total"] >= 5
+                    ]
+
+                    calibrated_weights: Dict[str, float] = {}
+
+                    if active_agents and regime_samples[r]:
+                        samples_r = regime_samples[r]
+                        valid_samples = [
+                            s for s in samples_r if any(ag in s["votes"] for ag in active_agents)
+                        ]
+                        if valid_samples:
+                            S = np.array([
+                                [s["votes"].get(ag, 0.0) for ag in active_agents]
+                                for s in valid_samples
+                            ], dtype=np.float64)
+                            y = np.array([s["y"] for s in valid_samples], dtype=np.float64)
+                            w_prior = np.array([self.DEFAULT_BASE_WEIGHTS[ag] for ag in active_agents], dtype=np.float64)
+
+                            lam = 0.20
+                            def loss(w: np.ndarray) -> float:
+                                pred = S @ w
+                                mse = float(np.mean((pred - y) ** 2))
+                                reg = float(lam * np.sum((w - w_prior) ** 2))
+                                return mse + reg
+
+                            bounds = [(0.10, 2.50) for _ in active_agents]
+                            res = minimize(loss, w_prior, bounds=bounds, method="L-BFGS-B")
+                            w_opt = res.x if res.success else w_prior
+
+                            if len(active_agents) > 1:
+                                # Normalização da soma de pesos preservando a massa total dos priors ativos
+                                prior_sum = float(np.sum(w_prior))
+                                opt_sum = float(np.sum(w_opt))
+                                w_final = w_opt * (prior_sum / opt_sum) if opt_sum > 0 else w_prior
+                            else:
+                                w_final = w_opt
+
+                            for idx, ag in enumerate(active_agents):
+                                calibrated_weights[ag] = round(float(w_final[idx]), 3)
+
+                    # Persiste e popula all_weights
+                    for agent_name, base_w in self.DEFAULT_BASE_WEIGHTS.items():
                         key = (r, agent_name)
-                        base_w = self.DEFAULT_BASE_WEIGHTS[agent_name]
-
-                        if key in stats and stats[key]["total"] >= 5:
-                            s = stats[key]
-                            acc = s["correct"] / s["total"]
-                            # Fator multiplicador baseado em vantagem sobre o acaso (50%)
-                            # Ex: 70% acerto -> 1.0 + (0.7 - 0.5)*1.5 = 1.3x do peso base
-                            # Ex: 30% acerto -> 1.0 + (0.3 - 0.5)*1.5 = 0.7x do peso base
-                            multiplier = max(0.40, min(1.80, 1.0 + (acc - 0.50) * 1.5))
-                            calibrated_w = round(base_w * multiplier, 3)
-                            all_weights[r][agent_name] = calibrated_w
-
-                            conn.execute("""
-                                INSERT OR REPLACE INTO agent_regime_weights (
-                                    regime, agent_name, weight, accuracy, total_samples, updated_at
-                                ) VALUES (?, ?, ?, ?, ?, ?)
-                            """, (r, agent_name, calibrated_w, acc, s["total"], now_ms))
+                        if agent_name in calibrated_weights:
+                            cal_w = calibrated_weights[agent_name]
+                            acc = stats[key]["correct"] / stats[key]["total"]
+                            tot = stats[key]["total"]
+                            ece = stats[key].get("ece", 0.0)
                         else:
-                            # Sem amostra suficiente, preserva peso base a priori
-                            conn.execute("""
-                                INSERT OR REPLACE INTO agent_regime_weights (
-                                    regime, agent_name, weight, accuracy, total_samples, updated_at
-                                ) VALUES (?, ?, ?, ?, ?, ?)
-                            """, (r, agent_name, base_w, 0.50, 0, now_ms))
+                            cal_w = base_w
+                            acc = stats[key]["correct"] / stats[key]["total"] if (key in stats and stats[key]["total"] > 0) else 0.50
+                            tot = stats[key]["total"] if key in stats else 0
+                            ece = stats[key].get("ece", 0.0) if key in stats else 0.0
+
+                        all_weights[r][agent_name] = cal_w
+                        conn.execute("""
+                            INSERT OR REPLACE INTO agent_regime_weights (
+                                regime, agent_name, weight, accuracy, total_samples, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                        """, (r, agent_name, cal_w, acc, tot, now_ms))
+                        conn.execute("""
+                            INSERT OR REPLACE INTO agent_regime_calibration (
+                                regime, agent_name, ece, brier_score, updated_at
+                            ) VALUES (?, ?, ?, ?, ?)
+                        """, (r, agent_name, ece, 0.0, now_ms))
 
                 conn.commit()
 
@@ -325,6 +410,71 @@ class LearningTracker:
         # Sentinela de risco SEMPRE mantém peso prioritário
         weights["RiskSentinelAgent"] = 1.5
         return weights
+
+    def get_agent_calibration_for_regime(self, regime: str) -> Dict[str, Dict[str, float]]:
+        """
+        Retorna mapa de calibração empírica por agente para um determinado regime:
+        {agent_name: {"weight": float, "accuracy": float, "total_samples": int, "ece": float}}
+        """
+        calib: Dict[str, Dict[str, float]] = {}
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute("""
+                    SELECT w.agent_name, w.weight, w.accuracy, w.total_samples, COALESCE(c.ece, 0.0) as ece
+                    FROM agent_regime_weights w
+                    LEFT JOIN agent_regime_calibration c ON w.regime = c.regime AND w.agent_name = c.agent_name
+                    WHERE w.regime = ?
+                """, (regime,)).fetchall()
+                for row in rows:
+                    calib[row["agent_name"]] = {
+                        "weight": float(row["weight"]),
+                        "accuracy": float(row["accuracy"]),
+                        "total_samples": int(row["total_samples"]),
+                        "ece": float(row["ece"]),
+                    }
+        except Exception as e:
+            logger.debug(f"Aviso ao buscar calibração de agentes: {e}")
+        return calib
+
+    def retrain_daily_models(
+        self,
+        symbol: str = "BTCUSDT",
+        timeframe: str = "1h",
+        max_candles: int = 50000,
+        model_type: str = "lgbm",
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Executa ciclo diário de retreinamento e verificação Champion-Challenger para o modelo especificado
+        usando dados novos acumulados no SQLite (BTCUSDT 1h, max_candles=50000).
+        """
+        mem = ModelEvolutionManager(db_path=self.db_path)
+        return mem.run_retraining_cycle(
+            symbol=symbol,
+            timeframe=timeframe,
+            max_candles=max_candles,
+            model_type=model_type,
+            **kwargs,
+        )
+
+
+def retrain_daily_models(
+    symbol: str = "BTCUSDT",
+    timeframe: str = "1h",
+    max_candles: int = 50000,
+    model_type: str = "lgbm",
+    db_path: str = "datasets/market_cache.db",
+    **kwargs,
+) -> Dict[str, Any]:
+    """Função de conveniência no módulo para execução direta do ciclo diário de retreinamento."""
+    mem = ModelEvolutionManager(db_path=db_path)
+    return mem.run_retraining_cycle(
+        symbol=symbol,
+        timeframe=timeframe,
+        max_candles=max_candles,
+        model_type=model_type,
+        **kwargs,
+    )
 
 
 class ModelEvolutionManager:
@@ -375,3 +525,110 @@ class ModelEvolutionManager:
             return True, f"PROMOÇÃO APROVADA: Challenger superou Champion em {delta_pct:+.2f}% na métrica {metric_name} ({champion_metric:.4f} -> {challenger_metric:.4f})."
         else:
             return False, f"PROMOÇÃO REJEITADA: Challenger obteve {delta_pct:+.2f}% de variação (abaixo da melhoria mínima de +{self.min_improvement_pct}%). Champion mantido em produção."
+
+    def run_retraining_cycle(
+        self,
+        symbol: str = "BTCUSDT",
+        timeframe: str = "1h",
+        max_candles: int = 50000,
+        model_type: str = "lgbm",
+        horizon: int = 5,
+        multiple_tp: float = 1.8,
+        multiple_sl: float = 1.0,
+        confidence_threshold: float = 0.55,
+    ) -> Dict[str, Any]:
+        """
+        Executa uma rodada completa de treinamento Walk-Forward + avaliação Champion-Challenger
+        usando os candles acumulados no SQLite local (custo zero de API).
+        """
+        import shutil
+        from datetime import datetime, timezone
+        import pandas as pd
+        from data.feature_engineering import FeatureEngineer
+        from model_trainer import ModelTrainer
+
+        with sqlite3.connect(self.db_path, timeout=15.0) as conn:
+            df = pd.read_sql(
+                "SELECT timestamp, open, high, low, close, volume, quote_volume "
+                "FROM candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT ?",
+                conn,
+                params=(symbol, timeframe, int(max_candles)),
+            )
+
+        if len(df) < 500:
+            return {"status": "SKIPPED", "reason": f"Candles insuficientes ({len(df)} < 500) para {symbol} {timeframe}."}
+
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        fe = FeatureEngineer()
+        df_feat = fe.compute_all_features(df, drop_na=False)
+        if len(df_feat) > 210:
+            df_feat = df_feat.iloc[210:].reset_index(drop=True)
+
+        # Seleciona apenas features estacionárias/normalizadas para evitar overfitting de nível de preço
+        non_stationary = {
+            "timestamp", "open", "high", "low", "close", "volume", "quote_volume",
+            "sma_20", "sma_50", "sma_200", "ema_9", "ema_21", "bb_high", "bb_mid", "bb_low",
+            "obv", "vol_sma_20", "atr_14", "nearest_bsl", "nearest_ssl",
+        }
+        feature_cols = [
+            c for c in df_feat.select_dtypes(include=["number"]).columns
+            if c not in non_stationary and df_feat[c].notna().mean() > 0.95
+        ]
+        df_clean = df_feat[["timestamp", "open", "high", "low", "close", "atr_14"] + feature_cols].fillna(0.0)
+
+        trainer = ModelTrainer(
+            model_type=model_type,
+            horizon=horizon,
+            multiple_tp=multiple_tp,
+            multiple_sl=multiple_sl,
+            confidence_threshold=confidence_threshold,
+            models_dir=self.model_dir,
+        )
+        X, y = trainer.prepare_dataset(df_clean, feature_columns=feature_cols)
+        wf_res = trainer.train_walk_forward(X, y, n_splits=4)
+
+        challenger_acc = float(wf_res.get("emitted_signals_accuracy", 0.0))
+        challenger_global = float(wf_res.get("global_accuracy", 0.0))
+        challenger_f1 = float(wf_res.get("f1_macro", 0.0))
+
+        filename = f"{model_type}_model_v1.joblib"
+        filepath = os.path.join(self.model_dir, filename)
+        champion_acc = 0.0
+        champion_global = 0.0
+        if os.path.exists(filepath):
+            try:
+                champ_payload = ModelTrainer.load_model(filepath)
+                champ_metrics = champ_payload.get("metrics", {}) if isinstance(champ_payload, dict) else {}
+                champion_acc = float(champ_metrics.get("emitted_signals_accuracy", 0.0))
+                champion_global = float(champ_metrics.get("global_accuracy", 0.0))
+            except Exception as exc:
+                logger.warning(f"Aviso ao ler Champion atual ({filepath}): {exc}")
+
+        promoted, rationale = self.evaluate_challenger(
+            champion_metric=champion_acc if champion_acc > 0 else challenger_acc * 0.95,
+            challenger_metric=challenger_acc,
+            metric_name="emitted_signals_accuracy",
+        )
+
+        if promoted:
+            if os.path.exists(filepath):
+                ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                arch_path = os.path.join(self.model_dir, "archive", f"{model_type}_model_v1_{ts_tag}.joblib")
+                shutil.copy2(filepath, arch_path)
+            trainer.train_full_model(X, y, save_name=filename)
+
+        return {
+            "status": "PROMOTED" if promoted else "RETAINED",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "model_type": model_type,
+            "samples_evaluated": int(wf_res.get("samples_evaluated", 0)),
+            "features_count": len(feature_cols),
+            "champion_emitted_accuracy": round(champion_acc, 4),
+            "challenger_emitted_accuracy": round(challenger_acc, 4),
+            "champion_global_accuracy": round(champion_global, 4),
+            "challenger_global_accuracy": round(challenger_global, 4),
+            "challenger_f1_macro": round(challenger_f1, 4),
+            "emitted_signals_count": int(wf_res.get("emitted_signals_count", 0)),
+            "rationale": rationale,
+        }

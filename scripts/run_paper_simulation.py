@@ -24,6 +24,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 import numpy as np
 import pandas as pd
 
@@ -81,20 +85,25 @@ GP_CLIMAX_RSI_OVERSOLD = 15.0           # bloqueia SELL se RSI < 15.0
 GP_CLIMAX_RSI_OVERBOUGHT = 85.0         # bloqueia BUY se RSI > 85.0
 GP_MAX_LEVERAGE = 2.0                   # teto de alavancagem 2x para altcoins voláteis 5m
 GP_ADAPTIVE_SL_MARGIN = 1.15            # multiplicador sobre a maior amplitude das últimas 3 velas
-# --- SCALP via comitê (3m Momentum + Setup Fallback): Majors BTC/ETH/SOL ---
-SCALP_TIMEFRAME = "3m"
-SCALP_BAR_MS = SCALP_BAR_MS         # duração da vela 3m
+# --- SCALP via comitê (15m Momentum + Setup Fallback): Majors BTC/ETH/SOL (Migrado na S2) ---
+SCALP_TIMEFRAME = "15m"
+SCALP_BAR_MS = SCALP_BAR_MS         # duração da vela 15m
 SCALP_MIN_COMMITTEE_CONFIDENCE = STRATEGY_PROFILES["SCALP"].min_committee_confidence     # 0.70 (perfil)
-SCALP_COOLDOWN_BARS = 12            # sem reentrada do símbolo por N barras 3m (36m) após qualquer fechamento
-SCALP_MAX_ENTRIES_PER_BAR = 1       # no máximo 1 nova entrada SCALP por vela 3m (qualquer símbolo)
-SCALP_BREAKOUT_BARS = 20            # rompimento de 20 barras 3m (1h)
-SCALP_VOLUME_Z_MIN = 0.8            # volume_zscore_20 no 3m >= 0.8
+SCALP_COOLDOWN_BARS = 4             # sem reentrada do símbolo por N barras 15m (60m) após qualquer fechamento
+SCALP_STREAK_STOP_COOLDOWN_BARS = 8 # cooldown estendido (120m) após 2 STOP_LOSS consecutivos no símbolo
+SCALP_MIN_ATR_PCT = 0.0025          # piso de ATR (25 bps) no modo S1 para evitar SL < taxas round-trip
+SCALP_MAX_LEVERAGE = 3.0            # teto de alavancagem 3x no modo S1 (elimina faixa 4x de PF negativo)
+SCALP_MAX_ENTRIES_PER_BAR = 1       # no máximo 1 nova entrada SCALP por vela 15m (qualquer símbolo)
+SCALP_BREAKOUT_BARS = 20            # rompimento de 20 barras 15m (5h)
+SCALP_VOLUME_Z_MIN = 0.8            # volume_zscore_20 no 15m >= 0.8
 SCALP_RANGE_ATR_MIN = 1.0           # range >= 1.0 ATR
 SCALP_CLOSE_EXTREME_MIN = 0.70      # fechamento no terço extremo
 SCALP_CANDLE_LIMIT = 400
 SCALP_MIN_WARMUP_CANDLES = 200
 # --- DAY TRADE / DIRECTIONAL 1h ---
 SWING_MIN_COMMITTEE_CONFIDENCE = STRATEGY_PROFILES["DIRECTIONAL"].min_committee_confidence   # 0.70 (perfil)
+SWING_STREAK_STOP_COOLDOWN_BARS = 2   # cooldown estendido (2h) após 2 STOP_LOSS consecutivos no símbolo
+SWING_MAX_LEVERAGE = 3.0              # teto de alavancagem 3x no modo S1 para day trade
 # Filtro faca-caindo (legado do GP v2 de fade; mantido como utilitário, NÃO aplicado no gatilho de momentum v3)
 GP_KNIFE_RSI_LOW = 20.0             # RSI abaixo => "faca caindo" (LONG) se close < sma_200
 GP_KNIFE_RSI_HIGH = 80.0            # simétrico (SHORT) se close > sma_200
@@ -109,6 +118,7 @@ GP_EXCLUDED_BASE_ASSETS = frozenset({
     "SKHYNIX", "SKHY", "SAMSUNG", "KORU", "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
     "TSLA", "NVDA", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NFLX", "AMD", "INTC",
     "COIN", "MSTR", "HOOD", "PLTR", "BABA", "TSM", "SPY", "QQQ", "IWM", "GLD", "SLV", "USO",
+    "SNXX", "SNDK", "UNITREE", "OPENAI", "SPACEX", "ANTHROPIC", "STRIPE", "FIGMA",
 })
 
 
@@ -126,18 +136,31 @@ class PaperTradingDaemon:
         fe: Optional[FeatureEngineer] = None,
         golden_pot_agent: Optional[GoldenPotAgent] = None,
         tape_agent: Optional[TapeReadingAgent] = None,
+        risk_per_trade_pct: Optional[float] = None,
     ):
         self.poll_interval = poll_interval_seconds
         self.engine = engine or PaperTradingEngine()
+        if risk_per_trade_pct is not None:
+            self.engine.risk_per_trade_pct = risk_per_trade_pct
         if hasattr(self.engine, "core") and self.engine.core:
-            # Item 4: Desempate Semântico Local via GPU (Ollama / RTX 3060 a R$ 0.00)
+            # Desempate Semântico via Gemini Flash ou GPU Local (Ollama / RTX 3060)
             if hasattr(self.engine.core, "llm_assistant") and not getattr(self.engine.core.llm_assistant, "enabled", False):
-                self.engine.core.llm_assistant = ChatGPTAssistant(
-                    enabled=True,
-                    provider="ollama",
-                    model="llama3.1:latest",
-                    timeout=4.5,
-                )
+                gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+                if gemini_key:
+                    self.engine.core.llm_assistant = ChatGPTAssistant(
+                        enabled=True,
+                        provider="gemini",
+                        model="gemini-3.8-flash",
+                        api_key=gemini_key,
+                        timeout=5.0,
+                    )
+                else:
+                    self.engine.core.llm_assistant = ChatGPTAssistant(
+                        enabled=True,
+                        provider="ollama",
+                        model="llama3.1:latest",
+                        timeout=8.5,
+                    )
         self.loader = loader or DataLoader()
         self.fe = fe or FeatureEngineer()
         self.scanner = golden_pot_agent or GoldenPotAgent(min_volume_usd=20_000_000.0)
@@ -148,6 +171,7 @@ class PaperTradingDaemon:
         self._flow_gate_bar_cache: Dict[Tuple[str, str, int], bool] = {}  # dedupe do _flow_gate por (strategy, sym, bar_ts)
         self._funding_refresh_done: Dict[str, int] = {}    # liquidação de funding já consultada (evita rede repetida)
         self.stale_bar_max_age_ms: int = 0 if type(self.loader).__name__ == "FakeLoader" else GP_STALE_BAR_MAX_AGE_MS
+        self._swing_entered_bars: Set[Tuple[str, int]] = set()
 
         # Pares fixos monitorados continuamente
         self.core_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
@@ -207,10 +231,9 @@ class PaperTradingDaemon:
                 open_sym_positions = [p for p in self.engine.positions.values() if p.symbol == sym and p.status == "OPEN"]
                 if not open_sym_positions:
                     return
-                # Usa 5m quando a posição do símbolo for GOLDEN_POT (alinhamento exato com o grid de 5m) e 3m para SCALP/DIRECTIONAL (60m é múltiplo exato de 3m)
-                is_gp_sym = any(p.strategy_type == "GOLDEN_POT" for p in open_sym_positions)
-                pref_tf = "5m" if is_gp_sym else "3m"
-                tf_ms = (5 * 60 * 1000) if is_gp_sym else (3 * 60 * 1000)
+                # Usa 5m para verificação de ordens (grid comum de 5m para GP 5m, SCALP 15m e DIRECTIONAL 1h)
+                pref_tf = "5m"
+                tf_ms = 5 * 60 * 1000
 
                 df = await self.loader.get_candles(sym, pref_tf, limit=10, exchange="binance")
                 if df.empty:
@@ -270,25 +293,12 @@ class PaperTradingDaemon:
         return (close >= sma) if direction == "BUY" else (close <= sma)
 
     def _entered_bar(self, prefix: str, bar_id: int, max_per_bar: int, bar_ms: int = GP_BAR_MS) -> bool:
-        """True se já houve `max_per_bar` entradas com ação `prefix` nesta vela (lê o ledger -> sobrevive a restart)."""
-        # P2: o ledger grava a entrada em ts(t+1) = ts(vela de decisão t) + bar_ms -> subtrai 1 barra p/ comparar com bar_id(t)
-        n = sum(
-            1 for t in self.engine.trade_history
-            if t.action.startswith(prefix) and int(PaperTradingEngine._ts_ms(t.timestamp)) // bar_ms - 1 == bar_id
-        )
-        return n >= max_per_bar
+        """True se já houve `max_per_bar` entradas com ação `prefix` nesta vela (delegado ao PaperTradingEngine)."""
+        return self.engine.has_entered_bar(prefix, bar_id, max_per_bar, bar_ms)
 
     def _in_cooldown(self, symbol: str, bar_id: int, cooldown_bars: int, bar_ms: int = GP_BAR_MS) -> bool:
-        """True se o símbolo teve fechamento (qualquer saída total) há < cooldown_bars velas.
-
-        Saídas parciais (TP1/TP2_PARTIAL) não são fechamento. Lê trade_history (restaurado do ledger no restart).
-        """
-        for t in self.engine.trade_history:
-            if t.symbol != symbol or t.action.startswith("OPEN_") or t.action in NON_CLOSING_TRADE_ACTIONS:
-                continue
-            if bar_id - int(PaperTradingEngine._ts_ms(t.timestamp)) // bar_ms < cooldown_bars:
-                return True
-        return False
+        """True se o símbolo teve fechamento (qualquer saída total) há < cooldown_bars velas (delegado ao PaperTradingEngine)."""
+        return self.engine.is_in_cooldown(symbol, bar_id, cooldown_bars, bar_ms)
 
     def _gp_entered_bar(self, bar_id: int) -> bool:
         return self._entered_bar("OPEN_GOLDEN_POT_", bar_id, GP_MAX_ENTRIES_PER_BAR, GP_BAR_MS)
@@ -299,8 +309,32 @@ class PaperTradingDaemon:
     def _scalp_entered_bar(self, bar_id: int) -> bool:
         return self._entered_bar("OPEN_SCALP_", bar_id, SCALP_MAX_ENTRIES_PER_BAR, SCALP_BAR_MS)
 
+    def _has_consecutive_stops(self, symbol: str, min_streak: int = 2) -> bool:
+        """True se os últimos `min_streak` fechamentos totais do símbolo foram STOP_LOSS."""
+        closing_actions = [
+            t.action for t in self.engine.trade_history
+            if t.symbol == symbol and not t.action.startswith("OPEN_") and t.action not in NON_CLOSING_TRADE_ACTIONS
+        ]
+        if len(closing_actions) < min_streak:
+            return False
+        return all(act == "STOP_LOSS" for act in closing_actions[-min_streak:])
+
     def _scalp_in_cooldown(self, symbol: str, bar_id: int) -> bool:
-        return self._in_cooldown(symbol, bar_id, SCALP_COOLDOWN_BARS, SCALP_BAR_MS)
+        bars = SCALP_STREAK_STOP_COOLDOWN_BARS if self._has_consecutive_stops(symbol, 2) else SCALP_COOLDOWN_BARS
+        return self._in_cooldown(symbol, bar_id, bars, SCALP_BAR_MS)
+
+    def _swing_entered_bar(self, symbol: str, bar_id: int) -> bool:
+        """True se o símbolo já realizou entrada DIRECTIONAL nesta vela de 1h (lê ledger persistido)."""
+        return any(
+            t.symbol == symbol and t.action in ("OPEN_LONG", "OPEN_SHORT")
+            and int(PaperTradingEngine._ts_ms(t.timestamp)) // SWING_BAR_MS - 1 == bar_id
+            for t in self.engine.trade_history
+        )
+
+    def _swing_in_cooldown(self, symbol: str, bar_id: int) -> bool:
+        """True se o símbolo teve fechamento total de posição nos últimos SWING_COOLDOWN_BARS (1h, ou 2h após 2 stops)."""
+        bars = SWING_STREAK_STOP_COOLDOWN_BARS if self._has_consecutive_stops(symbol, 2) else 1
+        return self._in_cooldown(symbol, bar_id, bars, SWING_BAR_MS)
 
     @staticmethod
     def gp_falling_knife_blocked(direction: str, df_feat: pd.DataFrame) -> Optional[str]:
@@ -552,8 +586,18 @@ class PaperTradingDaemon:
     ) -> Tuple[TradeSignal, float]:
         """Alavancagem via decide_leverage (confiança REAL) + sinal com SL/TP3 do perfil. Lote = margem."""
         prof = STRATEGY_PROFILES[strategy_type]
-        tf_map = {"SCALP": "3m", "GOLDEN_POT": "5m", "DIRECTIONAL": "1h"}
-        max_lev = GP_MAX_LEVERAGE if strategy_type == "GOLDEN_POT" else MAX_LEVERAGE
+        tf_map = {"SCALP": "15m", "GOLDEN_POT": "5m", "DIRECTIONAL": "1h"}
+        s1_risk_mode = bool(getattr(self.engine, "risk_per_trade_pct", None))
+        if strategy_type == "GOLDEN_POT":
+            max_lev = GP_MAX_LEVERAGE
+        elif s1_risk_mode and strategy_type == "SCALP":
+            max_lev = SCALP_MAX_LEVERAGE
+        elif s1_risk_mode and strategy_type == "DIRECTIONAL":
+            max_lev = SWING_MAX_LEVERAGE
+        else:
+            max_lev = MAX_LEVERAGE
+        if s1_risk_mode and strategy_type == "SCALP" and close > 0:
+            atr = max(atr, close * SCALP_MIN_ATR_PCT)
         lev = decide_leverage(
             committee.confidence,
             atr_pct=atr / close if close > 0 else 0.0,
@@ -563,10 +607,19 @@ class PaperTradingDaemon:
             low_history_or_liquidity=low_liquidity,
             max_leverage=max_lev,
         )
-        margin = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95, margin_cap)
-        notional = margin * lev
         effective_sl_mult = sl_atr_mult if sl_atr_mult is not None else prof.sl_atr_mult
         sl_dist = effective_sl_mult * atr
+        sl_dist_pct = (sl_dist / close) if close > 0 else 0.01
+        risk_scale = 0.30 if strategy_type == "GOLDEN_POT" else 1.0
+        cap_pct = margin_cap / self.engine.balance if self.engine.balance > 0 else 0.20
+        if hasattr(self.engine, "_lot_margin"):
+            est_margin, _ = self.engine._lot_margin(
+                committee, lev, cap_pct, sl_distance_pct=sl_dist_pct, risk_scale=risk_scale
+            )
+            margin = min(est_margin, margin_cap)
+        else:
+            margin = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95, margin_cap)
+        notional = margin * lev
         sgn = 1.0 if direction == "BUY" else -1.0
         sig = replace(
             committee,
@@ -575,7 +628,7 @@ class PaperTradingDaemon:
             take_profit=close + sgn * prof.tp3_atr_mult * atr,
             atr=atr,
             position_size=notional,
-            risk_dollars=(notional / close) * sl_dist,
+            risk_dollars=(notional / close) * sl_dist if close > 0 else 0.0,
             rationale=f"{rationale} | {committee.rationale}",
         )
         return sig, lev
@@ -808,6 +861,12 @@ class PaperTradingDaemon:
                 ts = int(latest["timestamp"])
                 bar_ref = ts
                 bar_id = ts // SCALP_BAR_MS
+                candle_close_ts = ts + SCALP_BAR_MS
+                bar_age_ms = now_ts - candle_close_ts
+                if self.stale_bar_max_age_ms > 0 and bar_age_ms > self.stale_bar_max_age_ms:
+                    logger.info(f"[{sym}] Scalp ignorado: vela 15m fechada há {bar_age_ms/1000:.1f}s (> {self.stale_bar_max_age_ms/1000}s, stale candle).")
+                    self._fr(SCN, sym, ts, "stale_bar")
+                    continue
                 self._fi(SCN, sym, ts, "evaluated")
                 if self._scalp_entered_bar(bar_id):
                     self._fr(SCN, sym, ts, "bar_limit")
@@ -939,6 +998,14 @@ class PaperTradingDaemon:
                 self._fi(DTN, sym, ts, "evaluated")
                 self._fi(DTN, sym, ts, "candidate")  # day trade: símbolo/barra elegível ao comitê
 
+                bar_id = ts // SWING_BAR_MS
+                if (sym, bar_id) in self._swing_entered_bars or self._swing_entered_bar(sym, bar_id):
+                    self._fr(DTN, sym, ts, "bar_limit")
+                    continue
+                if self._swing_in_cooldown(sym, bar_id):
+                    self._fr(DTN, sym, ts, "cooldown")
+                    continue
+
                 eval_res = self.engine.core.evaluate_multi_strategy(
                     symbol=sym,
                     current_price=close,
@@ -958,14 +1025,24 @@ class PaperTradingDaemon:
                         # BTC 0.55 virava $0.55 e a ordem era rejeitada por margem < $10).
                         # Lote = margem (paper_lot_usd); notional = margem x alavancagem do Smart Trader.
                         sl_dist = abs(close - float(dir_sig.get("stop_loss", close)))
+                        s1_risk_mode = bool(getattr(self.engine, "risk_per_trade_pct", None))
                         lev = decide_leverage(
                             float(dir_sig.get("confidence", 0.0)),
                             atr_pct=float(latest.get("atr_14", 0.0)) / close if close > 0 else 0.0,
                             regime_alignment=self._regime_aligned(dir_sig["direction"], latest),
                             timeframe="1h",
                             is_vetoed=bool(dir_sig.get("is_vetoed", False)),
+                            max_leverage=SWING_MAX_LEVERAGE if s1_risk_mode else MAX_LEVERAGE,
                         )
-                        notional = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95) * lev
+                        if s1_risk_mode and hasattr(self.engine, "_lot_margin"):
+                            sl_dist_pct = (sl_dist / close) if close > 0 else 0.01
+                            tmp_sig = TradeSignal(**{**dir_sig, "position_size": self.engine.paper_lot_usd})
+                            est_margin, _ = self.engine._lot_margin(
+                                tmp_sig, lev, 0.50, sl_distance_pct=sl_dist_pct, risk_scale=1.0, current_price=close
+                            )
+                            notional = est_margin * lev
+                        else:
+                            notional = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95) * lev
                         dir_sig = {**dir_sig, "position_size": notional, "risk_dollars": (notional / close) * sl_dist}
                         sig = TradeSignal(**dir_sig)
                         self._fi(DTN, sym, ts, "risk_ok")
@@ -978,6 +1055,7 @@ class PaperTradingDaemon:
                         if not pos:
                             self._fr_open(DTN, sym, ts)
                         if pos:
+                            self._swing_entered_bars.add((sym, bar_id))
                             self._last_tick_bar_ts[sym] = max(self._last_tick_bar_ts.get(sym, 0), pos.entry_timestamp - 1)
                             self._fi(DTN, sym, ts, "executed")
                             logger.info(f"[{sym}] SWING TRADE DISPARADO: {sig.direction} @ ${close:,.2f}")
@@ -1041,6 +1119,20 @@ class PaperTradingDaemon:
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"Aviso no funnel_flush de ciclo: {e}")
 
+                # 6. Check diário (24h) de evolução Champion-Challenger do modelo ML em background
+                now_s = time.time()
+                last_retrain = getattr(self, "_last_ml_retrain_check_s", 0.0)
+                if max_cycles == 0 and (last_retrain == 0.0 or (now_s - last_retrain) >= 86400.0):
+                    self._last_ml_retrain_check_s = now_s
+                    if last_retrain > 0.0:  # Não bloqueia o boot inicial; roda a cada 24h de uptime
+                        try:
+                            from learning_tracker import ModelEvolutionManager
+                            mgr = ModelEvolutionManager(db_path=self.engine.db_path)
+                            rep = await asyncio.to_thread(mgr.run_retraining_cycle)
+                            logger.info(f"[ML EVOLUTION 24H] {rep.get('status')}: {rep.get('rationale')}")
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug(f"Aviso no check diário de ML: {e}")
+
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             logger.info("Daemon de Paper Trading recebendo sinal de interrupção...")
@@ -1058,7 +1150,8 @@ class PaperTradingDaemon:
 async def main():
     cycles = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     poll = int(sys.argv[2]) if len(sys.argv) > 2 else 20
-    daemon = PaperTradingDaemon(poll_interval_seconds=poll)
+    # Semana 1: ativação de dimensionamento dinâmico (1% da banca em risco) no daemon de produção
+    daemon = PaperTradingDaemon(poll_interval_seconds=poll, risk_per_trade_pct=0.01)
 
     # Tratamento de sinais POSIX para encerramento gracioso
     loop = asyncio.get_running_loop()

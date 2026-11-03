@@ -10,13 +10,14 @@ import os
 import sys
 import re
 import time
+import urllib.request
 import sqlite3
 from db_conn import connect as _closing_connect
 import asyncio
 import logging
 import json
 from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 logger = logging.getLogger("ia_trader.flask_interface")
 
@@ -924,6 +925,103 @@ def api_committee_deliberate(symbol: str = "BTCUSDT"):
     return jsonify(res)
 
 
+_TICKER_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_OPEN_CANDLE_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
+
+def get_realtime_ticker(symbol: str) -> Dict[str, Any]:
+    """Obtém ticker 24h real com lastPrice, high24h, low24h, change24h da Binance (com cache de 2.5s)."""
+    sym = symbol.upper()
+    now = time.time()
+    if sym in _TICKER_CACHE:
+        ts_cached, val = _TICKER_CACHE[sym]
+        if now - ts_cached < 2.5:
+            return val
+
+    # 1. Tenta Binance Futures REST
+    try:
+        url = f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={sym}"
+        req = urllib.request.Request(url, headers={"User-Agent": "ia_trader/1.0"})
+        with urllib.request.urlopen(req, timeout=1.8) as resp:
+            data = json.loads(resp.read().decode())
+            res = {
+                "last_price": float(data.get("lastPrice", 0.0)),
+                "change_pct_24h": round(float(data.get("priceChangePercent", 0.0)), 2),
+                "high_24h": float(data.get("highPrice", 0.0)),
+                "low_24h": float(data.get("lowPrice", 0.0)),
+                "volume_24h": float(data.get("volume", 0.0)),
+            }
+            if res["last_price"] > 0:
+                _TICKER_CACHE[sym] = (now, res)
+                return res
+    except Exception:
+        pass
+
+    # 2. Fallback Bitget v2
+    try:
+        url = f"https://api.bitget.com/api/v2/mix/market/ticker?symbol={sym}&productType=USDT-FUTURES"
+        req = urllib.request.Request(url, headers={"User-Agent": "ia_trader/1.0"})
+        with urllib.request.urlopen(req, timeout=1.8) as resp:
+            data = json.loads(resp.read().decode())
+            item = data.get("data", [{}])[0] if data.get("data") else {}
+            res = {
+                "last_price": float(item.get("lastPr", 0.0)),
+                "change_pct_24h": round(float(item.get("change24h", 0.0)) * 100.0, 2),
+                "high_24h": float(item.get("high24h", 0.0)),
+                "low_24h": float(item.get("low24h", 0.0)),
+                "volume_24h": float(item.get("baseVolume", 0.0)),
+            }
+            if res["last_price"] > 0:
+                _TICKER_CACHE[sym] = (now, res)
+                return res
+    except Exception:
+        pass
+
+    # 3. Fallback SQLite local
+    try:
+        with get_db_connection(read_only=True) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT close FROM candles WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1", (sym,))
+            r = cur.fetchone()
+            lp = float(r["close"]) if r else 0.0
+            return {"last_price": lp, "change_pct_24h": 0.0, "high_24h": lp, "low_24h": lp, "volume_24h": 0.0}
+    except Exception:
+        return {"last_price": 0.0, "change_pct_24h": 0.0, "high_24h": 0.0, "low_24h": 0.0, "volume_24h": 0.0}
+
+
+def fetch_binance_open_candle(symbol: str, timeframe: str) -> Optional[Dict[str, Any]]:
+    """Busca a vela corrente em formação (não fechada) diretamente da Binance REST."""
+    key = (symbol.upper(), timeframe.lower())
+    now = time.time()
+    if key in _OPEN_CANDLE_CACHE:
+        ts_cached, val = _OPEN_CANDLE_CACHE[key]
+        if now - ts_cached < 2.0:
+            return val
+
+    try:
+        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol.upper()}&interval={timeframe.lower()}&limit=1"
+        req = urllib.request.Request(url, headers={"User-Agent": "ia_trader/1.0"})
+        with urllib.request.urlopen(req, timeout=1.8) as resp:
+            data = json.loads(resp.read().decode())
+            if data and len(data) > 0:
+                k = data[-1]
+                res = {
+                    "symbol": symbol.upper(),
+                    "timeframe": timeframe.lower(),
+                    "timestamp": int(k[0]),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                    "quote_volume": float(k[7])
+                }
+                _OPEN_CANDLE_CACHE[key] = (now, res)
+                return res
+    except Exception:
+        pass
+    return None
+
+
 @app.route("/api/chart/<symbol>/<timeframe>", methods=["GET"])
 def api_chart(symbol: str, timeframe: str):
     """Retorna dados estruturados de velas OHLCV e indicadores técnicos para o Plotly."""
@@ -934,54 +1032,116 @@ def api_chart(symbol: str, timeframe: str):
     except (TypeError, ValueError):
         return jsonify({"error": "Parâmetro 'limit' inválido (esperado inteiro).", "symbol": sym, "timeframe": tf}), 400
 
+    TF_DURATIONS_MS: Dict[str, int] = {
+        "1m": 60 * 1000,
+        "3m": 3 * 60 * 1000,
+        "5m": 5 * 60 * 1000,
+        "15m": 15 * 60 * 1000,
+        "30m": 30 * 60 * 1000,
+        "1h": 60 * 60 * 1000,
+        "4h": 4 * 60 * 60 * 1000,
+        "1d": 24 * 60 * 60 * 1000,
+    }
+    bar_ms = TF_DURATIONS_MS.get(tf, 60 * 1000)
+    now_ms = time.time() * 1000
+    stale_threshold_ms = max(2.5 * bar_ms, 5 * 60 * 1000)
+    force_refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+
     records: List[Dict[str, Any]] = []
 
     try:
         with get_db_connection(read_only=True) as conn:
             cur = conn.cursor()
+            # Identifica a exchange com dados mais recentes e a idade da última barra
             cur.execute("""
-                SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume
+                SELECT exchange, MAX(timestamp) as max_ts, COUNT(*) as cnt
                 FROM candles
                 WHERE symbol = ? AND timeframe = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (sym, tf, limit))
-            rows = cur.fetchall()
-            for r in rows:
-                records.append(dict(r))
+                GROUP BY exchange
+                ORDER BY max_ts DESC
+                LIMIT 1
+            """, (sym, tf))
+            best_ex_row = cur.fetchone()
+            latest_ts = best_ex_row["max_ts"] if (best_ex_row and best_ex_row["max_ts"]) else 0
+            count_cached = best_ex_row["cnt"] if (best_ex_row and best_ex_row["cnt"]) else 0
     except Exception as e:
         return jsonify({"error": f"Erro de banco: {str(e)}", "symbol": sym, "timeframe": tf}), 500
 
-    records.reverse()
+    is_stale = (now_ms - latest_ts) > stale_threshold_ms if latest_ts > 0 else True
+    needs_fetch = count_cached < 20 or is_stale or force_refresh
 
-    # On-demand auto-fetch se o cache tiver poucas velas para o par/timeframe solicitado
-    if len(records) < 20:
+    # On-demand auto-fetch caso o cache tenha poucas velas, esteja defasado (>2.5 barras de atraso) ou refresh forçado
+    if needs_fetch:
         try:
             from data.data_loader import DataLoader
             dl = DataLoader(db_path=DB_PATH)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            # Tenta Binance primeiro (histórico profundo e baixa latência), fallback Bitget
+            # Tenta Binance primeiro (histórico profundo, candles fechados a tempo e baixa latência), fallback Bitget
             fetched = loop.run_until_complete(dl.get_candles(sym, tf, limit=limit, force_refresh=True, as_dataframe=False, exchange="binance"))
             if not fetched:
                 fetched = loop.run_until_complete(dl.get_candles(sym, tf, limit=limit, force_refresh=True, as_dataframe=False, exchange="bitget"))
             loop.close()
-            if fetched:
-                with get_db_connection(read_only=True) as conn:
-                    cur = conn.cursor()
-                    cur.execute("""
-                        SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume
-                        FROM candles
-                        WHERE symbol = ? AND timeframe = ?
-                        ORDER BY timestamp DESC
-                        LIMIT ?
-                    """, (sym, tf, limit))
-                    records = [dict(r) for r in cur.fetchall()]
-                    records.reverse()
         except Exception as e:
             logger.debug(f"Auto-fetch candles failed for {sym} {tf}: {e}")
 
+    try:
+        with get_db_connection(read_only=True) as conn:
+            cur = conn.cursor()
+            # Prioriza a exchange mais recente para não misturar fontes nem duplicar timestamps
+            cur.execute("""
+                SELECT exchange, MAX(timestamp) as max_ts
+                FROM candles
+                WHERE symbol = ? AND timeframe = ?
+                GROUP BY exchange
+                ORDER BY max_ts DESC
+                LIMIT 1
+            """, (sym, tf))
+            best_ex_row = cur.fetchone()
+            chosen_ex = best_ex_row["exchange"] if best_ex_row else None
+
+            if chosen_ex:
+                cur.execute("""
+                    SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume
+                    FROM candles
+                    WHERE symbol = ? AND timeframe = ? AND exchange = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (sym, tf, chosen_ex, limit))
+            else:
+                cur.execute("""
+                    SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume
+                    FROM candles
+                    WHERE symbol = ? AND timeframe = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (sym, tf, limit))
+            rows = cur.fetchall()
+
+            seen_ts = set()
+            for r in reversed(rows):
+                ts = r["timestamp"]
+                if ts not in seen_ts:
+                    seen_ts.add(ts)
+                    records.append(dict(r))
+    except Exception as e:
+        return jsonify({"error": f"Erro de banco ao carregar velas: {str(e)}", "symbol": sym, "timeframe": tf}), 500
+
+    # Injeção da vela aberta corrente em formação (live candle Binance) para paridade visual em tempo real (ex: barra diária de hoje)
+    live_bar = fetch_binance_open_candle(sym, tf)
+    if live_bar:
+        if records:
+            if records[-1]["timestamp"] == live_bar["timestamp"]:
+                records[-1] = live_bar
+            elif live_bar["timestamp"] > records[-1]["timestamp"]:
+                records.append(live_bar)
+        else:
+            records.append(live_bar)
+        if len(records) > limit:
+            records = records[-limit:]
+
     if not records:
+        ticker = get_realtime_ticker(sym)
         return jsonify({
             "symbol": sym,
             "timeframe": tf,
@@ -1011,11 +1171,12 @@ def api_chart(symbol: str, timeframe: str):
             },
             "active_position": None,
             "summary": {
-                "last_price": 0.0,
-                "change_pct": 0.0,
-                "high": 0.0,
-                "low": 0.0,
-                "volume": 0.0
+                "last_price": ticker.get("last_price", 0.0),
+                "prev_price": ticker.get("last_price", 0.0),
+                "change_pct": ticker.get("change_pct_24h", 0.0),
+                "high_24h": ticker.get("high_24h", 0.0),
+                "low_24h": ticker.get("low_24h", 0.0),
+                "volume_sum": ticker.get("volume_24h", 0.0)
             }
         })
 
@@ -1058,7 +1219,7 @@ def api_chart(symbol: str, timeframe: str):
                        trailing_active, trailing_stop_price, unrealized_pnl, leverage, strategy_type
                 FROM paper_positions
                 WHERE symbol = ? AND status = 'OPEN'
-                ORDER BY id DESC LIMIT 1
+                ORDER BY entry_timestamp DESC LIMIT 1
             """, (sym,))
             row = cur.fetchone()
             if row:
@@ -1087,9 +1248,29 @@ def api_chart(symbol: str, timeframe: str):
     except Exception as e:
         logger.debug(f"Aviso ao buscar active_position para {sym}: {e}")
 
-    last_price = closes[-1]
-    first_price = closes[0]
-    change_pct = round(((last_price - first_price) / first_price) * 100.0, 2) if first_price > 0 else 0.0
+    ticker = get_realtime_ticker(sym)
+    last_price = ticker["last_price"] if ticker.get("last_price", 0.0) > 0 else closes[-1]
+    prev_price = closes[-2] if len(closes) > 1 else last_price
+    change_pct = ticker["change_pct_24h"] if ticker.get("last_price", 0.0) > 0 else (
+        round(((last_price - closes[0]) / closes[0]) * 100.0, 2) if closes[0] > 0 else 0.0
+    )
+    high_24h = ticker["high_24h"] if ticker.get("high_24h", 0.0) > 0 else max(highs)
+    low_24h = ticker["low_24h"] if ticker.get("low_24h", 0.0) > 0 else min(lows)
+    volume_24h = ticker["volume_24h"] if ticker.get("volume_24h", 0.0) > 0 else round(sum(volumes), 2)
+
+    # Sincroniza a vela em formação corrente com o last_price exato do ticker em tempo real
+    if live_bar and len(closes) > 0 and last_price > 0:
+        closes[-1] = last_price
+        if last_price > highs[-1]:
+            highs[-1] = last_price
+        if last_price < lows[-1]:
+            lows[-1] = last_price
+        if tv_candles:
+            tv_candles[-1]["close"] = last_price
+            if last_price > tv_candles[-1]["high"]:
+                tv_candles[-1]["high"] = last_price
+            if last_price < tv_candles[-1]["low"]:
+                tv_candles[-1]["low"] = last_price
 
     # Estrutura de Mercado: Suporte, Resistência, Zonas de Liquidez & POI (SMC)
     structure_data = {"resistances": [], "supports": [], "active_fvgs": [], "active_obs": []}
@@ -1137,11 +1318,11 @@ def api_chart(symbol: str, timeframe: str):
         "active_position": active_position,
         "summary": {
             "last_price": last_price,
-            "prev_price": closes[-2] if len(closes) > 1 else last_price,
+            "prev_price": prev_price,
             "change_pct": change_pct,
-            "high_24h": max(highs),
-            "low_24h": min(lows),
-            "volume_sum": round(sum(volumes), 2)
+            "high_24h": high_24h,
+            "low_24h": low_24h,
+            "volume_sum": volume_24h
         }
     })
 
@@ -1156,13 +1337,15 @@ def refresh_symbol(symbol: str, timeframe: str):
         dl = DataLoader(db_path=DB_PATH)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        candles = loop.run_until_complete(dl.get_candles(sym, tf, limit=100, force_refresh=True, as_dataframe=False))
+        candles = loop.run_until_complete(dl.get_candles(sym, tf, limit=150, force_refresh=True, as_dataframe=False, exchange="binance"))
+        if not candles:
+            candles = loop.run_until_complete(dl.get_candles(sym, tf, limit=150, force_refresh=True, as_dataframe=False, exchange="bitget"))
         loop.close()
         return jsonify({
             "success": True,
             "symbol": sym,
             "timeframe": tf,
-            "count_retrieved": len(candles),
+            "count_retrieved": len(candles) if candles else 0,
             "message": f"Cache atualizado com sucesso para {sym} ({tf})."
         })
     except Exception as e:
@@ -1335,7 +1518,7 @@ def api_get_simulation_settings():
                 """, (today_utc,))
                 defaults["daily_golden_pots_count"] = int(cur.fetchone()[0] or 0)
 
-                cur.execute("SELECT COUNT(*), SUM(notional) FROM paper_positions WHERE status='OPEN'")
+                cur.execute("SELECT COUNT(*), SUM(notional / COALESCE(NULLIF(leverage, 0), 1.0)) FROM paper_positions WHERE status='OPEN'")
                 pos_row = cur.fetchone()
                 defaults["open_positions_count"] = int(pos_row[0] or 0)
                 defaults["margin_used"] = round(float(pos_row[1] or 0.0), 2)
@@ -1462,32 +1645,57 @@ def api_paper_trading_status():
             con.row_factory = sqlite3.Row
             cur = con.cursor()
 
+            # 0. Lê marco de epoch de reset manual (P0 C-07 / 14 / S2)
+            trade_epoch = 0
+            has_sim = cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='simulation_settings'").fetchone()
+            has_paper = cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_settings'").fetchone()
+            if has_sim:
+                try:
+                    ep_row = cur.execute("SELECT value FROM simulation_settings WHERE key='ledger_epoch_trade_rowid'").fetchone()
+                    if ep_row and ep_row[0]:
+                        trade_epoch = int(float(ep_row[0]))
+                except Exception:
+                    trade_epoch = 0
+            elif has_paper:
+                try:
+                    ep_row = cur.execute("SELECT value FROM paper_settings WHERE key='ledger_epoch_trade_rowid'").fetchone()
+                    if ep_row and ep_row[0]:
+                        trade_epoch = int(float(ep_row[0]))
+                except Exception:
+                    trade_epoch = 0
+
             # Posições abertas e Margem Comprometida
-            cur.execute("SELECT COUNT(*), SUM(unrealized_pnl), SUM(notional) FROM paper_positions WHERE status='OPEN'")
+            cur.execute("SELECT COUNT(*), SUM(unrealized_pnl), SUM(notional / COALESCE(NULLIF(leverage, 0), 1.0)) FROM paper_positions WHERE status='OPEN'")
             row_pos = cur.fetchone()
             open_count = int(row_pos[0] or 0)
             unrealized = float(row_pos[1] or 0.0)
             margin_used_val = float(row_pos[2] or 0.0)
 
-            # Trades e PnL Realizado
-            cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades")
+            # Trades e PnL Realizado respeitando o epoch do reset da sprint
+            if trade_epoch > 0:
+                cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades WHERE rowid > ?", (trade_epoch,))
+            else:
+                cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades")
             row_tr = cur.fetchone()
-            realized = float(row_tr[1] or 0.0)
-            fees = float(row_tr[2] or 0.0)
+            realized = float(row_tr[1] or 0.0) if row_tr else 0.0
+            fees = float(row_tr[2] or 0.0) if row_tr else 0.0
 
             # Trades fechados e Win Rate por posição (position_id):
             # TP1_PARTIAL, TP2_PARTIAL e saída final pertencem ao mesmo trade (position_id).
-            cur.execute("""
+            epoch_clause = "WHERE rowid > ?" if trade_epoch > 0 else ""
+            epoch_params = (trade_epoch,) if trade_epoch > 0 else ()
+            cur.execute(f"""
                 SELECT COUNT(*), 
                        SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END)
                 FROM (
                     SELECT position_id, SUM(pnl) as net_pnl 
                     FROM paper_trades 
-                    WHERE position_id NOT IN (SELECT position_id FROM paper_positions WHERE status = 'OPEN')
-                      AND action NOT LIKE 'OPEN_%'
+                    {epoch_clause}
                     GROUP BY position_id
+                    HAVING position_id NOT IN (SELECT position_id FROM paper_positions WHERE status = 'OPEN')
+                       AND MAX(CASE WHEN action NOT LIKE 'OPEN_%' THEN 1 ELSE 0 END) = 1
                 )
-            """)
+            """, epoch_params)
             row_closed = cur.fetchone()
             closed_trades_count = int(row_closed[0] or 0) if row_closed else 0
             win_count = int(row_closed[1] or 0) if row_closed else 0
@@ -1496,27 +1704,42 @@ def api_paper_trading_status():
 
             # Cota de Scalps de Hoje (UTC)
             today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            cur.execute("""
-                SELECT COUNT(*) FROM paper_trades 
-                WHERE action LIKE 'OPEN_SCALP%' 
-                  AND date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') = ?
-            """, (today_utc,))
-            daily_scalps_today = int(cur.fetchone()[0] or 0)
+            epoch_today_clause = "AND rowid > ?" if trade_epoch > 0 else ""
+            epoch_today_params = (today_utc, trade_epoch) if trade_epoch > 0 else (today_utc,)
+            cur.execute(f"""
+                SELECT COUNT(*), 
+                       SUM(CASE WHEN action LIKE 'OPEN_SCALP%' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN action LIKE 'OPEN_GOLDEN_POT%' THEN 1 ELSE 0 END)
+                FROM paper_trades 
+                WHERE date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') = ?
+                  {epoch_today_clause}
+            """, epoch_today_params)
+            row_cotas = cur.fetchone()
+            daily_scalps_today = int(row_cotas[1] or 0) if row_cotas else 0
+            daily_golden_pots_today = int(row_cotas[2] or 0) if row_cotas else 0
 
-            # Cota Independente de Golden Pots de Hoje (UTC)
-            cur.execute("""
-                SELECT COUNT(*) FROM paper_trades 
-                WHERE action LIKE 'OPEN_GOLDEN_POT%' 
-                  AND date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') = ?
-            """, (today_utc,))
-            daily_golden_pots_today = int(cur.fetchone()[0] or 0)
+            # Saldo e Equity oficiais a partir de paper_portfolio
+            cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio ORDER BY timestamp DESC LIMIT 1")
+            last_port = cur.fetchone()
+            if last_port:
+                equity_val = float(last_port["equity"])
+                balance_val = float(last_port["balance"])
+            else:
+                equity_val = 10000.0 + realized + unrealized
+                balance_val = 10000.0 + realized - fees
 
             # Histórico de equity recente
-            cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio ORDER BY timestamp DESC LIMIT 100")
-            eq_rows = [dict(r) for r in cur.fetchall()]
-
-            equity_val = 10000.0 + realized + unrealized
-            balance_val = 10000.0 + realized - fees
+            if trade_epoch > 0:
+                cur.execute("SELECT timestamp FROM paper_trades WHERE rowid > ? ORDER BY timestamp ASC LIMIT 1", (trade_epoch,))
+                first_tr = cur.fetchone()
+                if first_tr and first_tr[0]:
+                    cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT 100", (first_tr[0],))
+                    eq_rows = [dict(r) for r in cur.fetchall()]
+                else:
+                    eq_rows = [dict(last_port)] if last_port else []
+            else:
+                cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio ORDER BY timestamp DESC LIMIT 100")
+                eq_rows = [dict(r) for r in cur.fetchall()]
 
             # Lê limites dinâmicos da tabela simulation_settings
             max_scalps_dyn = 5
@@ -1816,8 +2039,29 @@ def api_golden_pots():
             with _closing_connect(uri, uri=True, timeout=5.0) as con:
                 con.row_factory = sqlite3.Row
                 cur = con.cursor()
-                cur.execute("SELECT * FROM golden_pots ORDER BY timestamp DESC, score DESC LIMIT 50")
-                pots = [dict(r) for r in cur.fetchall()]
+                cur.execute("SELECT * FROM golden_pots ORDER BY timestamp DESC, score DESC LIMIT 120")
+                raw_pots = [dict(r) for r in cur.fetchall()]
+                excluded_bases = {
+                    "SKHYNIX", "SKHY", "SAMSUNG", "KORU", "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
+                    "TSLA", "NVDA", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NFLX", "AMD", "INTC",
+                    "COIN", "MSTR", "HOOD", "PLTR", "BABA", "TSM", "SPY", "QQQ", "IWM", "GLD", "SLV", "USO",
+                    "SNXX", "SNDK", "UNITREE", "OPENAI", "SPACEX", "ANTHROPIC", "STRIPE", "FIGMA",
+                }
+                seen_sym_setup = set()
+                for p in raw_pots:
+                    sym = str(p.get("symbol") or "").upper().strip()
+                    base = sym
+                    for suf in ("USDT", "USDC", "USD", "PERP"):
+                        if base.endswith(suf) and len(base) > len(suf):
+                            base = base[:-len(suf)]
+                            break
+                    if base in excluded_bases:
+                        continue
+                    key = (sym, p.get("setup_type"))
+                    if key in seen_sym_setup:
+                        continue
+                    seen_sym_setup.add(key)
+                    pots.append(p)
         except Exception as e:
             logger.warning(f"Erro ao buscar golden_pots do SQLite: {e}")
 

@@ -169,6 +169,7 @@ class DailyTSMOMStrategy:
         trades: List[TSMOMTradeRecord] = []
 
         cur_trade_start = -1
+        cur_trade_direction: Optional[str] = None
         trade_id = 0
         cur_trade_gross = 0.0
         cur_trade_fees = 0.0
@@ -196,37 +197,26 @@ class DailyTSMOMStrategy:
             gross_profit += gross_day_pnl
 
             # 3. Débito de funding rate real:
-            # Se long (w > 0), normalmente paga funding padrão do dia
+            # Se long (w > 0), normalmente paga funding padrão do dia; se short (w < 0), recebe
             funding_day = 0.0
             if "funding_rate" in data.columns:
-                # Funding rate fornecido no dataframe
                 funding_day = equity * w * float(data["funding_rate"].iloc[t])
             else:
                 funding_day = equity * w * self.default_daily_funding
 
-            total_funding -= funding_day  # Posição Long paga funding positivo
+            total_funding -= funding_day  # Posição Long paga funding positivo; Short recebe
             net_day_pnl = gross_day_pnl - funding_day
             equity += net_day_pnl
 
             equity_series[t] = equity
             daily_pnl_rets[t] = net_day_pnl / max(1.0, equity - net_day_pnl)
 
-            # Rastreamento de trades contínuos (quando w > 0)
-            if w > 0 and prev_w == 0:
-                # Início de um trade
-                cur_trade_start = t
-                trade_id += 1
-                cur_trade_gross = gross_day_pnl
-                cur_trade_fees = turnover_cost
-                cur_trade_funding = -funding_day
-                cur_trade_weights = [w]
-            elif w > 0 and prev_w > 0:
-                cur_trade_gross += gross_day_pnl
-                cur_trade_fees += turnover_cost
-                cur_trade_funding -= funding_day
-                cur_trade_weights.append(w)
-            elif w == 0 and prev_w > 0 and cur_trade_start != -1:
-                # Fim de um trade
+            # P0 (Bug 7): Rastreamento de trades contínuos suportando LONG (w > 0) e SHORT (w < 0)
+            target_direction = "LONG" if w > 0 else ("SHORT" if w < 0 else None)
+            prev_direction = "LONG" if prev_w > 0 else ("SHORT" if prev_w < 0 else None)
+
+            # 1. Se a direção inverteu ou encerrou, fecha o trade ativo
+            if cur_trade_start != -1 and (target_direction != prev_direction or target_direction is None):
                 cur_trade_fees += turnover_cost
                 net_t_pnl = cur_trade_gross + cur_trade_funding - cur_trade_fees
                 dur = t - cur_trade_start
@@ -237,11 +227,11 @@ class DailyTSMOMStrategy:
                         exit_idx=t,
                         entry_date=dates[cur_trade_start],
                         exit_date=dates[t],
-                        direction="LONG",
+                        direction=cur_trade_direction or "LONG",
                         entry_price=float(closes[cur_trade_start]),
                         exit_price=float(closes[t]),
                         duration_days=dur,
-                        avg_weight=float(np.mean(cur_trade_weights)),
+                        avg_weight=float(np.mean(cur_trade_weights)) if cur_trade_weights else 0.0,
                         gross_pnl=float(cur_trade_gross),
                         fees_paid=float(cur_trade_fees),
                         funding_pnl=float(cur_trade_funding),
@@ -250,9 +240,25 @@ class DailyTSMOMStrategy:
                     )
                 )
                 cur_trade_start = -1
+                cur_trade_direction = None
+
+            # 2. Se abriu nova posição (LONG ou SHORT)
+            if target_direction is not None and cur_trade_start == -1:
+                cur_trade_start = t
+                cur_trade_direction = target_direction
+                trade_id += 1
+                cur_trade_gross = gross_day_pnl
+                cur_trade_fees = turnover_cost
+                cur_trade_funding = -funding_day
+                cur_trade_weights = [abs(w)]
+            elif target_direction is not None and cur_trade_start != -1:
+                cur_trade_gross += gross_day_pnl
+                cur_trade_fees += turnover_cost
+                cur_trade_funding -= funding_day
+                cur_trade_weights.append(abs(w))
 
         # Fecha trade aberto ao final se houver
-        if cur_trade_start != -1:
+        if cur_trade_start != -1 and cur_trade_direction is not None:
             trades.append(
                 TSMOMTradeRecord(
                     trade_id=trade_id,
@@ -260,11 +266,11 @@ class DailyTSMOMStrategy:
                     exit_idx=n - 1,
                     entry_date=dates[cur_trade_start],
                     exit_date=dates[-1],
-                    direction="LONG",
+                    direction=cur_trade_direction,
                     entry_price=float(closes[cur_trade_start]),
                     exit_price=float(closes[-1]),
                     duration_days=n - 1 - cur_trade_start,
-                    avg_weight=float(np.mean(cur_trade_weights)),
+                    avg_weight=float(np.mean(cur_trade_weights)) if cur_trade_weights else 0.0,
                     gross_pnl=float(cur_trade_gross),
                     fees_paid=float(cur_trade_fees),
                     funding_pnl=float(cur_trade_funding),

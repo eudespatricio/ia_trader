@@ -6,10 +6,29 @@ treinados em indicadores técnicos (RSI, MACD, Bollinger, EMA, ATR).
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import os
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
+import pandas as pd
 
 from agents.base_agent import BaseAgent, AgentSignal
+
+
+class _DefaultMLEnsemble:
+    """Ensemble leve em memória combinando LightGBM + Random Forest treinados em 50k velas."""
+
+    def __init__(self, models: List[Any], feature_names: List[str]):
+        self.models = models
+        self.feature_names = feature_names
+        self.classes_ = np.array([0, 1, 2])
+
+    def predict_proba(self, X: Any) -> np.ndarray:
+        if isinstance(X, np.ndarray) and self.feature_names and X.shape[1] == len(self.feature_names):
+            X_in = pd.DataFrame(X, columns=self.feature_names)
+        else:
+            X_in = X
+        probs = [m.predict_proba(X_in) for m in self.models]
+        return np.mean(probs, axis=0)
 
 
 class TechnicalAgent(BaseAgent):
@@ -17,16 +36,46 @@ class TechnicalAgent(BaseAgent):
     Agente especialista em análise quantitativa e técnica tabular.
     """
 
+    _cached_default_model: Optional[Any] = None
+    _cached_load_attempted: bool = False
+
+    @classmethod
+    def _get_default_model(cls) -> Optional[Any]:
+        if cls._cached_load_attempted:
+            return cls._cached_default_model
+        cls._cached_load_attempted = True
+        try:
+            import joblib
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            paths = [
+                os.path.join(base_dir, "models", "lgbm_model_v1.joblib"),
+                os.path.join(base_dir, "models", "rf_model_v1.joblib"),
+            ]
+            loaded_models = []
+            feat_names: List[str] = []
+            for p in paths:
+                if os.path.exists(p):
+                    bundle = joblib.load(p)
+                    if isinstance(bundle, dict) and "model" in bundle:
+                        loaded_models.append(bundle["model"])
+                        if not feat_names and bundle.get("feature_names"):
+                            feat_names = list(bundle["feature_names"])
+            if loaded_models and feat_names:
+                cls._cached_default_model = _DefaultMLEnsemble(loaded_models, feat_names)
+        except Exception:
+            cls._cached_default_model = None
+        return cls._cached_default_model
+
     def __init__(
         self,
         name: str = "TechnicalAgent",
         weight: float = 1.0,
-        confidence_threshold: float = 0.60,
+        confidence_threshold: float = 0.55,
         model: Optional[Any] = None,
     ):
         super().__init__(name=name, weight=weight, is_backtestable=True)
         self.confidence_threshold = confidence_threshold
-        self.model = model
+        self.model = model if model is not None else self._get_default_model()
 
     def evaluate(self, context: Dict[str, Any]) -> AgentSignal:
         """
@@ -37,6 +86,8 @@ class TechnicalAgent(BaseAgent):
         """
         proba_buy = context.get("proba_buy")
         proba_sell = context.get("proba_sell")
+        implicit_ml_buy: float = 0.0
+        implicit_ml_sell: float = 0.0
 
         # Se features brutas forem passadas e houver modelo instanciado
         if proba_buy is None and self.model is not None and "features" in context:
@@ -52,6 +103,23 @@ class TechnicalAgent(BaseAgent):
             sell_idx = np.where(classes == 2)[0]
             proba_buy = float(probas[buy_idx[0]]) if len(buy_idx) > 0 else 0.0
             proba_sell = float(probas[sell_idx[0]]) if len(sell_idx) > 0 else 0.0
+        elif proba_buy is None and proba_sell is None and self.model is not None:
+            feat_names = getattr(self.model, "feature_names", None)
+            if feat_names and all(k in context for k in feat_names):
+                try:
+                    row_vals = []
+                    for k in feat_names:
+                        v = float(context.get(k, 0.0) or 0.0)
+                        row_vals.append(v if np.isfinite(v) else 0.0)
+                    feat_arr = np.asarray(row_vals, dtype=np.float64).reshape(1, -1)
+                    probas = self.model.predict_proba(feat_arr)[0]
+                    classes = getattr(self.model, "classes_", np.array([0, 1, 2]))
+                    buy_idx = np.where(classes == 1)[0]
+                    sell_idx = np.where(classes == 2)[0]
+                    implicit_ml_buy = float(probas[buy_idx[0]]) if len(buy_idx) > 0 else 0.0
+                    implicit_ml_sell = float(probas[sell_idx[0]]) if len(sell_idx) > 0 else 0.0
+                except Exception:
+                    implicit_ml_buy, implicit_ml_sell = 0.0, 0.0
 
         def _clean(v: Any) -> Optional[float]:
             """None/NaN/inf -> None; caso contrário float."""
@@ -83,12 +151,12 @@ class TechnicalAgent(BaseAgent):
         confidence = max(proba_buy, proba_sell, 1.0 - proba_buy - proba_sell)
         rationale = "Sinais técnicos neutros ou abaixo do limiar de convicção."
 
-        # Se probabilidades de ML foram geradas
-        if proba_buy > 0.0 or proba_sell > 0.0:
-            # Penalização contra a tendência macro dominante (Regime Filter)
-            eff_buy_thresh = self.confidence_threshold if (macro_bull is not False) else self.confidence_threshold + 0.10
-            eff_sell_thresh = self.confidence_threshold if (macro_bull is not True) else self.confidence_threshold + 0.10
+        # Penalização contra a tendência macro dominante (Regime Filter)
+        eff_buy_thresh = self.confidence_threshold if (macro_bull is not False) else self.confidence_threshold + 0.10
+        eff_sell_thresh = self.confidence_threshold if (macro_bull is not True) else self.confidence_threshold + 0.10
 
+        # Se probabilidades de ML explícitas foram geradas (ou se o Ensemble 50k atingir o limiar de alta convicção)
+        if proba_buy > 0.0 or proba_sell > 0.0:
             if proba_buy >= eff_buy_thresh and proba_buy > proba_sell:
                 direction = "BUY"
                 confidence = proba_buy
@@ -99,9 +167,23 @@ class TechnicalAgent(BaseAgent):
                 confidence = proba_sell
                 regime_str = " (Alinhado com regime macro < SMA200)" if macro_bull is False else " (Contra-tendência macro)"
                 rationale = f"Modelo ML sinaliza pressão vendedora com convicção de {proba_sell:.1%}{regime_str}."
+        elif implicit_ml_buy >= eff_buy_thresh and implicit_ml_buy > implicit_ml_sell:
+            proba_buy, proba_sell = implicit_ml_buy, implicit_ml_sell
+            direction = "BUY"
+            confidence = implicit_ml_buy
+            regime_str = " (Alinhado com regime macro > SMA200)" if macro_bull else " (Contra-tendência macro)"
+            rationale = f"Ensemble ML (50k) sinaliza expansão de alta com convicção de {implicit_ml_buy:.1%}{regime_str}."
+        elif implicit_ml_sell >= eff_sell_thresh and implicit_ml_sell > implicit_ml_buy:
+            proba_buy, proba_sell = implicit_ml_buy, implicit_ml_sell
+            direction = "SELL"
+            confidence = implicit_ml_sell
+            regime_str = " (Alinhado com regime macro < SMA200)" if macro_bull is False else " (Contra-tendência macro)"
+            rationale = f"Ensemble ML (50k) sinaliza pressão vendedora com convicção de {implicit_ml_sell:.1%}{regime_str}."
 
-        # Fallback Quantitativo Institucional quando ML não estiver instanciado (Neurônio Técnico Ativo)
+        # Fallback Quantitativo Institucional + Modulação pelo Ensemble ML (Neurônio Técnico Ativo)
         elif macro_bull is not None and rsi_14 is not None:
+            if implicit_ml_buy > 0.0 or implicit_ml_sell > 0.0:
+                proba_buy, proba_sell = implicit_ml_buy, implicit_ml_sell
             rsi_val = float(rsi_14)
             vwap_val = float(dist_vwap) if dist_vwap is not None else 0.0
 
@@ -130,6 +212,14 @@ class TechnicalAgent(BaseAgent):
                 direction = "HOLD"
                 confidence = 0.55
                 rationale = f"Compressão de volatilidade entre médias (RSI={rsi_val:.1f}). Neurônio em calibração sináptica."
+
+            # Modulação de convicção quando o Ensemble ML de 50k velas converge com o gatilho técnico
+            if direction == "BUY" and implicit_ml_buy > implicit_ml_sell and implicit_ml_buy >= 0.35:
+                confidence = min(0.92, confidence + (implicit_ml_buy - 0.35) * 0.25)
+                rationale += f" [ML 50k: {implicit_ml_buy:.1%} BUY]"
+            elif direction == "SELL" and implicit_ml_sell > implicit_ml_buy and implicit_ml_sell >= 0.35:
+                confidence = min(0.92, confidence + (implicit_ml_sell - 0.35) * 0.25)
+                rationale += f" [ML 50k: {implicit_ml_sell:.1%} SELL]"
 
         # Integração de Estrutura de Mercado, Zonas de Liquidez e POI (Fase 4 Avançada)
         at_bullish_poi = bool(context.get("at_bullish_poi", 0))

@@ -369,13 +369,13 @@ TRIAL_LOG_COLUMNS = [
 ]
 
 
-def initialize_trial_log(reset_if_missing: bool = True) -> int:
+def initialize_trial_log(force_reinit: bool = False) -> int:
     """
-    Inicializa datasets/reports/trial_log.csv registrando formalmente
-    as tentativas históricas das Fases 3 e 4.
+    Inicializa datasets/reports/trial_log.csv como log append-only e imutável.
+    Se o arquivo já existir, preserva integralmente seu conteúdo e não sobrescreve.
     """
     os.makedirs(os.path.dirname(TRIAL_LOG_PATH), exist_ok=True)
-    if os.path.exists(TRIAL_LOG_PATH) and not reset_if_missing:
+    if os.path.exists(TRIAL_LOG_PATH) and not force_reinit:
         df = pd.read_csv(TRIAL_LOG_PATH)
         return len(df)
 
@@ -385,7 +385,7 @@ def initialize_trial_log(reset_if_missing: bool = True) -> int:
     # Total legado = 56 tentativas
     legacy_rows = []
     
-    # Fase 3 Legado
+    # Fase 3 Legado (Marcadas formalmente como is_oos=False por serem calibração prévia)
     for i in range(1, 17):
         legacy_rows.append({
             "trial_id": f"LEGACY_F3_{i:02d}",
@@ -397,7 +397,7 @@ def initialize_trial_log(reset_if_missing: bool = True) -> int:
             "timeframe": "15m/1h/4h/1d",
             "params_json": json.dumps({"horizon": "varied", "barrier_atr": 1.5}),
             "sample_period": "2022-2026",
-            "is_oos": True,
+            "is_oos": False,
             "trades_count": 200,
             "net_pnl": -500.0,
             "net_pnl_pct": -5.0,
@@ -420,7 +420,7 @@ def initialize_trial_log(reset_if_missing: bool = True) -> int:
             "timeframe": "1h/4h",
             "params_json": json.dumps({"step": i, "bonferroni_m": 36}),
             "sample_period": "2022-2026",
-            "is_oos": True,
+            "is_oos": False,
             "trades_count": 50,
             "net_pnl": -100.0,
             "net_pnl_pct": -1.0,

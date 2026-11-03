@@ -70,6 +70,9 @@ class ChatGPTAssistant:
             logger.debug("Assistente LLM desativado por governança (stub ativo).")
             return None
 
+        if self.provider in ("gemini", "google"):
+            return await self._call_gemini(prompt)
+
         if self.provider == "openai" and not self.api_key:
             logger.warning("Assistente OpenAI habilitado mas sem chave de API.")
             return None
@@ -127,5 +130,67 @@ class ChatGPTAssistant:
                 "direction": "HOLD",
                 "confidence": 0.50,
                 "rationale": f"Falha/Timeout no Ollama: {e}",
+            }
+
+    async def _call_gemini(self, prompt: str) -> Dict[str, Any]:
+        """Chama a API do Google Gemini (ex: gemini-3.8-flash) com schema JSON estruturado."""
+        api_key = self.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            logger.warning("Assistente Gemini habilitado mas sem chave de API (GEMINI_API_KEY). Retornando HOLD seguro.")
+            return {
+                "direction": "HOLD",
+                "confidence": 0.50,
+                "rationale": "Gemini API Key não configurada.",
+            }
+
+        def _request_sync() -> Dict[str, Any]:
+            try:
+                from google import genai
+                from google.genai import types
+
+                client = genai.Client(api_key=api_key)
+                full_prompt = (
+                    f"{prompt}\n\n"
+                    "Responda EXCLUSIVAMENTE em formato JSON com o seguinte schema:\n"
+                    '{"direction": "BUY"|"SELL"|"HOLD", "confidence": float_entre_0_e_1, "rationale": "motivo conciso"}'
+                )
+                model_name = self.model if "gemini" in self.model else "gemini-3.8-flash"
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=full_prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1,
+                    ),
+                )
+                text = response.text or "{}"
+                parsed = json.loads(text)
+                direction = str(parsed.get("direction", "HOLD")).upper()
+                if direction not in ("BUY", "SELL", "HOLD"):
+                    direction = "HOLD"
+                confidence = float(parsed.get("confidence", 0.50))
+                confidence = max(0.0, min(1.0, confidence))
+                rationale = str(parsed.get("rationale", "Inferência Google Gemini Flash."))
+                return {
+                    "direction": direction,
+                    "confidence": confidence,
+                    "rationale": rationale,
+                }
+            except Exception as e:
+                logger.warning("Falha na chamada ao Google Gemini: %s. Retornando HOLD seguro.", e)
+                return {
+                    "direction": "HOLD",
+                    "confidence": 0.50,
+                    "rationale": f"Falha/Timeout no Gemini: {e}",
+                }
+
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(_request_sync), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Timeout na chamada ao Google Gemini (%.1fs). Retornando HOLD seguro.", self.timeout)
+            return {
+                "direction": "HOLD",
+                "confidence": 0.50,
+                "rationale": f"Timeout de {self.timeout}s no Gemini",
             }
 

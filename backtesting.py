@@ -804,6 +804,9 @@ class _PilotSimulator:
         e, st, lp = self.e, self.st, self.lp
         if sym in positions:
             return None
+        # P0 (C-08): Rejeição obrigatória se confiança for menor que o limiar do perfil
+        if conf is not None and conf < getattr(self.prof, "min_committee_confidence", 0.60):
+            return None
         if e.max_concurrent_positions and len(positions) >= e.max_concurrent_positions:
             return None
         if e.cooldown_bars and idx - state["last_entry_idx"].get(sym, -10 ** 9) < e.cooldown_bars:
@@ -819,7 +822,8 @@ class _PilotSimulator:
         free_margin = max(0.0, max_margin - margin_used)
         if conf is not None and e.use_leverage_policy:      # alavancagem decidida pelo Smart Trader
             atr_pct = atr / sig_close if sig_close > 0 else 0.0
-            lev_req = lp.decide_leverage(float(conf), atr_pct=atr_pct, regime_alignment=regime_ok)
+            # P0: Passa timeframe do backtest para correta aplicação de ATR_PCT_EXTREME_BY_TF
+            lev_req = lp.decide_leverage(float(conf), atr_pct=atr_pct, regime_alignment=regime_ok, timeframe=e.timeframe)
         else:
             lev_req = e.leverage
         lev_req = lp.clamp_leverage(lev_req, min(e.max_leverage, lp.MAX_LEVERAGE))

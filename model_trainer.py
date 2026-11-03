@@ -274,24 +274,29 @@ class ModelTrainer:
         return X, y
 
     def _build_estimator(self, random_state: int = 42) -> Any:
-        """Instancia o modelo preditivo configurado."""
+        """Instancia o modelo preditivo configurado (otimizado para i7-11800H 8C/16T)."""
         if self.model_type == "lgbm" and HAS_LIGHTGBM:
+            # No i7-11800H (8 cores físicos / 16 threads), limitar LGBM a <= 8-12 threads evita contenção de OpenMP/HT
+            eff_jobs = min(int(self.n_jobs), 8) if self.n_jobs and self.n_jobs > 0 else 8
             return lgb.LGBMClassifier(
-                n_estimators=150,
+                n_estimators=200,
                 learning_rate=0.03,
-                max_depth=5,
-                num_leaves=31,
+                max_depth=4,
+                num_leaves=15,
+                subsample=0.8,
+                colsample_bytree=0.8,
                 class_weight="balanced",
                 device=self.device,
-                n_jobs=self.n_jobs if self.device == "cpu" else -1,
+                n_jobs=eff_jobs if self.device == "cpu" else -1,
                 random_state=random_state,
                 verbosity=-1,
             )
         else:
             return RandomForestClassifier(
-                n_estimators=150,
+                n_estimators=200,
                 max_depth=6,
-                min_samples_split=10,
+                min_samples_split=20,
+                max_features="sqrt",
                 class_weight="balanced",
                 n_jobs=self.n_jobs,
                 random_state=random_state,

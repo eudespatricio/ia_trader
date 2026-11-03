@@ -72,6 +72,43 @@ class TradingCore:
         self.consensus_judge = ConsensusJudge(min_consensus_threshold=min_consensus_threshold)
         self.signal_generator = SignalGenerator(capital=capital, risk_per_trade=risk_per_trade)
         self.llm_assistant = llm_assistant or ChatGPTAssistant(enabled=False)
+        self.learning_tracker: Optional[Any] = None
+
+    def _resolve_regime_weights(
+        self, context: Dict[str, Any], weights_override: Optional[Dict[str, float]] = None
+    ) -> Optional[Dict[str, float]]:
+        """Retorna pesos calibrados por regime via LearningTracker quando disponíveis (total_samples >= 5)."""
+        if weights_override is not None:
+            return weights_override
+        lt = getattr(self, "learning_tracker", None)
+        if lt is None or not hasattr(lt, "get_calibrated_weights_for_regime"):
+            return None
+        try:
+            regime = context.get("regime")
+            if not regime:
+                with lt._get_connection() as con:
+                    row = con.execute("SELECT regime FROM market_regime ORDER BY timestamp DESC LIMIT 1").fetchone()
+                regime = row[0] if row else "SIDEWAYS_RANGE"
+            return lt.get_calibrated_weights_for_regime(str(regime))
+        except Exception:
+            return None
+
+    def _resolve_regime_calibration(
+        self, context: Dict[str, Any]
+    ) -> Optional[Dict[str, Dict[str, float]]]:
+        """Retorna mapa de calibração por agente via LearningTracker quando disponível."""
+        lt = getattr(self, "learning_tracker", None)
+        if lt is None or not hasattr(lt, "get_agent_calibration_for_regime"):
+            return None
+        try:
+            regime = context.get("regime")
+            if not regime:
+                with lt._get_connection() as con:
+                    row = con.execute("SELECT regime FROM market_regime ORDER BY timestamp DESC LIMIT 1").fetchone()
+                regime = row[0] if row else "SIDEWAYS_RANGE"
+            return lt.get_agent_calibration_for_regime(str(regime))
+        except Exception:
+            return None
 
     def evaluate_market_deterministic(
         self,
@@ -112,9 +149,31 @@ class TradingCore:
                 signals.append(agent.evaluate(context))
 
         # 3. Deliberação do Juiz de Consenso
-        decision = self.consensus_judge.judge_deterministic(signals, weights_override)
+        eff_weights = self._resolve_regime_weights(context, weights_override)
+        eff_calib = self._resolve_regime_calibration(context)
+        regime_str = str(context.get("regime") or "SIDEWAYS_RANGE")
+        decision = self.consensus_judge.judge_deterministic(
+            signals, eff_weights, regime=regime_str, agent_calibration=eff_calib
+        )
 
-        # 4. Geração do Sinal Operacional
+        # 4. Checagem do Sentinela de Risco (Fase 2: Veto Estrutural dependente da direção candidata)
+        if decision.direction in ("BUY", "SELL") and not decision.is_vetoed:
+            phase2_context = dict(context)
+            phase2_context["intended_direction"] = decision.direction
+            sentinel_phase2 = self.risk_sentinel.evaluate(phase2_context)
+            if sentinel_phase2.is_veto:
+                decision = ConsensusDecision(
+                    direction="HOLD",
+                    confidence=1.0,
+                    is_vetoed=True,
+                    veto_rationale=sentinel_phase2.rationale,
+                    aggregated_score=0.0,
+                    agent_signals=signals + [sentinel_phase2],
+                    consensus_summary=f"OPERAÇÃO VETADA PELO SENTINELA (Fase 2 - {decision.direction}): {sentinel_phase2.rationale}",
+                    llm_arbitrated=decision.llm_arbitrated,
+                )
+
+        # 5. Geração do Sinal Operacional
         return self.signal_generator.generate(
             decision=decision,
             symbol=symbol,
@@ -175,14 +234,37 @@ class TradingCore:
             elif isinstance(res, AgentSignal):
                 signals.append(res)
 
-        # 3. Deliberação do Juiz de Consenso (com timeout LLM opcional de 2.5s)
+        # 3. Deliberação do Juiz de Consenso (com timeout LLM opcional de 1.0s)
+        eff_weights = self._resolve_regime_weights(context)
+        eff_calib = self._resolve_regime_calibration(context)
+        regime_str = str(context.get("regime") or "SIDEWAYS_RANGE")
         decision = await self.consensus_judge.judge_async(
             signals=signals,
             llm_assistant=self.llm_assistant,
+            weights_override=eff_weights,
             use_llm=use_llm,
+            regime=regime_str,
+            agent_calibration=eff_calib,
         )
 
-        # 4. Geração do Sinal Operacional
+        # 4. Checagem do Sentinela de Risco (Fase 2: Veto Estrutural dependente da direção candidata)
+        if decision.direction in ("BUY", "SELL") and not decision.is_vetoed:
+            phase2_context = dict(context)
+            phase2_context["intended_direction"] = decision.direction
+            sentinel_phase2 = await self.risk_sentinel.evaluate_async(phase2_context)
+            if sentinel_phase2.is_veto:
+                decision = ConsensusDecision(
+                    direction="HOLD",
+                    confidence=1.0,
+                    is_vetoed=True,
+                    veto_rationale=sentinel_phase2.rationale,
+                    aggregated_score=0.0,
+                    agent_signals=signals + [sentinel_phase2],
+                    consensus_summary=f"OPERAÇÃO VETADA PELO SENTINELA (Fase 2 - {decision.direction}): {sentinel_phase2.rationale}",
+                    llm_arbitrated=decision.llm_arbitrated,
+                )
+
+        # 5. Geração do Sinal Operacional
         return self.signal_generator.generate(
             decision=decision,
             symbol=symbol,

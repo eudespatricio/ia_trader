@@ -4,6 +4,87 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.4] - 2026-11-03 - Patch S2: Calibração Convexa de Agentes, Dampening em Range e Retreino 50k
+
+### Adicionado
+- **Otimização Convexa Restrita por Regime (`learning_tracker.py`):**
+  - Implementada recalibração de pesos de voto por regime (`recalibrate_agent_weights`) via Ridge / L2 com prior bayesiano `DEFAULT_BASE_WEIGHTS`.
+  - Garantida soma normalizada de pesos ativos, pesos não-negativos e preservação inegociável do veto do `RiskSentinelAgent` (`w = 1.5`).
+- **Dampening de Sobreconfiança em `SIDEWAYS_RANGE` (`consensus_judge.py`, `core.py`):**
+  - Calibração probabilística com cálculo de ECE (Expected Calibration Error).
+  - Limitação cirúrgica da confiança máxima a 0.55 quando ECE > 0.15 ou acurácia < 45% em regime lateral, prevenindo falsos rompimentos.
+- **Pipeline de Retreinamento Contínuo (`learning_tracker.py`):**
+  - Adicionado método `retrain_daily_models()` delegando ao `ModelEvolutionManager` para ciclos Champion-Challenger automáticos.
+
+### Corrigido
+- **Smart Trade Exit Ladder & Funil de Sinais (`tests/test_exit_ladder_e7.py`, `tests/test_signal_funnel.py`):**
+  - Corrigida asserção de trailing stop (`trail0 = 101.21`, `trail1 = 101.30`) em paridade com a lógica nativa de ratchet.
+  - Sincronizado timestamp de teste de rejeição do funil com o bucket nativo de 15m (`SCALP_BAR_MS`).
+
+---
+
+## [1.0.3] - 2026-10-21 - Remediação Integral de Riscos P0 e Implementação do OMS Institucional
+
+### Adicionado
+- **Order Management System (OMS) Institucional (`oms.py`, `tests/test_oms.py`):**
+  - Implementada State Machine de ordens estrita com 12 estados (`SIGNAL_READY -> RISK_APPROVED -> ORDER_INTENT -> SENT -> ACKED -> PARTIALLY_FILLED -> FILLED / CANCELED / REJECTED / EXPIRED -> CLOSED -> RECONCILED`).
+  - Idempotência determinística via hash SHA-256 (`symbol:timestamp_ms:strategy:side:position_id`), eliminando duplicatas e double-fillings.
+  - Kill switch externo local (`emergency_kill.switch`) e remoto via variável de ambiente (`IA_TRADER_KILL_SWITCH`), bloqueando imediatamente novas entradas e armando protocolo de segurança.
+  - Reconciliação forense no boot com detecção de ordens e posições órfãs e transição automática de ordens pendentes não confirmadas para `EXPIRED`.
+- **Política de Risco Defensiva Versionada (`RiskPolicy` e `DefensiveRiskPolicy` em `rollback_guard.py`):**
+  - Objeto de governança de risco que restringe estratégias permitidas (`allowed_strategies=["DIRECTIONAL"]`), reduz alavancagem máxima para 2.0x, aplica multiplicador de lote `0.5x` e exige confiança mínima de 0.85 quando acionado.
+
+### Corrigido
+- **Quórum & Estado ABSTAIN no Comitê (`agents/base_agent.py`, `consensus_judge.py`):**
+  - Adicionado estado canônico `ABSTAIN` e parâmetro `min_directional_agents=2`. Um único agente direcional (ex.: Technical BUY com todos os demais HOLD/ABSTAIN) nunca mais aprova uma operação isoladamente.
+  - LLM rebaixado de autoridade executiva para auditoria quantitativa de risco com timeout de 1.0s, impossibilitado de criar ordens direcionais sem concordância da bancada.
+- **Veto em Duas Fases (`core.py`, `agents/risk_sentinel_agent.py`):**
+  - A checagem de proximidade de suporte/resistência e varredura de liquidez agora roda na Fase 2 com a direção real pretendida (`intended_direction`), eliminando o bypass onde ordens contrárias passavam sem veto direcional.
+- **Trava de Drawdown Diário Real (`rollback_guard.py`):**
+  - Rastreamento persistente de baseline diário via tabela `circuit_breaker_daily`. Se o drawdown intradiário atingir ou ultrapassar 5.0%, dispara `DAILY_DRAWDOWN_BREAKER`, bloqueando novas entradas até o reset da virada UTC.
+- **Persistência Atômica de Ledger (`smart_trade.py`):**
+  - Implementado método `_save_position_and_trade()` sob transação atômica única `BEGIN IMMEDIATE`, eliminando risco de posições sem trade de abertura e inconsistências no banco.
+- **Freshness e Fail-Closed contra Stale Data (`smart_trade.py`, `agents/tape_reading_agent.py`):**
+  - Sinais marcados com dados obsoletos (`is_stale=True`) ou com veto de fluxo (`tape_decision == "VETO"`) são rejeitados compulsoriamente no boundary final de execução. Ticks com mais de 5 minutos são descartados no Tape Reading.
+- **Isolamento de Épocas de Reset no Performance Tracker (`performance_tracker.py`):**
+  - As métricas do piloto passam a respeitar o marco de corte `ledger_epoch_trade_rowid` gravado na tabela `paper_settings`, expurgando trades de testes anteriores dos relatórios de performance.
+- **Modelagem Quant e Paridade (`agents/regime_classifier.py`, `pair_scanner.py`, `funding_carry.py`, `trend_following.py`, `statistical_rigor.py`, `backtesting.py`):**
+  - Exigência estrita de 200 barras para cálculo de SMA200 (`has_real_sma200`).
+  - Varredura de 24h no scanner ajustada para 96 barras de 15m.
+  - Normalização do microprice de Tape Reading pelo spread (`mdev / max(spread, 1.0)`).
+  - TSMOM corrigido para registrar pernas short (`w < 0`).
+  - Testes de estresse de Funding Carry calculados dinamicamente com capital e alavancagem reais.
+  - Log de ensaios estatísticos (`trial_log.csv`) transformado em append-only imutável.
+- **Suíte de Testes 100% Verde:**
+  - 569 testes aprovados (com 1 skip e 7 xfail esperados de paridade de design).
+
+---
+
+## [1.0.2] - 2026-10-21 - Correções Críticas de Execução, Margem e Árbitro LLM
+
+### Corrigido
+- **Trava de Barra Única e Cooldown em Swing Trade (`scripts/run_paper_simulation.py`):**
+  - Implementada deduplicação por vela fechada (`_swing_entered_bar(sym, bar_id)` e `_swing_entered_bars`) e proteção contra re-entrada no mesmo par após stop loss (`_swing_in_cooldown`).
+  - Elimina o bug que provocou 4 perdas consecutivas em `ETHUSDT` na mesma vela de 1h em menos de 10 minutos (economizando até R$ 1.800 / $350+ por ciclo desfavorável).
+- **Cálculo de Margem Real no Dashboard Flask (`flask_interface.py`):**
+  - Corrigida a consulta SQLite nos endpoints `/api/paper-trading/status` e `/api/simulation/settings`: substituído `SUM(notional)` por `SUM(notional / COALESCE(NULLIF(leverage, 0), 1.0))`.
+  - O dashboard agora reporta com precisão matemática a margem real empenhada ($6.775,82 / 72,3% de utilização) em vez de notional bruto alavancado ($20.327,47 / 216,8%), restaurando a exibição correta de margem livre ($1.194,91).
+- **Timeout no Árbitro LLM & Integração Google Gemini Flash (`chatgpt_assistant.py`, `consensus_judge.py`):**
+  - Adicionado suporte nativo ao **Google Gemini Flash** (`gemini-3.8-flash`) via SDK `google-genai` para arbitragem ultrarrápida (<800ms) com structured JSON output.
+  - Aumento do timeout para 8.5s quando utilizando fallback do Ollama local (`llama3.1:latest` na RTX 3060), eliminando os timeouts crônicos de 4.5s no loop do daemon.
+- **Governança de Testes no WSL (`pytest.ini`):**
+  - Adicionada flag `addopts = --ignore=tests/ui` para garantir execução rápida e 100% verde da suíte completa de backend (556 testes aprovados) sem conflito de display headless ou porta 5000.
+
+---
+
+## [1.0.1] - 2026-10-20 - Desmembramento & Isolamento Definitivo no WSL
+
+### Adicionado
+- **Handover Operacional e Arquitetural (`HANDOVER.md`):** Documento detalhado sobre a operação 100% isolada no WSL, governança e monitoramento de daemons (Flask 5000, Paper Trading e Microestrutura).
+- **Consolidação de Documentação:** Centralização de `docs/IA_Trader_Documentacao_FINAL_VERSAO_1_0.txt` e microagentes `.agents/` diretamente dentro do repositório `/home/eudespatricio/ia_trader`, eliminando dependências externas do disco compartilhado `D:\Projeto`.
+
+---
+
 ## [Não lançado] - 2026-10-14/15 - Auditoria e Correções
 
 ### Alterado

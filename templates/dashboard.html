@@ -2440,7 +2440,7 @@
         function fmtChartPrice(v) {
             const num = Number(v);
             if (!Number.isFinite(num)) return "--";
-            const dec = Math.abs(num) < 1 ? 4 : 2;
+            const dec = Math.abs(num) < 0.1 ? 5 : (Math.abs(num) < 1 ? 4 : 2);
             return num.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
         }
 
@@ -2831,15 +2831,20 @@
                     const highEl = document.getElementById("tickerHigh");
                     const lowEl = document.getElementById("tickerLow");
 
-                    priceEl.innerText = Number(data.summary.last_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    const fmtHeaderPx = (v) => {
+                        const n = Number(v);
+                        if (!Number.isFinite(n) || v === undefined || v === null) return "--";
+                        const dec = n > 0 && n < 0.01 ? 6 : (n > 0 && n < 0.1 ? 5 : (n > 0 && n < 1 ? 4 : 2));
+                        return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+                    };
+                    priceEl.innerText = fmtHeaderPx(data.summary.last_price);
                     
                     const chg = data.summary.change_pct;
                     chgEl.innerText = (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
                     chgEl.className = chg >= 0 ? "font-semibold text-emerald-400" : "font-semibold text-rose-400";
 
-                    const fmt = (v) => Number.isFinite(Number(v)) && v !== undefined && v !== null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: 2 }) : "--";
-                    highEl.innerText = fmt(data.summary.high_24h);
-                    lowEl.innerText = fmt(data.summary.low_24h);
+                    highEl.innerText = fmtHeaderPx(data.summary.high_24h);
+                    lowEl.innerText = fmtHeaderPx(data.summary.low_24h);
                 }
 
                 // Update Footnotes & HUD
@@ -3008,6 +3013,33 @@
             candles.forEach((c, idx) => timeMap.set(c.time, idx));
             window._tvTimeIndexMap = timeMap;
 
+            // 2.1 Calibra precisão de preço dinâmica para altcoins Golden Pot (< $0.10)
+            const refPrice = (data.summary && Number(data.summary.last_price) > 0) 
+                ? Number(data.summary.last_price) 
+                : (candles.length > 0 ? Number(candles[candles.length - 1].close) : 100);
+            let dynamicPrecision = 2;
+            let dynamicMinMove = 0.01;
+            if (refPrice < 0.001) {
+                dynamicPrecision = 6;
+                dynamicMinMove = 0.000001;
+            } else if (refPrice < 0.1) {
+                dynamicPrecision = 5;
+                dynamicMinMove = 0.00001;
+            } else if (refPrice < 1.0) {
+                dynamicPrecision = 4;
+                dynamicMinMove = 0.0001;
+            } else if (refPrice < 10.0) {
+                dynamicPrecision = 3;
+                dynamicMinMove = 0.001;
+            }
+            window._tvCandleSeries.applyOptions({
+                priceFormat: {
+                    type: 'price',
+                    precision: dynamicPrecision,
+                    minMove: dynamicMinMove,
+                }
+            });
+
             // 3. Update candles and volume
             window._tvCandleSeries.setData(candles);
             window._tvVolumeSeries.setData(tvData.volume || []);
@@ -3054,7 +3086,7 @@
                 : (data.active_position ? positionToOverlay(data.active_position) : null);
 
             if (ov && ov.symbol === currentSymbol) {
-                const fmtP = (v) => Number(v).toFixed(Number(v) < 1 ? 4 : 2);
+                const fmtP = (v) => Number(v).toFixed(Number(v) < 0.1 ? 5 : (Number(v) < 1 ? 4 : 2));
                 const side = (ov.side || "LONG").toUpperCase();
                 const pnlTxt = Number.isFinite(ov.unrealizedPnl) ? ` (${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)})` : "";
 
@@ -3135,6 +3167,19 @@
                         title: `LIQ: $${fmtP(ov.liquidationPrice)}`,
                     }));
                 }
+
+                if (ov.isClosed && ov.exitPrice > 0) {
+                    const netVal = Number.isFinite(ov.netPnl) ? ov.netPnl : 0;
+                    const netStr = ` (${netVal >= 0 ? "+" : ""}$${netVal.toFixed(2)})`;
+                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
+                        price: ov.exitPrice,
+                        color: netVal >= 0 ? '#22C55E' : '#F43F5E',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: `SAÍDA ${ov.closeActionLabel || ''}: $${fmtP(ov.exitPrice)}${netStr}`,
+                    }));
+                }
             }
 
             // 6. User Manual Horizontal S/R Lines
@@ -3156,6 +3201,9 @@
             const curKey = `${currentSymbol}_${currentTimeframe}`;
             if (window._tvLastSymbolTf !== curKey) {
                 window._tvLastSymbolTf = curKey;
+                try {
+                    window._tvChartInstance.priceScale('right').applyOptions({ autoScale: true });
+                } catch (_) {}
                 window._tvChartInstance.timeScale().fitContent();
             }
         }
@@ -3543,6 +3591,7 @@
             const tf = String(pos.timeframe || "").toLowerCase();
             if (["3m", "5m", "15m", "1h", "4h"].includes(tf)) return tf;
             const st = String(pos.strategy_type || "").toUpperCase();
+            if (st === "GOLDEN_POT") return "5m";
             return (st === "SWING" || st === "CARRY" || st === "DIRECTIONAL") ? "1h" : "15m";
         }
 
@@ -3552,28 +3601,33 @@
 
         function positionToOverlay(pos) {
             const liq = Number(pos.liquidation_price || pos.liq_price || 0);
-            const lev = Number(pos.leverage);
+            const lev = Number(pos.leverage || pos.leverage_effective);
+            const isClosed = String(pos.status || "OPEN").toUpperCase() !== "OPEN";
             return {
                 symbol: String(pos.symbol || "").toUpperCase().trim(),
                 position_id: pos.position_id || "",
                 side: String(pos.side || "LONG").toUpperCase(),
+                isClosed: isClosed,
                 entryPrice: Number(pos.entry_price || 0),
+                exitPrice: Number(pos.exit_price || (isClosed ? pos.current_price : 0) || 0),
                 stopLoss: Number(pos.stop_loss || 0),
                 takeProfit: Number(pos.take_profit || 0),
-                tp1Price: Number(pos.tp1_price || 0),
-                tp2Price: Number(pos.tp2_price || 0),
+                tp1Price: Number(pos.tp1_price || pos.tp1 || 0),
+                tp2Price: Number(pos.tp2_price || pos.tp2 || 0),
                 tp3Price: Number(pos.tp3_price || pos.tp3 || 0),
-                ladder: Number(pos.tp3_price || pos.tp3 || 0) > 0 && Number(pos.tp1_price || 0) > 0,
+                ladder: Number(pos.tp3_price || pos.tp3 || 0) > 0 && Number(pos.tp1_price || pos.tp1 || 0) > 0,
                 tp1Hit: !!pos.tp1_hit,
                 tp2Hit: !!pos.tp2_hit,
                 trailingActive: !!pos.trailing_active,
                 trailingStopPrice: Number(pos.trailing_stop_price || 0),
                 liquidationPrice: Number.isFinite(liq) ? liq : 0,
-                entryTimestamp: Number(pos.entry_timestamp || 0),
+                entryTimestamp: Number(pos.entry_timestamp || pos.opened_at_ms || 0),
                 unrealizedPnl: numOrNaN(pos.unrealized_pnl),
                 realizedPnl: numOrNaN(pos.realized_pnl),
+                netPnl: numOrNaN(pos.net_pnl ?? pos.realized_pnl),
+                closeActionLabel: pos.close_action_label || "",
                 leverage: Number.isFinite(lev) ? lev : 0,
-                margin: numOrNaN(pos.margin),
+                margin: numOrNaN(pos.margin ?? pos.margin_effective),
                 quantity: Number(pos.quantity || 0),
                 timeframe: inferPositionTimeframe(pos)
             };
@@ -3590,11 +3644,13 @@
                 return;
             }
             const sideColor = ov.side === "LONG" ? "text-emerald-400" : "text-rose-400";
-            const fmtP = (v) => v.toFixed(v < 1 ? 4 : 2);
+            const fmtP = (v) => Number(v).toFixed(Number(v) < 0.1 ? 5 : (Number(v) < 1 ? 4 : 2));
             const unP = Number.isFinite(ov.unrealizedPnl) ? ov.unrealizedPnl : null;
             const recP = Number.isFinite(ov.realizedPnl) && Math.abs(ov.realizedPnl) > 0.0001 ? ov.realizedPnl : null;
             let pnl = "";
-            if (unP !== null && recP !== null) {
+            if (ov.isClosed && Number.isFinite(ov.netPnl)) {
+                pnl = ` | <span class="text-slate-300 text-[11px]">ENCERRADA @ $${fmtP(ov.exitPrice)}</span> | <span class="${ov.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">Resultado ${ov.netPnl >= 0 ? "+" : ""}$${ov.netPnl.toFixed(2)}</span>`;
+            } else if (unP !== null && recP !== null) {
                 const tot = unP + recP;
                 pnl = ` | <span class="${unP >= 0 ? "text-emerald-400" : "text-rose-400"}">Flutuante ${unP >= 0 ? "+" : ""}$${unP.toFixed(2)}</span> <span class="text-emerald-300 text-[11px] font-semibold">(TP: +$${recP.toFixed(2)})</span> <span class="${tot >= 0 ? "text-emerald-400" : "text-rose-400"} font-bold">Total ${tot >= 0 ? "+" : ""}$${tot.toFixed(2)}</span>`;
             } else if (unP !== null) {
@@ -3630,10 +3686,33 @@
             showToast(`Posição ${ov.symbol} ${ov.side} projetada ao vivo no gráfico (${ov.timeframe}).`, "info");
         }
 
+        // Seleciona uma posição ENCERRADA (por position_id) e projeta Entrada, SL, TPs e Saída no gráfico.
+        function viewClosedPositionOnChart(posId) {
+            const pos = (window._closedPositions || []).find(p => p.position_id === posId);
+            if (!pos) return;
+            const ov = positionToOverlay(pos);
+            if (!ov.symbol) return;
+            window._activeOrderOverlay = ov;
+            updateOrderOverlayBanner();
+            renderClosedPositionsTable();
+
+            if (ov.timeframe !== currentTimeframe) {
+                setTimeframe(ov.timeframe, true);
+            }
+            setSymbol(ov.symbol);
+
+            const chartEl = document.getElementById("chartContainer");
+            if (chartEl) {
+                chartEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            showToast(`Histórico ${ov.symbol} ${ov.side} projetado no gráfico (${ov.timeframe}).`, "info");
+        }
+
         function clearActiveOrderOverlay(silent = false) {
             window._activeOrderOverlay = null;
             updateOrderOverlayBanner();
             renderOpenPositionsTable();
+            renderClosedPositionsTable();
             loadEducationalExplanation();
             if (window._cachedChartData) {
                 renderPlotlyChart(window._cachedChartData);
@@ -3644,7 +3723,7 @@
         // Atualiza a projeção com o estado mais recente da posição; se fechou, remove linhas e avisa.
         function syncOverlayWithOpenPositions() {
             const cur = window._activeOrderOverlay;
-            if (!cur) return;
+            if (!cur || cur.isClosed) return;
             const pos = (window._openPositions || []).find(p => p.position_id === cur.position_id);
             if (!pos) {
                 const label = `${cur.symbol} ${cur.side}`;
@@ -3831,7 +3910,7 @@
         }
         function fmtPx(v) {
             const n = Number(v);
-            return (v === null || v === undefined || v === "" || !Number.isFinite(n) || n <= 0) ? "—" : `$${n.toFixed(n < 1 ? 4 : 2)}`;
+            return (v === null || v === undefined || v === "" || !Number.isFinite(n) || n <= 0) ? "—" : `$${n.toFixed(n < 0.1 ? 5 : (n < 1 ? 4 : 2))}`;
         }
         function fmtTrailing(pos) {
             if (pos.trailing_active) return `ATIVO @ ${fmtPx(pos.trailing_stop_price)}`;
@@ -3939,7 +4018,7 @@
                             <div class="mt-1.5 grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-1">
                                 ${cardKV("Abertura", fmtLocalDT(pos.opened_at_ms), fmtFullDT(pos.opened_at_ms))}
                                 ${cardKV("Aberta há", fmtDuration(pos.open_for_s))}
-                                ${cardKV("Entrada → Atual", `$${Number(pos.entry_price || 0).toFixed(2)} → $${Number(pos.current_price || 0).toFixed(2)}`)}
+                                ${cardKV("Entrada → Atual", `${fmtPx(pos.entry_price)} → ${fmtPx(pos.current_price)}`)}
                                 ${cardKV("Qtd / Nocional", `${Number(pos.quantity || 0).toFixed(4)} ($${Number(pos.notional || 0).toFixed(1)})`)}
                                 ${cardKV("Saída (frações)", escapeHtml(fmtLadderFractions(pos)))}
                                 ${cardKV("Restante", fracPct(pos.remaining_fraction) || "—")}
@@ -3976,15 +4055,22 @@
                 const side = escapeHtml(pos.side || "LONG");
                 const sideColor = side.toUpperCase() === "LONG" ? "text-emerald-400" : "text-rose-400";
                 const marTxt = Number.isFinite(Number(pos.margin_effective)) && pos.margin_effective !== null ? `$${Number(pos.margin_effective).toFixed(2)}` : "—";
+                const isViewing = window._activeOrderOverlay && window._activeOrderOverlay.position_id === pos.position_id;
+                const activeClass = isViewing ? "bg-cyan-950/40 ring-1 ring-cyan-500/60" : "hover:bg-dark-700/50";
                 return `
-                    <tr class="hover:bg-dark-700/50 cursor-pointer transition-colors group" onclick="setSymbol(this.dataset.symbol)" data-symbol="${escapeHtml(pos.symbol)}" title="Clique para ver o gráfico de ${escapeHtml(pos.symbol)}">
+                    <tr class="${activeClass} cursor-pointer transition-colors group"
+                        onclick="viewClosedPositionOnChart(this.dataset.positionId)"
+                        data-position-id="${escapeHtml(pos.position_id || '')}"
+                        data-symbol="${escapeHtml(pos.symbol)}"
+                        title="Clique para projetar esta operação encerrada no gráfico de ${escapeHtml(pos.symbol)} (Entrada, SL, TP1, TP2, TP3, Saída)">
                         <td colspan="8" class="py-2 px-2 sm:px-3">
                             <div class="flex items-center justify-between gap-2 flex-wrap">
                                 <div class="flex items-center gap-1.5 flex-wrap min-w-0">
                                     <span class="px-1.5 py-0.5 rounded text-[10px] font-bold border bg-dark-900 text-slate-300 border-dark-600">${escapeHtml(pos.strategy_type || "SCALP")}</span>
-                                    <span class="font-semibold text-white num-font">${escapeHtml(pos.symbol)}</span>
+                                    <span class="font-semibold text-white num-font group-hover:text-cyan-300 transition-colors">${escapeHtml(pos.symbol)}</span>
                                     <span class="font-bold text-[11px] ${sideColor}">${side}</span>
                                     <span class="text-[10px] text-slate-400 num-font">${fmtLevX(pos.leverage_effective)} · ${marTxt}</span>
+                                    <i data-lucide="crosshair" class="h-3 w-3 text-cyan-400/60 group-hover:text-cyan-300 transition-all"></i>
                                 </div>
                                 <div class="text-right num-font whitespace-nowrap">
                                     <span class="font-semibold ${pctColor(net)}">${fmtUsdSigned(net)}</span>
@@ -3996,7 +4082,7 @@
                                 ${cardKV("Abertura", fmtLocalDT(pos.opened_at_ms), fmtFullDT(pos.opened_at_ms))}
                                 ${cardKV("Fechamento", fmtLocalDT(pos.closed_at_ms), fmtFullDT(pos.closed_at_ms))}
                                 ${cardKV("Duração", fmtDuration(pos.duration_s))}
-                                ${cardKV("Entrada → Saída", `$${Number(pos.entry_price || 0).toFixed(2)} → $${Number(pos.exit_price || pos.current_price || 0).toFixed(2)}`)}
+                                ${cardKV("Entrada → Saída", `${fmtPx(pos.entry_price)} → ${fmtPx(pos.exit_price || pos.current_price)}`)}
                                 ${cardKV("Motivo final", escapeHtml(pos.close_action_label || ledgerLabel(pos.close_action)))}
                                 ${cardKV("Saída (frações)", escapeHtml(fmtLadderFractions(pos)))}
                                 ${cardKV("Eventos", fmtEvents(pos))}

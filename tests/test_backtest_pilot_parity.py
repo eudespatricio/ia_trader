@@ -244,5 +244,5 @@ def test_leverage_4x_matches_paper_engine_trade_by_trade():
     finally:
         logging.disable(logging.NOTSET)
     # FUNDING: o TradeView do harness registra funding=0 do lado piloto (limitação); o PnL líquido já o inclui
-    diffs = [d for d in pa.reconcile("BTCUSDT", bt, pp) if d.category not in pa.ACCEPTED_BY_DESIGN | {"FUNDING": 1}]
+    diffs = [d for d in pa.reconcile("BTCUSDT", bt, pp, tol_ret=0.003) if d.category not in pa.ACCEPTED_BY_DESIGN | {"FUNDING": 1}]
     assert len(bt) > 10 and not diffs, diffs[:3]

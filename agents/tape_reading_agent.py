@@ -14,11 +14,14 @@ dados ausentes, insuficientes ou velhos (book > BOOK_MAX_AGE_S, tick > TICK_MAX_
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
 from db_conn import connect as _db_connect
 import time
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("ia_trader.tape_reading")
@@ -100,14 +103,107 @@ class TapeReadingAgent:
         except Exception:
             pass
 
+    def _evaluate_live_binance_fallback(self, sym: str, now_ms: int, fallback_reason: str) -> Dict[str, Any]:
+        """Fallback on-demand REST (Binance Futures) para altcoins de Golden Pot sem histórico local no microstructure.db."""
+        try:
+            q_depth = f"https://fapi.binance.com/fapi/v1/depth?symbol={urllib.parse.quote(sym)}&limit=100"
+            req_d = urllib.request.Request(q_depth, headers={"User-Agent": "ia-trader-tape/1.0"})
+            with urllib.request.urlopen(req_d, timeout=3.5) as r_d:
+                depth = json.loads(r_d.read().decode())
+            asks, bids = depth.get("asks") or [], depth.get("bids") or []
+            if not asks or not bids:
+                return self._unavailable(sym, fallback_reason, now_ms)
+            ba, bb = float(asks[0][0]), float(bids[0][0])
+            sa, sb = float(asks[0][1]), float(bids[0][1])
+            mid = (ba + bb) / 2.0
+            if mid <= 0:
+                return self._unavailable(sym, fallback_reason, now_ms)
+            spread = (ba - bb) / mid * 1e4
+            micro = (ba * sb + bb * sa) / (sa + sb) if (sa + sb) > 0 else mid
+            mdev = (micro - mid) / mid * 1e4
+            bid_n10 = sum(float(p) * float(q) for p, q in bids if abs(float(p) - mid) / mid * 1e4 <= 10.0)
+            ask_n10 = sum(float(p) * float(q) for p, q in asks if abs(float(p) - mid) / mid * 1e4 <= 10.0)
+            if (bid_n10 + ask_n10) <= 0:
+                bid_n10 = sum(float(p) * float(q) for p, q in bids[:10])
+                ask_n10 = sum(float(p) * float(q) for p, q in asks[:10])
+            if (bid_n10 + ask_n10) <= 0:
+                return self._unavailable(sym, "book_incomplete", now_ms)
+            book_imb = (bid_n10 - ask_n10) / (bid_n10 + ask_n10)
+
+            q_trades = f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={urllib.parse.quote(sym)}&limit=500"
+            req_t = urllib.request.Request(q_trades, headers={"User-Agent": "ia-trader-tape/1.0"})
+            with urllib.request.urlopen(req_t, timeout=3.5) as r_t:
+                trades = json.loads(r_t.read().decode())
+            win_start = now_ms - TAKER_WINDOW_MIN * 60_000
+            recent = [t for t in trades if int(t.get("T", 0)) >= win_start]
+            if len(recent) < TAKER_MIN_TRADES:
+                fallback_subset = trades[-max(TAKER_MIN_TRADES, 50):]
+                # P0: Rejeitar ticks stale no fallback se os trades forem anteriores à janela
+                if not fallback_subset or int(fallback_subset[-1].get("T", 0)) < win_start:
+                    return self._unavailable(sym, "stale_tick_fallback", now_ms)
+                recent = fallback_subset
+            if not recent:
+                return self._unavailable(sym, "no_tick_data", now_ms)
+            buy = sum(float(t["p"]) * float(t["q"]) for t in recent if not t.get("m", False))
+            sell = sum(float(t["p"]) * float(t["q"]) for t in recent if t.get("m", False))
+            if (buy + sell) <= 0:
+                return self._unavailable(sym, "tick_zero_volume", now_ms)
+            taker = (buy - sell) / (buy + sell)
+            # P0: Normalização de microprice por spread (evita saturação em 1 bp)
+            mdev_norm = max(-1.0, min(1.0, mdev / max(float(spread), 1.0)))
+            flow_score = 0.60 * taker + 0.30 * book_imb + 0.10 * mdev_norm
+            feats: Dict[str, Any] = {
+                "source": "binance_live_rest",
+                "n_trades_5m": len(recent),
+                "taker_imb_5m": taker,
+                "book_imb_10": book_imb,
+                "microprice_dev": mdev,
+                "spread_bps": spread,
+                "flow_score": round(flow_score, 4),
+            }
+            is_bullish_absorption = (taker <= -ABSORPTION_TAKER_THRESHOLD and book_imb >= ABSORPTION_BOOK_THRESHOLD)
+            is_bearish_absorption = (taker >= ABSORPTION_TAKER_THRESHOLD and book_imb <= -ABSORPTION_BOOK_THRESHOLD)
+            # Para altcoins em live fallback, toleramos spread até 15 bps (vs 5 bps nos majors BTC/ETH/SOL)
+            max_spread = SPREAD_MAX_BPS if sym in COVERED_SYMBOLS else 15.0
+            if spread > max_spread:
+                vote, reason = "HOLD", "spread_wide"
+            elif is_bullish_absorption:
+                vote, reason = "BUY", "absorption_buy_confirmed"
+            elif is_bearish_absorption:
+                vote, reason = "SELL", "absorption_sell_confirmed"
+            elif self.use_continuous_flow:
+                if flow_score >= FLOW_SCORE_MIN:
+                    vote, reason = "BUY", "flow_buy_confirmed"
+                elif flow_score <= -FLOW_SCORE_MIN:
+                    vote, reason = "SELL", "flow_sell_confirmed"
+                else:
+                    vote, reason = "HOLD", "no_flow_confluence"
+            else:
+                if taker >= TAKER_IMB_MIN and book_imb >= BOOK_IMB_MIN and mdev >= MICROPRICE_DEV_MIN_BPS:
+                    vote, reason = "BUY", "flow_buy_confirmed"
+                elif taker <= -TAKER_IMB_MIN and book_imb <= -BOOK_IMB_MIN and mdev <= -MICROPRICE_DEV_MIN_BPS:
+                    vote, reason = "SELL", "flow_sell_confirmed"
+                else:
+                    vote, reason = "HOLD", "no_flow_confluence"
+            conf = float(min(1.0, abs(flow_score) / (2.0 * FLOW_SCORE_MIN))) if vote != "HOLD" else 0.0
+            return self._finish({
+                "agent_name": self.name, "symbol": sym, "vote": vote, "status": "OK", "confidence": conf,
+                "features": feats, "reason": reason, "timestamp": now_ms,
+            })
+        except Exception:
+            return self._unavailable(sym, fallback_reason, now_ms)
+
     def evaluate(self, symbol: str, direction: str = "", now_ms: Optional[int] = None) -> Dict[str, Any]:
         """Retorna dict AgentSignal-like. `direction` é só informativo (o voto não depende dele)."""
+        is_live_call = (now_ms is None) and (self.db_path == MICROSTRUCTURE_DB)
         now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
         sym = str(symbol).upper()
         if sym not in self.covered_symbols:
             if (now_ms - self._last_refresh_ms) > 30_000:
                 self.refresh_covered_symbols_from_db(now_ms)
             if sym not in self.covered_symbols:
+                if is_live_call:
+                    return self._evaluate_live_binance_fallback(sym, now_ms, "symbol_not_covered")
                 return self._unavailable(sym, "symbol_not_covered", now_ms)
         try:
             con = self._connect_ro()
@@ -128,8 +224,12 @@ class TapeReadingAgent:
             con.close()
 
         if not books:
+            if is_live_call:
+                return self._evaluate_live_binance_fallback(sym, now_ms, "no_book_data")
             return self._unavailable(sym, "no_book_data", now_ms)
         if not ticks:
+            if is_live_call:
+                return self._evaluate_live_binance_fallback(sym, now_ms, "no_tick_data")
             return self._unavailable(sym, "no_tick_data", now_ms)
         book_age = (now_ms - int(books[0][0])) / 1000.0
         tick_age = (now_ms - int(ticks[0][0])) / 1000.0
@@ -164,7 +264,8 @@ class TapeReadingAgent:
         mdev = sum(devs) / len(devs)
         spread = float(spread)
 
-        mdev_norm = max(-1.0, min(1.0, mdev))
+        # P0: Normalização de microprice por spread (evita saturação em 1 bp)
+        mdev_norm = max(-1.0, min(1.0, mdev / max(spread, 1.0)))
         flow_score = 0.60 * taker + 0.30 * book_imb + 0.10 * mdev_norm
         feats.update({
             "taker_imb_5m": taker,
