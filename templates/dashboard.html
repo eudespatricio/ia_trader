@@ -3088,7 +3088,7 @@
             if (ov && ov.symbol === currentSymbol) {
                 const fmtP = (v) => Number(v).toFixed(Number(v) < 0.1 ? 5 : (Number(v) < 1 ? 4 : 2));
                 const side = (ov.side || "LONG").toUpperCase();
-                const pnlTxt = Number.isFinite(ov.unrealizedPnl) ? ` (${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)})` : "";
+                const pnlTxt = (!ov.isClosed && Number.isFinite(ov.unrealizedPnl)) ? ` (${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)})` : "";
 
                 if (ov.entryPrice > 0) {
                     window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
@@ -3170,7 +3170,7 @@
 
                 if (ov.isClosed && ov.exitPrice > 0) {
                     const netVal = Number.isFinite(ov.netPnl) ? ov.netPnl : 0;
-                    const netStr = ` (${netVal >= 0 ? "+" : ""}$${netVal.toFixed(2)})`;
+                    const netStr = ` (Total: ${netVal >= 0 ? "+" : ""}$${netVal.toFixed(2)})`;
                     window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
                         price: ov.exitPrice,
                         color: netVal >= 0 ? '#22C55E' : '#F43F5E',
@@ -3517,7 +3517,7 @@
                 const side = (ov.side || "LONG").toUpperCase();
                 const isLong = side === "LONG";
                 const fmtP = (v) => v.toFixed(v < 1 ? 4 : 2);
-                const pnlTxt = Number.isFinite(ov.unrealizedPnl) ? ` | PnL ${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)}` : "";
+                const pnlTxt = (!ov.isClosed && Number.isFinite(ov.unrealizedPnl)) ? ` | PnL ${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)}` : "";
                 const levTxt = ov.leverage > 0 ? ` | ${Number.isInteger(ov.leverage) ? ov.leverage : ov.leverage.toFixed(1)}x` : "";
                 const marTxt = Number.isFinite(ov.margin) ? ` | margem $${ov.margin.toFixed(2)}` : "";
                 const hit = (b) => b ? '✔ ' : '';
@@ -3622,7 +3622,7 @@
                 trailingStopPrice: Number(pos.trailing_stop_price || 0),
                 liquidationPrice: Number.isFinite(liq) ? liq : 0,
                 entryTimestamp: Number(pos.entry_timestamp || pos.opened_at_ms || 0),
-                unrealizedPnl: numOrNaN(pos.unrealized_pnl),
+                unrealizedPnl: isClosed ? 0 : numOrNaN(pos.unrealized_pnl),
                 realizedPnl: numOrNaN(pos.realized_pnl),
                 netPnl: numOrNaN(pos.net_pnl ?? pos.realized_pnl),
                 closeActionLabel: pos.close_action_label || "",

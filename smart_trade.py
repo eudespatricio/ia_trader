@@ -1627,11 +1627,13 @@ class PaperTradingEngine:
             prev_realized = pos.realized_pnl
             prev_fees = pos.fees_paid
             prev_curr_price = pos.current_price
+            prev_unrealized = pos.unrealized_pnl
 
             pos.realized_pnl += net_pnl
             pos.fees_paid += exit_fee
             pos.status = "CLOSED"
             pos.current_price = exec_price
+            pos.unrealized_pnl = 0.0
 
             trade = PaperTrade(
                 trade_id=str(uuid.uuid4())[:8],
@@ -1654,6 +1656,7 @@ class PaperTradingEngine:
                 pos.realized_pnl = prev_realized
                 pos.fees_paid = prev_fees
                 pos.current_price = prev_curr_price
+                pos.unrealized_pnl = prev_unrealized
                 return None
 
             # net_pnl já está líquido da taxa de saída: não subtrair exit_fee novamente
