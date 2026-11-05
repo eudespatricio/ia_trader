@@ -29,6 +29,11 @@
 
 ## 📜 Histórico Detalhado de Entregas e Iterações
 
+### [Sprint S3 - v1.0.5: Proteção Intra-Barra do Breakeven & Blindagem de Pavios] - 2026-11-05
+- **Blindagem do Breakeven Stop ([`smart_trade.py`](file:///home/eudespatricio/ia_trader/smart_trade.py#L1847)):** Eliminado falso gatilho de Breakeven em barras que atingem TP1 e fecham a salvo (`closed_safe`) com `open_price` estruturado (`same_bar_safe`). Pavios de reteste anteriores ao rompimento não acionam mais o BE retroativamente.
+- **Validação com Teste Dedicado ([`tests/test_exit_ladder_e7.py`](file:///home/eudespatricio/ia_trader/tests/test_exit_ladder_e7.py#L135)):** `test_same_bar_tp1_with_safe_close_does_not_stop_on_wick` validado 100% verde.
+- **Impacto em Produção:** Garante a continuidade de operações com forte momentum (como o short de BTCUSDT em $78.8k) até os alvos TP2/TP3 e carregamento via trailing stop.
+
 ### [Sprint S2 - Patch S2 (v1.0.4): Calibração Convexa & Homologação de Agentes] - 2026-11-03
 - **Exit Ladder & Funil:** Asserções de trailing stop em [`tests/test_exit_ladder_e7.py`](file:///home/eudespatricio/ia_trader/tests/test_exit_ladder_e7.py) e timestamp do funil em [`tests/test_signal_funnel.py`](file:///home/eudespatricio/ia_trader/tests/test_signal_funnel.py) 100% verdes.
 - **Otimização Convexa Restrita (L2/Ridge):** Em [`learning_tracker.py`](file:///home/eudespatricio/ia_trader/learning_tracker.py), pesos de voto com prior bayesiano, soma normalizada, pesos não-negativos e preservação estrita do veto do `RiskSentinelAgent` (`w = 1.5`).

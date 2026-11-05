@@ -1844,15 +1844,13 @@ class PaperTradingEngine:
             self._ladder_partial(pos, pos.tp1_price, pos.tp1_fraction, "TP1_PARTIAL", timestamp,
                                  f"TP1 {label}", "SL elevado para Breakeven", triggered)
             pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
-            # Se a barra abriu abaixo do BE (em drawdown), subiu até TP1 e fechou acima do BE,
-            # o low/high pré-rally da abertura ocorreu ANTES do TP1 e não deve disparar BREAKEVEN_STOP na mesma barra.
-            pre_be_open = (
-                open_price is not None
-                and open_price > 0.0
-                and ((open_price < pos.stop_loss) if long else (open_price > pos.stop_loss))
-            )
+            # Se a barra possui open_price conhecido e fechou a salvo do BE (closed_safe),
+            # o extremo oposto é pavio/reteste que ocorreu antes da expansão do TP1.
+            # O Breakeven só estopa na mesma barra se fechar violando o BE (not closed_safe)
+            # ou na ausência de preços OHLC completos (fallback conservador).
             closed_safe = (close > pos.stop_loss) if long else (close < pos.stop_loss)
-            if stop_hit() and not (pre_be_open and closed_safe):
+            same_bar_safe = open_price is not None and open_price > 0.0 and closed_safe
+            if stop_hit() and not same_bar_safe:
                 self._close_ladder_on_stop(pos, high, low, timestamp, triggered)
                 return
 

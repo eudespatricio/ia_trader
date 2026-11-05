@@ -4,6 +4,16 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.5] - 2026-11-05 - Sprint S3: Proteção Intra-Barra do Breakeven Stop contra Pavios Iniciais
+
+### Corrigido
+- **Smart Trade Ladder - Proteção de Breakeven Intra-Barra ([`smart_trade.py`](file:///home/eudespatricio/ia_trader/smart_trade.py#L1847)):**
+  - Eliminado falso estopamento de Breakeven em barras onde o TP1 é atingido e o preço fecha a salvo (`closed_safe`).
+  - Pavios anteriores da mesma barra não acionam mais o BE retroativamente quando há dados OHLC estruturados (`same_bar_safe`), preservando posições em forte expansão de momentum.
+  - Adicionado teste de regressão dedicado em [`tests/test_exit_ladder_e7.py`](file:///home/eudespatricio/ia_trader/tests/test_exit_ladder_e7.py#L135).
+
+---
+
 ## [1.0.4] - 2026-11-03 - Patch S2: Calibração Convexa de Agentes, Dampening em Range e Retreino 50k
 
 ### Adicionado

@@ -128,8 +128,19 @@ def test_breakeven_stop_after_tp1(temp_db):
 def test_same_bar_tp1_then_touch_breakeven_is_conservative(temp_db):
     e = make_engine(temp_db)
     open_scalp(e, "BUY")
-    t = tick(e, "BUY", 1, hi=101.9, lo=99.95)      # toca TP1/TP2 e o BE na mesma barra
+    t = tick(e, "BUY", 1, hi=101.9, lo=99.95)      # toca TP1/TP2 e o BE na mesma barra (sem open_price)
     assert [x.action for x in t] == ["TP1_PARTIAL", "BREAKEVEN_STOP"]
+
+
+def test_same_bar_tp1_with_safe_close_does_not_stop_on_wick(temp_db):
+    """S3 Fix: barra que atinge TP1 e fecha a salvo com open_price conhecido não é ejetada pelo pavio inicial."""
+    e = make_engine(temp_db)
+    pos = open_scalp(e, "SELL")  # SHORT @ 100.0, BE @ 99.96, TP1 @ 98.8
+    # Barra abre em 99.9, sobe até 100.05 (pavio toca BE), derrete até 98.5 (TP1) e fecha em 98.7 (lucro seguro)
+    t = e.update_market_tick("BTCUSDT", high=100.05, low=98.5, close=98.7, timestamp=TS0 + BAR, open_price=99.9)
+    assert [x.action for x in t] == ["TP1_PARTIAL"]
+    assert pos.status == "OPEN"
+    assert pos.tp1_hit
 
 
 def test_stop_has_priority_over_tp_in_same_bar(temp_db):
