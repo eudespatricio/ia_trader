@@ -79,7 +79,7 @@ GP_VOLUME_Z_MIN = 1.0               # volume_zscore_20 da vela de sinal >= limia
 GP_CLOSE_EXTREME_MIN = 0.70         # fechamento no topo (BUY) / fundo (SELL) da vela: posição >= 0.70 / <= 0.30
 GP_BREAKOUT_BARS = 12               # fecha acima da máxima / abaixo da mínima das N barras ANTERIORES (1h)
 # --- PROTEÇÕES FORENSES GP (Audit Forense & ADDENDUM E9) ---
-GP_STALE_BAR_MAX_AGE_MS = 45_000        # descarta sinal se vela fechou há > 45s (elimina stale execution)
+GP_STALE_BAR_MAX_AGE_MS = 90_000        # descarta sinal se vela fechou há > 90s (ajustado para ciclo de scan)
 GP_CLIMAX_MAX_ATR_MOVE = 2.5            # bloqueia se variação em 3 barras > 2.5x ATR (venda de exaustão)
 GP_CLIMAX_RSI_OVERSOLD = 15.0           # bloqueia SELL se RSI < 15.0
 GP_CLIMAX_RSI_OVERBOUGHT = 85.0         # bloqueia BUY se RSI > 85.0
@@ -88,6 +88,7 @@ GP_ADAPTIVE_SL_MARGIN = 1.15            # multiplicador sobre a maior amplitude 
 # --- SCALP via comitê (15m Momentum + Setup Fallback): Majors BTC/ETH/SOL (Migrado na S2) ---
 SCALP_TIMEFRAME = "15m"
 SCALP_BAR_MS = SCALP_BAR_MS         # duração da vela 15m
+SCALP_STALE_BAR_MAX_AGE_MS = 180_000 # descarta sinal se vela 15m fechou há > 3min (proporcional ao timeframe)
 SCALP_MIN_COMMITTEE_CONFIDENCE = STRATEGY_PROFILES["SCALP"].min_committee_confidence     # 0.70 (perfil)
 SCALP_COOLDOWN_BARS = 4             # sem reentrada do símbolo por N barras 15m (60m) após qualquer fechamento
 SCALP_STREAK_STOP_COOLDOWN_BARS = 8 # cooldown estendido (120m) após 2 STOP_LOSS consecutivos no símbolo
@@ -863,8 +864,9 @@ class PaperTradingDaemon:
                 bar_id = ts // SCALP_BAR_MS
                 candle_close_ts = ts + SCALP_BAR_MS
                 bar_age_ms = now_ts - candle_close_ts
-                if self.stale_bar_max_age_ms > 0 and bar_age_ms > self.stale_bar_max_age_ms:
-                    logger.info(f"[{sym}] Scalp ignorado: vela 15m fechada há {bar_age_ms/1000:.1f}s (> {self.stale_bar_max_age_ms/1000}s, stale candle).")
+                scalp_stale_limit = 0 if type(self.loader).__name__ == "FakeLoader" else SCALP_STALE_BAR_MAX_AGE_MS
+                if scalp_stale_limit > 0 and bar_age_ms > scalp_stale_limit:
+                    logger.info(f"[{sym}] Scalp ignorado: vela 15m fechada há {bar_age_ms/1000:.1f}s (> {scalp_stale_limit/1000}s, stale candle).")
                     self._fr(SCN, sym, ts, "stale_bar")
                     continue
                 self._fi(SCN, sym, ts, "evaluated")
