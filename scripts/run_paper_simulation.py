@@ -22,12 +22,13 @@ import sys
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -80,9 +81,9 @@ GP_CLOSE_EXTREME_MIN = 0.70         # fechamento no topo (BUY) / fundo (SELL) da
 GP_BREAKOUT_BARS = 12               # fecha acima da máxima / abaixo da mínima das N barras ANTERIORES (1h)
 # --- PROTEÇÕES FORENSES GP (Audit Forense & ADDENDUM E9) ---
 GP_STALE_BAR_MAX_AGE_MS = 90_000        # descarta sinal se vela fechou há > 90s (ajustado para ciclo de scan)
-GP_CLIMAX_MAX_ATR_MOVE = 2.5            # bloqueia se variação em 3 barras > 2.5x ATR (venda de exaustão)
-GP_CLIMAX_RSI_OVERSOLD = 15.0           # bloqueia SELL se RSI < 15.0
-GP_CLIMAX_RSI_OVERBOUGHT = 85.0         # bloqueia BUY se RSI > 85.0
+GP_CLIMAX_MAX_ATR_MOVE = 2.0            # bloqueia se variação em 3-4 barras > 2.0x ATR (exaustão de clímax)
+GP_CLIMAX_RSI_OVERSOLD = 25.0           # bloqueia SELL se RSI < 25.0
+GP_CLIMAX_RSI_OVERBOUGHT = 75.0         # bloqueia BUY se RSI > 75.0
 GP_MAX_LEVERAGE = 2.0                   # teto de alavancagem 2x para altcoins voláteis 5m
 GP_ADAPTIVE_SL_MARGIN = 1.15            # multiplicador sobre a maior amplitude das últimas 3 velas
 # --- SCALP via comitê (15m Momentum + Setup Fallback): Majors BTC/ETH/SOL (Migrado na S2) ---
@@ -105,6 +106,13 @@ SCALP_MIN_WARMUP_CANDLES = 200
 SWING_MIN_COMMITTEE_CONFIDENCE = STRATEGY_PROFILES["DIRECTIONAL"].min_committee_confidence   # 0.70 (perfil)
 SWING_STREAK_STOP_COOLDOWN_BARS = 2   # cooldown estendido (2h) após 2 STOP_LOSS consecutivos no símbolo
 SWING_MAX_LEVERAGE = 3.0              # teto de alavancagem 3x no modo S1 para day trade
+# --- PATCH S4.2 (v1.0.7): Blindagem Multi-Estratégia & SCALP Squeeze+ML15m Universal ---
+MAX_SAME_DIR_MAJORS = 2               # trava de correlação direcional nos majors (BTC/ETH/SOL)
+GP_BTC_MACRO_MAX_COUNTER_DIST = 0.015 # bloqueia GP contra tendência macro do BTC (> ±1.5% SMA200 1h)
+GP_UNAVAILABLE_TAPE_RISK_MULT = 0.50  # sizing defensivo 0.50x no GP quando altcoin está sem cobertura L2
+SCALP_SQUEEZE_VOL_Z_MIN = 1.0         # volume_zscore_20 mínimo no rompimento de Squeeze BB/Keltner 15m
+SCALP_SQUEEZE_NATR_BPS_MIN = 35.0     # ATR normalizado mínimo (bps) no Squeeze 15m
+SCALP_ML15_MIN_PROB = 0.45            # probabilidade mínima do ensemble dedicado 15m (LGBM+RF)
 # Filtro faca-caindo (legado do GP v2 de fade; mantido como utilitário, NÃO aplicado no gatilho de momentum v3)
 GP_KNIFE_RSI_LOW = 20.0             # RSI abaixo => "faca caindo" (LONG) se close < sma_200
 GP_KNIFE_RSI_HIGH = 80.0            # simétrico (SHORT) se close > sma_200
@@ -138,6 +146,9 @@ class PaperTradingDaemon:
         golden_pot_agent: Optional[GoldenPotAgent] = None,
         tape_agent: Optional[TapeReadingAgent] = None,
         risk_per_trade_pct: Optional[float] = None,
+        require_strict_tape_majors: Optional[bool] = None,
+        use_scalp_squeeze_ml15: Optional[bool] = None,
+        enforce_gp_btc_macro: Optional[bool] = None,
     ):
         self.poll_interval = poll_interval_seconds
         self.engine = engine or PaperTradingEngine()
@@ -173,9 +184,149 @@ class PaperTradingDaemon:
         self._funding_refresh_done: Dict[str, int] = {}    # liquidação de funding já consultada (evita rede repetida)
         self.stale_bar_max_age_ms: int = 0 if type(self.loader).__name__ == "FakeLoader" else GP_STALE_BAR_MAX_AGE_MS
         self._swing_entered_bars: Set[Tuple[str, int]] = set()
+        is_fake_loader = (type(self.loader).__name__ == "FakeLoader")
+        self.require_strict_tape_majors: bool = (not is_fake_loader) if require_strict_tape_majors is None else bool(require_strict_tape_majors)
+        self.use_scalp_squeeze_ml15: bool = (not is_fake_loader) if use_scalp_squeeze_ml15 is None else bool(use_scalp_squeeze_ml15)
+        self.enforce_gp_btc_macro: bool = (not is_fake_loader) if enforce_gp_btc_macro is None else bool(enforce_gp_btc_macro)
+        self._h1_dist_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
+        self._scalp_ml15_models: List[Dict[str, Any]] = self._load_scalp_ml15_models()
 
         # Pares fixos monitorados continuamente
         self.core_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+    @staticmethod
+    def _load_scalp_ml15_models() -> List[Dict[str, Any]]:
+        """Carrega os modelos dedicados de 15m (lgbm_15m_v1.joblib e rf_15m_v1.joblib) se disponíveis."""
+        bundles: List[Dict[str, Any]] = []
+        for fname in ("lgbm_15m_v1.joblib", "rf_15m_v1.joblib"):
+            fpath = os.path.join(BASE_DIR, "models", fname)
+            if not os.path.exists(fpath):
+                continue
+            try:
+                bundle = joblib.load(fpath)
+                if isinstance(bundle, dict) and bundle.get("model") is not None and bundle.get("feature_names"):
+                    bundles.append(bundle)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Falha ao carregar modelo 15m {fname}: {exc}")
+        if bundles:
+            logger.info(f"Ensemble 15m SCALP carregado: {len(bundles)} modelo(s) ativo(s).")
+        return bundles
+
+    def _predict_scalp_ml15_probs(self, latest: pd.Series) -> Optional[Tuple[float, float]]:
+        """Retorna (p_buy, p_sell) médios do ensemble dedicado 15m; None se nenhum modelo estiver carregado."""
+        if not self._scalp_ml15_models:
+            return None
+        p_buys: List[float] = []
+        p_sells: List[float] = []
+        for bundle in self._scalp_ml15_models:
+            try:
+                model = bundle["model"]
+                fnames = list(bundle["feature_names"])
+                row = {}
+                for col in fnames:
+                    val = latest.get(col, 0.0)
+                    try:
+                        fval = float(val)
+                    except (TypeError, ValueError):
+                        fval = 0.0
+                    row[col] = fval if np.isfinite(fval) else 0.0
+                X_df = pd.DataFrame([row], columns=fnames)
+                proba = np.asarray(model.predict_proba(X_df), dtype=float)
+                if proba.ndim == 2 and proba.shape[1] >= 3:
+                    p_buys.append(float(proba[0, 1]))
+                    p_sells.append(float(proba[0, 2]))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Aviso na inferência ML 15m: {exc}")
+        if not p_buys:
+            return None
+        return float(np.mean(p_buys)), float(np.mean(p_sells))
+
+    async def _get_symbol_1h_dist_sma200(self, sym: str, now_ts: int) -> Optional[float]:
+        """Retorna (close - sma_200) / sma_200 em 1h fechado, com cache de TTL 60s por barra."""
+        now_s = time.monotonic()
+        cached = self._h1_dist_cache.get(sym)
+        if cached is not None and (now_s - cached[0]) < 60.0 and abs(int(now_ts) - cached[1]) < 60_000:
+            return cached[2]
+        try:
+            df = await self.loader.get_candles(sym, "1h", limit=250, exchange="binance")
+            if df is None or len(df) < 200:
+                df = await self.loader.get_candles(sym, "1h", limit=250, exchange="bitget")
+            df = self._drop_forming_candle(df, SWING_BAR_MS, now_ts)
+            if df is None or len(df) < 200:
+                return None
+            closes = df["close"].astype(float).iloc[-200:]
+            sma200 = float(closes.mean())
+            c = float(closes.iloc[-1])
+            if not (np.isfinite(sma200) and np.isfinite(c)) or sma200 <= 0.0:
+                return None
+            dist = (c - sma200) / sma200
+            self._h1_dist_cache[sym] = (now_s, int(now_ts), dist)
+            return dist
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Aviso ao calcular dist_sma_200 1h para {sym}: {exc}")
+            return None
+
+    @staticmethod
+    def scalp_squeeze_keltner_trigger(
+        df_feat: pd.DataFrame, h1_dist_sma200: Optional[float] = None
+    ) -> Optional[Tuple[str, str]]:
+        """Gatilho SCALP 15m Squeeze BB(20,2.0) dentro de Keltner(EMA20, 1.5*ATR14) nas 2 barras anteriores."""
+        if df_feat is None or len(df_feat) < 25 or "atr_14" not in df_feat.columns:
+            return None
+        close_s = df_feat["close"].astype(float)
+        atr_s = df_feat["atr_14"].astype(float)
+        if "bb_high" in df_feat.columns and "bb_low" in df_feat.columns:
+            bb_hi = df_feat["bb_high"].astype(float)
+            bb_lo = df_feat["bb_low"].astype(float)
+        else:
+            sma20 = close_s.rolling(20).mean()
+            std20 = close_s.rolling(20).std(ddof=0)
+            bb_hi = sma20 + 2.0 * std20
+            bb_lo = sma20 - 2.0 * std20
+
+        kc_mid = close_s.ewm(span=20, adjust=False).mean()
+        kc_hi = kc_mid + 1.5 * atr_s
+        kc_lo = kc_mid - 1.5 * atr_s
+        in_sqz = (bb_hi < kc_hi) & (bb_lo > kc_lo)
+        prior_sqz_2b = bool(in_sqz.iloc[-2]) and bool(in_sqz.iloc[-3])
+        if not prior_sqz_2b:
+            return None
+
+        last = df_feat.iloc[-1]
+        c = float(last["close"])
+        o = float(last.get("open", c))
+        atr = float(last["atr_14"])
+        vz = float(last.get("volume_zscore_20", 0.0))
+        if not all(np.isfinite(v) for v in (c, o, atr, vz)) or c <= 0.0 or atr <= 0.0:
+            return None
+        natr_bps = (atr / c) * 10_000.0
+        if vz < SCALP_SQUEEZE_VOL_Z_MIN or natr_bps < SCALP_SQUEEZE_NATR_BPS_MIN:
+            return None
+
+        if h1_dist_sma200 is None:
+            sma200 = float(last.get("sma_200", c) or c)
+            h1_d = ((c - sma200) / sma200) if sma200 > 0.0 else 0.0
+        else:
+            h1_d = float(h1_dist_sma200)
+
+        kc_hi_last = float(kc_hi.iloc[-1])
+        kc_lo_last = float(kc_lo.iloc[-1])
+        if c > o and c > kc_hi_last and h1_d >= 0.0:
+            return "BUY", f"Scalp Squeeze KC BUY 15m: NATR {natr_bps:.0f}bps | VolZ {vz:+.1f} | H1_SMA200 {h1_d:+.2%}"
+        if c < o and c < kc_lo_last and h1_d <= 0.0:
+            return "SELL", f"Scalp Squeeze KC SELL 15m: NATR {natr_bps:.0f}bps | VolZ {vz:+.1f} | H1_SMA200 {h1_d:+.2%}"
+        return None
+
+    def _count_open_same_dir_majors(self, direction: str) -> int:
+        """Conta posições DIRECTIONAL abertas nos majors na mesma direção (trava de correlação S4.2)."""
+        target_side = "LONG" if direction == "BUY" else "SHORT"
+        return sum(
+            1 for p in self.engine.positions.values()
+            if p.status == "OPEN"
+            and p.symbol in self.core_symbols
+            and p.strategy_type == "DIRECTIONAL"
+            and p.side == target_side
+        )
 
     def _compute_swing_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -432,19 +583,22 @@ class PaperTradingDaemon:
         last = df_feat.iloc[-1]
         c = float(last["close"])
         c_3ago = float(df_feat["close"].iloc[-4])
-        cum_move_atr = (c - c_3ago) / atr
+        c_4ago = float(df_feat["close"].iloc[-5]) if len(df_feat) >= 5 else c_3ago
+        cum_3 = (c - c_3ago) / atr
+        cum_4 = (c - c_4ago) / atr
+        cum_move_atr = cum_3 if abs(cum_3) >= abs(cum_4) else cum_4
         rsi = float(last.get("rsi_14", last.get("rsi", 50.0)))
 
         if direction == "SELL":
             if rsi < GP_CLIMAX_RSI_OVERSOLD:
                 return True, f"RSI sobre-vendido extremo ({rsi:.1f} < {GP_CLIMAX_RSI_OVERSOLD})"
-            if cum_move_atr < -GP_CLIMAX_MAX_ATR_MOVE and rsi < 30.0:
-                return True, f"queda acumulada extrema em 3 barras ({cum_move_atr:.1f}x ATR com RSI={rsi:.1f})"
+            if cum_move_atr < -GP_CLIMAX_MAX_ATR_MOVE and rsi < 32.0:
+                return True, f"queda acumulada extrema em 3-4 barras ({cum_move_atr:.1f}x ATR com RSI={rsi:.1f})"
         elif direction == "BUY":
             if rsi > GP_CLIMAX_RSI_OVERBOUGHT:
                 return True, f"RSI sobre-comprado extremo ({rsi:.1f} > {GP_CLIMAX_RSI_OVERBOUGHT})"
-            if cum_move_atr > GP_CLIMAX_MAX_ATR_MOVE and rsi > 70.0:
-                return True, f"alta acumulada extrema em 3 barras (+{cum_move_atr:.1f}x ATR com RSI={rsi:.1f})"
+            if cum_move_atr > GP_CLIMAX_MAX_ATR_MOVE and rsi > 68.0:
+                return True, f"alta acumulada extrema em 3-4 barras (+{cum_move_atr:.1f}x ATR com RSI={rsi:.1f})"
         return False, ""
 
     @staticmethod
@@ -540,12 +694,18 @@ class PaperTradingDaemon:
 
         now_ms = int(time.time() * 1000)
         try:
-            tape = self.tape_agent.evaluate(sym, direction, now_ms=now_ms)
+            if isinstance(self.tape_agent, TapeReadingAgent):
+                tape = self.tape_agent.evaluate(sym, direction, now_ms=now_ms, allow_live_fallback=True)
+            else:
+                tape = self.tape_agent.evaluate(sym, direction, now_ms=now_ms)
         except Exception as e:  # noqa: BLE001 - falha do agente = indisponível (fail-open registrado)
             tape = {"vote": "HOLD", "status": "UNAVAILABLE", "reason": f"agent_error:{type(e).__name__}", "features": {}}
         self.last_tape = {**tape, "strategy_type": strategy_type, "direction": direction}
         if tape.get("status") == "UNAVAILABLE":
-            decision = "UNAVAILABLE_PASSED"
+            if self.require_strict_tape_majors and strategy_type in ("DIRECTIONAL", "SCALP"):
+                decision = "BLOCKED"
+            else:
+                decision = "UNAVAILABLE_PASSED"
         elif tape.get("vote") == direction:
             decision = "PASSED"
         else:
@@ -583,7 +743,7 @@ class PaperTradingDaemon:
     def _build_ladder_signal(
         self, committee: TradeSignal, strategy_type: str, direction: str, close: float, atr: float,
         latest: pd.Series, margin_cap: float, rationale: str, low_liquidity: bool = False,
-        sl_atr_mult: Optional[float] = None,
+        sl_atr_mult: Optional[float] = None, risk_scale_mult: float = 1.0,
     ) -> Tuple[TradeSignal, float]:
         """Alavancagem via decide_leverage (confiança REAL) + sinal com SL/TP3 do perfil. Lote = margem."""
         prof = STRATEGY_PROFILES[strategy_type]
@@ -611,7 +771,7 @@ class PaperTradingDaemon:
         effective_sl_mult = sl_atr_mult if sl_atr_mult is not None else prof.sl_atr_mult
         sl_dist = effective_sl_mult * atr
         sl_dist_pct = (sl_dist / close) if close > 0 else 0.01
-        risk_scale = 0.30 if strategy_type == "GOLDEN_POT" else 1.0
+        risk_scale = (0.30 if strategy_type == "GOLDEN_POT" else (0.50 if strategy_type == "SCALP" else 1.0)) * float(risk_scale_mult)
         cap_pct = margin_cap / self.engine.balance if self.engine.balance > 0 else 0.20
         if hasattr(self.engine, "_lot_margin"):
             est_margin, _ = self.engine._lot_margin(
@@ -739,6 +899,19 @@ class PaperTradingDaemon:
                     continue
                 direction, why = trig
 
+                # Alinhamento Macro via BTCUSDT 1h SMA200 (±1.5%, Patch S4.2)
+                if self.enforce_gp_btc_macro:
+                    btc_dist = await self._get_symbol_1h_dist_sma200("BTCUSDT", now_ts)
+                    if btc_dist is not None:
+                        if direction == "BUY" and btc_dist < -GP_BTC_MACRO_MAX_COUNTER_DIST:
+                            logger.info(f"[{sym}] GP BUY bloqueado por Macro BTC ({btc_dist:+.2%} < -1.5% SMA200).")
+                            self._fr(GPN, sym, ts, "gate_blocked")
+                            continue
+                        if direction == "SELL" and btc_dist > GP_BTC_MACRO_MAX_COUNTER_DIST:
+                            logger.info(f"[{sym}] GP SELL bloqueado por Macro BTC ({btc_dist:+.2%} > +1.5% SMA200).")
+                            self._fr(GPN, sym, ts, "gate_blocked")
+                            continue
+
                 close = float(latest["close"])
                 atr = float(latest.get("atr_14", close * 0.008))
 
@@ -780,10 +953,21 @@ class PaperTradingDaemon:
                 if not self._flow_gate("GOLDEN_POT", sym, direction, sig, lev, close, atr, bar_ts=ts):
                     self._fr(GPN, sym, ts, "gate_blocked")
                     continue
+                tape_st = (self.last_tape or {}).get("status")
+                gp_risk_mult = GP_UNAVAILABLE_TAPE_RISK_MULT if tape_st != "OK" else 1.0
+                if gp_risk_mult != 1.0:
+                    sig, lev = self._build_ladder_signal(
+                        committee, "GOLDEN_POT", direction, close, atr, latest,
+                        margin_cap=self.engine.balance * 0.20,
+                        rationale=f"Golden Pot v3: {why}",
+                        low_liquidity=float(pot.get("volume_24h_usd", 0.0) or 0.0) < GP_LOW_LIQUIDITY_USD,
+                        sl_atr_mult=sl_mult_adaptive,
+                        risk_scale_mult=gp_risk_mult,
+                    )
                 self._fi(GPN, sym, ts, "gate_passed")
                 pos = self.engine.execute_golden_pot_signal(
                     signal=sig, current_price=close, timestamp=ts, leverage=lev,
-                    sl_atr_mult=sl_mult_adaptive,
+                    sl_atr_mult=sl_mult_adaptive, risk_scale_mult=gp_risk_mult,
                 )
                 if not pos:
                     self._fr_open(GPN, sym, ts)
@@ -890,38 +1074,56 @@ class PaperTradingDaemon:
                 direction = None
                 why = ""
 
-                # 1. Gatilho Primário: Momentum Breakout 3m (Rompimento ágil de 1h / 20 barras no 3m)
-                if len(df_feat) >= SCALP_BREAKOUT_BARS + 2 and atr > 0 and high_p > low_p:
-                    rng_atr = (high_p - low_p) / atr
-                    cpos = (close - low_p) / (high_p - low_p)
-                    prev_bars = df_feat.iloc[-1 - SCALP_BREAKOUT_BARS:-1]
-                    prior_high = float(prev_bars["high"].max())
-                    prior_low = float(prev_bars["low"].min())
+                if self.use_scalp_squeeze_ml15:
+                    h1_dist = await self._get_symbol_1h_dist_sma200(sym, now_ts)
+                    trig = self.scalp_squeeze_keltner_trigger(df_feat, h1_dist_sma200=h1_dist)
+                    if trig is not None:
+                        cand_dir, cand_why = trig
+                        probs = self._predict_scalp_ml15_probs(latest)
+                        if probs is not None:
+                            p_buy, p_sell = probs
+                            p_dir = p_buy if cand_dir == "BUY" else p_sell
+                            ml_ok = (p_buy >= SCALP_ML15_MIN_PROB and p_buy > p_sell) if cand_dir == "BUY" else (p_sell >= SCALP_ML15_MIN_PROB and p_sell > p_buy)
+                            if not ml_ok:
+                                logger.info(f"[{sym}] Scalp Squeeze {cand_dir} bloqueado por ML 15m ({p_dir:.1%} < {SCALP_ML15_MIN_PROB:.0%}).")
+                                self._fr(SCN, sym, ts, "low_confidence")
+                                continue
+                            cand_why = f"{cand_why} [ML15m: {p_dir:.1%}]"
+                        direction, why = cand_dir, cand_why
+                else:
+                    # Modo legado (FakeLoader / testes unitários E7)
+                    # 1. Gatilho Primário: Momentum Breakout 3m (Rompimento ágil de 1h / 20 barras no 3m)
+                    if len(df_feat) >= SCALP_BREAKOUT_BARS + 2 and atr > 0 and high_p > low_p:
+                        rng_atr = (high_p - low_p) / atr
+                        cpos = (close - low_p) / (high_p - low_p)
+                        prev_bars = df_feat.iloc[-1 - SCALP_BREAKOUT_BARS:-1]
+                        prior_high = float(prev_bars["high"].max())
+                        prior_low = float(prev_bars["low"].min())
 
-                    if vol_z >= SCALP_VOLUME_Z_MIN and rng_atr >= SCALP_RANGE_ATR_MIN:
-                        if close > open_p and cpos >= SCALP_CLOSE_EXTREME_MIN and close > prior_high:
+                        if vol_z >= SCALP_VOLUME_Z_MIN and rng_atr >= SCALP_RANGE_ATR_MIN:
+                            if close > open_p and cpos >= SCALP_CLOSE_EXTREME_MIN and close > prior_high:
+                                direction = "BUY"
+                                why = (f"Scalp Momentum BUY 3m: Range {rng_atr:.2f} ATR | VolZ {vol_z:+.1f} | "
+                                       f"fecha {cpos:.0%} da vela | rompe {SCALP_BREAKOUT_BARS} barras")
+                            elif close < open_p and cpos <= (1.0 - SCALP_CLOSE_EXTREME_MIN) and close < prior_low:
+                                direction = "SELL"
+                                why = (f"Scalp Momentum SELL 3m: Range {rng_atr:.2f} ATR | VolZ {vol_z:+.1f} | "
+                                       f"fecha {cpos:.0%} da vela | rompe {SCALP_BREAKOUT_BARS} barras")
+
+                    # 2. Gatilho Secundário: Setup VWAP/RSI dos simulation_settings (Fallback)
+                    if not direction:
+                        settings = self.engine.get_simulation_settings()
+                        vwap_dev = float(settings.get("scalp_vwap_dev_pct", 2.0))
+                        rsi_os = float(settings.get("scalp_rsi_oversold", 35.0))
+                        rsi_ob = float(settings.get("scalp_rsi_overbought", 65.0))
+                        vol_z_min = float(settings.get("scalp_volume_z", 0.2))
+
+                        if vwap_dist <= -vwap_dev and rsi <= rsi_os and vol_z >= vol_z_min:
                             direction = "BUY"
-                            why = (f"Scalp Momentum BUY 3m: Range {rng_atr:.2f} ATR | VolZ {vol_z:+.1f} | "
-                                   f"fecha {cpos:.0%} da vela | rompe {SCALP_BREAKOUT_BARS} barras")
-                        elif close < open_p and cpos <= (1.0 - SCALP_CLOSE_EXTREME_MIN) and close < prior_low:
+                            why = f"Scalp VWAP Reversion BUY: VWAP {vwap_dist:+.2f}% | RSI {rsi:.1f} | Vol Z {vol_z:+.1f}"
+                        elif vwap_dist >= vwap_dev and rsi >= rsi_ob and vol_z >= vol_z_min:
                             direction = "SELL"
-                            why = (f"Scalp Momentum SELL 3m: Range {rng_atr:.2f} ATR | VolZ {vol_z:+.1f} | "
-                                   f"fecha {cpos:.0%} da vela | rompe {SCALP_BREAKOUT_BARS} barras")
-
-                # 2. Gatilho Secundário: Setup VWAP/RSI dos simulation_settings (Fallback)
-                if not direction:
-                    settings = self.engine.get_simulation_settings()
-                    vwap_dev = float(settings.get("scalp_vwap_dev_pct", 2.0))
-                    rsi_os = float(settings.get("scalp_rsi_oversold", 35.0))
-                    rsi_ob = float(settings.get("scalp_rsi_overbought", 65.0))
-                    vol_z_min = float(settings.get("scalp_volume_z", 0.2))
-
-                    if vwap_dist <= -vwap_dev and rsi <= rsi_os and vol_z >= vol_z_min:
-                        direction = "BUY"
-                        why = f"Scalp VWAP Reversion BUY: VWAP {vwap_dist:+.2f}% | RSI {rsi:.1f} | Vol Z {vol_z:+.1f}"
-                    elif vwap_dist >= vwap_dev and rsi >= rsi_ob and vol_z >= vol_z_min:
-                        direction = "SELL"
-                        why = f"Scalp VWAP Reversion SELL: VWAP {vwap_dist:+.2f}% | RSI {rsi:.1f} | Vol Z {vol_z:+.1f}"
+                            why = f"Scalp VWAP Reversion SELL: VWAP {vwap_dist:+.2f}% | RSI {rsi:.1f} | Vol Z {vol_z:+.1f}"
 
                 if not direction:
                     self._fr(SCN, sym, ts, "no_trigger")
@@ -1020,6 +1222,10 @@ class PaperTradingDaemon:
                 if dir_sig.get("direction") in ["BUY", "SELL"] and not dir_sig.get("is_vetoed", False):
                     # Exige confiança institucional (>= SWING_MIN_COMMITTEE_CONFIDENCE, perfil DIRECTIONAL)
                     if dir_sig.get("confidence", 0.0) >= SWING_MIN_COMMITTEE_CONFIDENCE:
+                        if self._count_open_same_dir_majors(dir_sig["direction"]) >= MAX_SAME_DIR_MAJORS:
+                            logger.info(f"[{sym}] Swing bloqueado por trava de correlação ({MAX_SAME_DIR_MAJORS} majors {dir_sig['direction']} já abertos).")
+                            self._fr(DTN, sym, ts, "margin")
+                            continue
                         self._fi(DTN, sym, ts, "committee_agree")
                         self._fi(DTN, sym, ts, "confidence_ok")
                         # Contrato: TradeSignal.position_size vem do core em UNIDADES do ativo;

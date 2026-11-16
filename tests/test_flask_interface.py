@@ -671,3 +671,74 @@ class TestSignalFunnelApi:
         con = sqlite3.connect(fdb)
         assert con.execute("SELECT count FROM signal_funnel").fetchone()[0] == 3
         con.close()
+
+
+class TestTelemetryEvolutionEndpoint:
+    """Valida o endpoint /api/telemetry/evolution (S0 -> Atual, stitching de epoch e leitura segura)."""
+
+    @staticmethod
+    def _ms(iso_brt: str) -> int:
+        from datetime import datetime, timezone, timedelta
+        tz = timezone(timedelta(hours=-3))
+        return int(datetime.fromisoformat(iso_brt).replace(tzinfo=tz).timestamp() * 1000)
+
+    def test_empty_db_returns_has_data_false(self, client, tmp_path, monkeypatch):
+        import flask_interface
+        db = str(tmp_path / "empty.db")
+        sqlite3.connect(db).close()
+        monkeypatch.setattr(flask_interface, "DB_PATH", db)
+        r = client.get("/api/telemetry/evolution")
+        assert r.status_code == 200
+        j = r.get_json()
+        assert j["has_data"] is False
+        assert j["by_week"] == []
+        assert j["summary"]["total_trades"] == 0
+
+    def test_multi_week_with_reset_stitching(self, client, tmp_path, monkeypatch):
+        import flask_interface
+        db = str(tmp_path / "evo.db")
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE paper_portfolio (timestamp INTEGER, equity REAL, balance REAL, realized_pnl_cum REAL)")
+        con.execute("CREATE TABLE paper_positions (position_id TEXT, strategy_type TEXT, side TEXT, status TEXT)")
+        con.execute("CREATE TABLE paper_trades (position_id TEXT, symbol TEXT, action TEXT, pnl REAL, fee REAL, timestamp INTEGER, rationale TEXT)")
+        con.execute("CREATE TABLE agent_learning_memory (timestamp INTEGER, symbol TEXT, regime TEXT, consensus_direction TEXT, consensus_confidence REAL, agent_signals_json TEXT, outcome TEXT, realized_pnl REAL)")
+
+        # S0: 2026-10-16 (-$50), S1: 2026-10-20 (-$150), Reset 2026-10-27 p/ $10k, S3: 2026-11-10 (+$300)
+        con.executemany("INSERT INTO paper_portfolio VALUES (?,?,?,?)", [
+            (self._ms("2026-10-16 10:00:00"), 10000.0, 10000.0, 0.0),
+            (self._ms("2026-10-16 12:00:00"), 9950.0, 9950.0, -49.0),
+            (self._ms("2026-10-20 12:00:00"), 9800.0, 9800.0, -198.0),
+            (self._ms("2026-10-27 16:14:00"), 10000.0, 10000.0, 0.0),
+            (self._ms("2026-11-10 12:00:00"), 10300.0, 10300.0, 302.0),
+        ])
+        con.executemany("INSERT INTO paper_positions VALUES (?,?,?,?)", [
+            ("p1", "SCALP", "LONG", "CLOSED"),
+            ("p2", "DIRECTIONAL", "SHORT", "CLOSED"),
+            ("p3", "GOLDEN_POT", "LONG", "CLOSED"),
+        ])
+        con.executemany("INSERT INTO paper_trades VALUES (?,?,?,?,?,?,?)", [
+            ("p1", "BTCUSDT", "OPEN_SCALP_LONG", 0.0, 1.0, self._ms("2026-10-16 10:00:00"), ""),
+            ("p1", "BTCUSDT", "STOP_LOSS", -49.0, 1.0, self._ms("2026-10-16 12:00:00"), ""),
+            ("p2", "ETHUSDT", "OPEN_SHORT", 0.0, 1.0, self._ms("2026-10-20 10:00:00"), ""),
+            ("p2", "ETHUSDT", "STOP_LOSS", -149.0, 1.0, self._ms("2026-10-20 12:00:00"), ""),
+            ("p3", "SOLUSDT", "OPEN_GOLDEN_POT_LONG", 0.0, 2.0, self._ms("2026-11-10 10:00:00"), ""),
+            ("p3", "SOLUSDT", "TAKE_PROFIT", 302.0, 2.0, self._ms("2026-11-10 12:00:00"), ""),
+        ])
+        con.commit()
+        con.close()
+
+        monkeypatch.setattr(flask_interface, "DB_PATH", db)
+        r = client.get("/api/telemetry/evolution")
+        assert r.status_code == 200
+        j = r.get_json()
+        assert j["has_data"] is True
+        assert len(j["resets"]) == 1
+        assert j["summary"]["total_trades"] == 3
+        assert j["summary"]["winning_trades"] == 1
+        assert j["summary"]["cum_pnl_usd"] == 100.0  # -50 - 150 + 300
+        assert j["summary"]["trade_sum_pnl_usd"] == 100.0
+        assert j["summary"]["current_epoch_pnl_usd"] == 300.0
+        assert len([w for w in j["by_week"] if w["trades"] > 0]) == 3
+        assert j["by_week"][0]["label"].startswith("Sem 0")
+        assert j["by_week"][-1]["accuracy_pct"] == 100.0
+        assert j["by_week"][-1]["pnl_usd"] == 300.0

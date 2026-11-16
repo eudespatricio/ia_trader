@@ -768,21 +768,34 @@ class _PilotSimulator:
 
         if stop_hit():
             return stop_close(True)
+
+        tp1_frac = getattr(self.prof, "tp1_fraction", st.EXIT_TP1_FRACTION)
+        tp2_frac = getattr(self.prof, "tp2_fraction", st.EXIT_TP2_FRACTION)
+
+        if tp1_frac <= 0.0 and tp2_frac <= 0.0:
+            if reached(p.tp3):
+                return "TAKE_PROFIT_3", p.tp3
+            if p.trail_active:
+                p.trail_bar = (h, l)
+            return None
+
         if not p.tp1_hit and reached(p.tp1):
             p.tp1_hit = True
             be = p.entry * (1.0 + sgn * st.BREAKEVEN_FEE_BUFFER_PCT)
             p.sl = max(p.sl, be) if long else min(p.sl, be)          # nunca afrouxa
-            self.balance += self._leg(p, p.tp1, min(p.qty0 * st.EXIT_TP1_FRACTION, p.qty), "TAKE_PROFIT_1", True)
+            self.balance += self._leg(p, p.tp1, min(p.qty0 * tp1_frac, p.qty), "TAKE_PROFIT_1", True)
             if self.e.trailing_activation == "tp1" and p.trail_mult > 0.0 and p.entry_atr > 0.0:
                 p.trail_active = True       # experimento: trailing liga já no TP1 (mult x ATR de entrada, nunca afrouxa)
                 p.trail_ref = p.tp1
                 p.trail_bar = None
                 self._ratchet(p, p.tp1, p.tp1)
-            if stop_hit():
+            closed_safe = (c > p.sl) if long else (c < p.sl)
+            same_bar_safe = o > 0.0 and closed_safe
+            if stop_hit() and not same_bar_safe:
                 return stop_close(False)
         if p.tp1_hit and not p.tp2_hit and reached(p.tp2):
             p.tp2_hit = True
-            self.balance += self._leg(p, p.tp2, min(p.qty0 * st.EXIT_TP2_FRACTION, p.qty), "TAKE_PROFIT_2", True)
+            self.balance += self._leg(p, p.tp2, min(p.qty0 * tp2_frac, p.qty), "TAKE_PROFIT_2", True)
             if p.trail_mult > 0.0 and p.entry_atr > 0.0:
                 if p.trail_active:           # já ligado no TP1: só incorpora o extremo TP2 (fechado nesta barra)
                     self._ratchet(p, p.tp2, p.tp2)

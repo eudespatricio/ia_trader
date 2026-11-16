@@ -15,14 +15,18 @@ from smart_trade import (
 
 
 def test_strict_mathematical_asymmetry_profiles():
-    """Valida que todos os perfis possuem TP1 < TP2 < TP3 com forte assimetria no TP2 e TP3."""
+    """Valida assimetria matemática: TP1 < TP2 < TP3 e R:R mínimo por tipo de saída."""
     for name, prof in STRATEGY_PROFILES.items():
         assert prof.tp1_atr_mult < prof.tp2_atr_mult < prof.tp3_atr_mult
         rr_tp2 = prof.tp2_atr_mult / prof.sl_atr_mult
         rr_tp3 = prof.tp3_atr_mult / prof.sl_atr_mult
-        # O TP2 e TP3 devem remunerar favoravelmente o risco
-        assert rr_tp2 >= 1.6, f"{name}: TP2 R:R {rr_tp2:.2f} deve ser >= 1.6"
-        assert rr_tp3 >= 3.0, f"{name}: TP3 R:R {rr_tp3:.2f} deve ser >= 3.0"
+        if prof.tp1_fraction > 0.0 or prof.tp2_fraction > 0.0:
+            # Ladder 3 estágios: TP2 e TP3 devem remunerar favoravelmente o risco
+            assert rr_tp2 >= 1.6, f"{name}: TP2 R:R {rr_tp2:.2f} deve ser >= 1.6"
+            assert rr_tp3 >= 3.0, f"{name}: TP3 R:R {rr_tp3:.2f} deve ser >= 3.0"
+        else:
+            # Alvo único limpo (SCALP S4.2, sem BE precoce): TP3 >= 1.5R
+            assert rr_tp3 >= 1.5, f"{name}: TP3 R:R {rr_tp3:.2f} deve ser >= 1.5"
 
     # Golden Pot alinhado para capturar fat-tails com TP3 >= 6.0 ATR
     assert STRATEGY_PROFILES["GOLDEN_POT"].tp1_atr_mult >= 1.5
@@ -107,7 +111,17 @@ def test_open_position_applies_volatility_sizing(tmp_path):
     assert pos.entry_price == pytest.approx(80000.0 * (1.0 + MAKER_SLIPPAGE_PCT))
     sl_dist = abs(pos.entry_price - pos.stop_loss) / pos.entry_price
     expected_risk = pos.margin * 2.0 * sl_dist
-    assert expected_risk == pytest.approx(100.0, abs=5.0)  # Risco nominal exatamente ~ $100 (1% da banca)
+    assert expected_risk == pytest.approx(50.0, abs=3.0)  # SCALP S4.2: risco 0.50x (0.5% da banca = $50)
+
+    from dataclasses import replace as _dc_replace
+    pos_dir = engine.execute_directional_signal(
+        _dc_replace(sig, symbol="ETHUSDT", signal_id="sig-test-open-dir"),
+        current_price=80000.0, timestamp=1700000000000, leverage=2.0, sl_atr_mult=1.0,
+    )
+    assert pos_dir is not None
+    sl_dist_dir = abs(pos_dir.entry_price - pos_dir.stop_loss) / pos_dir.entry_price
+    expected_risk_dir = pos_dir.margin * 2.0 * sl_dist_dir
+    assert expected_risk_dir == pytest.approx(100.0, abs=5.0)  # DIRECTIONAL: risco pleno 1.00x ($100)
 
 
 def test_micro_stop_floor_prevents_notional_explosion(tmp_path):

@@ -197,16 +197,24 @@ class TechnicalAgent(BaseAgent):
                 direction = "SELL"
                 confidence = min(0.88, 0.60 + (rsi_val - 55.0) * 0.01)
                 rationale = f"Repique corretivo em baixa (Preço < SMA200, RSI={rsi_val:.1f} em exaustão e VWAP resistente)."
-            # 3. Impulso e Momentum de Alta Ativo
-            elif macro_bull and rsi_val >= 48.0:
+            # 3. Impulso e Momentum de Alta Ativo (com teto de exaustão em RSI > 75.0)
+            elif macro_bull and 48.0 <= rsi_val <= 75.0:
                 direction = "BUY"
                 confidence = min(0.84, 0.62 + (rsi_val - 48.0) * 0.008)
                 rationale = f"Neurônio de Momentum Ativo: Estrutura compradora alinhada (Preço > SMA200, RSI={rsi_val:.1f} sustentando aceleração)."
-            # 4. Impulso e Pressão Vendedora Ativa
-            elif not macro_bull and rsi_val <= 52.0:
+            elif macro_bull and rsi_val > 75.0:
+                direction = "HOLD"
+                confidence = 0.55
+                rationale = f"Exaustão de sobrecompra: RSI={rsi_val:.1f} > 75.0 desaconselha compras no topo."
+            # 4. Impulso e Pressão Vendedora Ativa (com piso de exaustão em RSI < 25.0)
+            elif not macro_bull and 25.0 <= rsi_val <= 52.0:
                 direction = "SELL"
                 confidence = min(0.84, 0.62 + (52.0 - rsi_val) * 0.008)
                 rationale = f"Neurônio de Momentum Ativo: Pressão vendedora dominante (Preço < SMA200, RSI={rsi_val:.1f} em enfraquecimento)."
+            elif not macro_bull and rsi_val < 25.0:
+                direction = "HOLD"
+                confidence = 0.55
+                rationale = f"Exaustão de sobrevenda: RSI={rsi_val:.1f} < 25.0 desaconselha vendas no fundo."
             # 5. Neutralidade temporária no centro
             else:
                 direction = "HOLD"
@@ -228,6 +236,10 @@ class TechnicalAgent(BaseAgent):
         sweep_bear = bool(context.get("liquidity_sweep_bear", 0))
         dist_supp = context.get("dist_support_pct")
         dist_res = context.get("dist_resistance_pct")
+        nearest_bsl = context.get("nearest_bsl")
+        nearest_ssl = context.get("nearest_ssl")
+        has_valid_bsl = True if nearest_bsl is None else float(nearest_bsl or 0.0) > 0.0
+        has_valid_ssl = True if nearest_ssl is None else float(nearest_ssl or 0.0) > 0.0
         dist_supp_val = float(dist_supp) if dist_supp is not None and not np.isnan(float(dist_supp)) else None
         dist_res_val = float(dist_res) if dist_res is not None and not np.isnan(float(dist_res)) else None
 
@@ -239,7 +251,7 @@ class TechnicalAgent(BaseAgent):
                 confidence = min(0.98, confidence + bonus)
                 rationale += " [CONFLUÊNCIA POI/SWEEP: Alta convicção compradora em zona de liquidez mitigada]."
             # Penalidade se comprando direto contra resistência imediata (< 0.25%)
-            if dist_res_val is not None and dist_res_val < 0.25 and not sweep_bull:
+            if dist_res_val is not None and 0.0 < dist_res_val < 0.25 and has_valid_bsl and not sweep_bull:
                 confidence = max(0.40, confidence - 0.20)
                 if confidence < self.confidence_threshold:
                     direction = "HOLD"
@@ -251,7 +263,7 @@ class TechnicalAgent(BaseAgent):
                 confidence = min(0.98, confidence + bonus)
                 rationale += " [CONFLUÊNCIA POI/SWEEP: Alta convicção vendedora em zona de liquidez mitigada]."
             # Penalidade se vendendo direto contra suporte imediato (< 0.25%)
-            if dist_supp_val is not None and dist_supp_val < 0.25 and not sweep_bear:
+            if dist_supp_val is not None and 0.0 < dist_supp_val < 0.25 and has_valid_ssl and not sweep_bear:
                 confidence = max(0.40, confidence - 0.20)
                 if confidence < self.confidence_threshold:
                     direction = "HOLD"

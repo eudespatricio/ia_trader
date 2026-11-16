@@ -123,16 +123,21 @@ class StrategyProfile:
     min_committee_confidence: float = 0.70
     bar_ms: int = DIRECTIONAL_BAR_MS                       # duração da barra de decisão (P2/P4)
     max_holding_bars: int = DIRECTIONAL_MAX_HOLDING_BARS   # timeout por nº de barras (P4)
+    tp1_fraction: float = EXIT_TP1_FRACTION
+    tp2_fraction: float = EXIT_TP2_FRACTION
 
 
 STRATEGY_PROFILES: Dict[str, StrategyProfile] = {
-    # alvos curtos: Scalp 15m em majors (BTC, ETH, SOL) - R:R: TP1 1.2x (1.33R), TP2 2.0x (2.22R), TP3 3.6x (4.0R)
-    "SCALP": StrategyProfile(sl_atr_mult=0.9, tp1_atr_mult=1.2, tp2_atr_mult=2.0, tp3_atr_mult=3.6, trail_atr_mult=0.8,
-                             bar_ms=SCALP_BAR_MS, max_holding_bars=SCALP_MAX_HOLDING_BARS),
+    # alvos curtos: Scalp 15m em majors (BTC, ETH, SOL) - alvo único TP3 2.2x sem BE trap (A5/A6)
+    "SCALP": StrategyProfile(
+        sl_atr_mult=1.4, tp1_atr_mult=1.6, tp2_atr_mult=2.0, tp3_atr_mult=2.2, trail_atr_mult=0.0,
+        bar_ms=SCALP_BAR_MS, max_holding_bars=SCALP_MAX_HOLDING_BARS,
+        tp1_fraction=0.0, tp2_fraction=0.0,
+    ),
     # day trade 1h (SL efetivo = o do comitê/SignalGenerator; sl_atr_mult é o fallback) - R:R: TP1 1.5x, TP2 2.5x, TP3 4.0x
     "DIRECTIONAL": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=4.0, trail_atr_mult=1.2,
                                    bar_ms=DIRECTIONAL_BAR_MS, max_holding_bars=DIRECTIONAL_MAX_HOLDING_BARS),
-    # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails) - R:R: TP1 1.0x (BE), TP2 1.67x, TP3 4.0x
+    # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails) - R:R: TP1 1.5x (1.0R BE), TP2 2.5x (1.67R), TP3 6.0x (4.0R)
     "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.5, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
                                   bar_ms=GOLDEN_POT_BAR_MS, max_holding_bars=GOLDEN_POT_MAX_HOLDING_BARS),
 }
@@ -1152,7 +1157,7 @@ class PaperTradingEngine:
     _ENTRY_META: Dict[str, Dict[str, Any]] = {
         # DIRECTIONAL (day trade 1h): entrada a mercado (taker + slippage), como contratado na Fase 6; saídas = ladder comum.
         "DIRECTIONAL": {"label": "Ordem Direcional", "cap": 0.5, "maker_entry": False, "atr_fallback_pct": 0.01, "risk_scale": 1.0},
-        "SCALP": {"label": "Scalp", "cap": 0.25, "maker_entry": True, "atr_fallback_pct": 0.005, "risk_scale": 1.0},
+        "SCALP": {"label": "Scalp", "cap": 0.25, "maker_entry": True, "atr_fallback_pct": 0.005, "risk_scale": 0.50},
         "GOLDEN_POT": {"label": "Golden Pot", "cap": 0.12, "maker_entry": True, "atr_fallback_pct": 0.008, "risk_scale": 0.30},
     }
 
@@ -1168,6 +1173,7 @@ class PaperTradingEngine:
         tp3_atr_mult: Optional[float] = None,
         sl_atr_mult: Optional[float] = None,
         trail_atr_mult: Optional[float] = None,
+        risk_scale_mult: float = 1.0,
     ) -> Optional[PaperPosition]:
         """Abre posição LONG/SHORT de qualquer estratégia com a Smart Trade Exit Ladder comum.
 
@@ -1261,10 +1267,11 @@ class PaperTradingEngine:
             exec_price = current_price * (1.0 + slip) if side == "LONG" else current_price * (1.0 - slip)
 
             atr = signal.atr if signal.atr and signal.atr > 0 else current_price * meta["atr_fallback_pct"]
+            use_custom_ladder = (tp1_atr_mult is not None or tp2_atr_mult is not None)
             m_tp1 = prof.tp1_atr_mult if tp1_atr_mult is None else tp1_atr_mult
             m_tp2 = prof.tp2_atr_mult if tp2_atr_mult is None else tp2_atr_mult
             m_tp3 = prof.tp3_atr_mult if tp3_atr_mult is None else tp3_atr_mult
-            m_trail = prof.trail_atr_mult if trail_atr_mult is None else trail_atr_mult
+            m_trail = (0.8 if (use_custom_ladder and prof.trail_atr_mult <= 0.0) else prof.trail_atr_mult) if trail_atr_mult is None else trail_atr_mult
             sgn = 1.0 if side == "LONG" else -1.0
             sl_price = exec_price - sgn * (prof.sl_atr_mult if sl_atr_mult is None else sl_atr_mult) * atr
             if strategy_type == "DIRECTIONAL" and sl_atr_mult is None:
@@ -1292,7 +1299,7 @@ class PaperTradingEngine:
                 timeframe="15m" if strategy_type == "SCALP" else "1h",
             )
             lev_req = min(clamp_leverage(leverage, MAX_LEVERAGE), calc_lev)
-            risk_scale = float(meta.get("risk_scale", 1.0))
+            risk_scale = float(meta.get("risk_scale", 1.0)) * float(risk_scale_mult)
 
             if self.rollback_guard and getattr(getattr(self.rollback_guard, "status", None), "is_rollback_active", False):
                 if hasattr(self.rollback_guard, "get_risk_policy"):
@@ -1358,13 +1365,16 @@ class PaperTradingEngine:
                     self.last_open_reject = "duplicate_order"
                     return None
 
+            f_tp1 = EXIT_TP1_FRACTION if use_custom_ladder else prof.tp1_fraction
+            f_tp2 = EXIT_TP2_FRACTION if use_custom_ladder else prof.tp2_fraction
+
             pos = PaperPosition(
                 position_id=pos_id, symbol=symbol, side=side, entry_price=exec_price, current_price=exec_price,
                 quantity=qty, notional=notional, stop_loss=sl_price, take_profit=tp3_p,
                 highest_price=exec_price, lowest_price=exec_price, fees_paid=fee, entry_timestamp=timestamp,
                 strategy_type=strategy_type, status="OPEN",
                 tp1_price=tp1_p, tp1_hit=False, tp2_price=tp2_p, initial_quantity=qty, leverage=lev,
-                tp3_price=tp3_p, tp2_hit=False, tp1_fraction=EXIT_TP1_FRACTION, tp2_fraction=EXIT_TP2_FRACTION,
+                tp3_price=tp3_p, tp2_hit=False, tp1_fraction=f_tp1, tp2_fraction=f_tp2,
                 trailing_active=False, trailing_stop_price=0.0, trailing_atr_mult=m_trail, entry_atr=atr,
                 funding_cursor_ms=self._ts_ms(timestamp), last_bar_close=current_price,
             )
@@ -1460,6 +1470,7 @@ class PaperTradingEngine:
         leverage: float = 1.0,
         tp3_atr_mult: Optional[float] = None,
         trail_atr_mult: Optional[float] = None,
+        risk_scale_mult: float = 1.0,
     ) -> Optional[PaperPosition]:
         """Scalp intradiário (15m) - cota diária estrita; entrada maker; saídas = ladder comum (perfil SCALP).
 
@@ -1469,6 +1480,7 @@ class PaperTradingEngine:
             signal, current_price, timestamp, "SCALP", leverage,
             tp1_atr_mult=tp1_atr_mult, tp2_atr_mult=tp2_atr_mult, tp3_atr_mult=tp3_atr_mult,
             sl_atr_mult=sl_atr_mult, trail_atr_mult=trail_atr_mult,
+            risk_scale_mult=risk_scale_mult,
         )
 
     def execute_golden_pot_signal(
@@ -1482,12 +1494,14 @@ class PaperTradingEngine:
         leverage: float = 1.0,
         tp3_atr_mult: Optional[float] = None,
         trail_atr_mult: Optional[float] = None,
+        risk_scale_mult: float = 1.0,
     ) -> Optional[PaperPosition]:
         """Golden Pot (momentum + volatilidade extraordinária) - cota própria (máx 3/dia); ladder comum (perfil GOLDEN_POT)."""
         return self._open_ladder_position(
             signal, current_price, timestamp, "GOLDEN_POT", leverage,
             tp1_atr_mult=tp1_atr_mult, tp2_atr_mult=tp2_atr_mult, tp3_atr_mult=tp3_atr_mult,
             sl_atr_mult=sl_atr_mult, trail_atr_mult=trail_atr_mult,
+            risk_scale_mult=risk_scale_mult,
         )
 
     def execute_carry_allocation(
@@ -1837,44 +1851,51 @@ class PaperTradingEngine:
             return
 
         label = {"GOLDEN_POT": "Golden Pot", "SCALP": "Scalp"}.get(pos.strategy_type, "Direcional")
-        if not pos.tp1_hit and reached(pos.tp1_price):
-            pos.tp1_hit = True
-            be = pos.entry_price * (1.0 + sgn * BREAKEVEN_FEE_BUFFER_PCT)
-            pos.stop_loss = max(pos.stop_loss, be) if long else min(pos.stop_loss, be)   # nunca afrouxa
-            self._ladder_partial(pos, pos.tp1_price, pos.tp1_fraction, "TP1_PARTIAL", timestamp,
-                                 f"TP1 {label}", "SL elevado para Breakeven", triggered)
-            pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
-            # Se a barra possui open_price conhecido e fechou a salvo do BE (closed_safe),
-            # o extremo oposto é pavio/reteste que ocorreu antes da expansão do TP1.
-            # O Breakeven só estopa na mesma barra se fechar violando o BE (not closed_safe)
-            # ou na ausência de preços OHLC completos (fallback conservador).
-            closed_safe = (close > pos.stop_loss) if long else (close < pos.stop_loss)
-            same_bar_safe = open_price is not None and open_price > 0.0 and closed_safe
-            if stop_hit() and not same_bar_safe:
-                self._close_ladder_on_stop(pos, high, low, timestamp, triggered)
-                return
-
-        if pos.tp1_hit and not pos.tp2_hit and reached(pos.tp2_price):
-            if pos.tp3_price <= 0.0:   # posição legada (pré-E7): TP2 encerra o restante
-                t = self.close_position(pos.position_id, pos.tp2_price, timestamp, reason="TAKE_PROFIT_2")
+        if pos.tp1_fraction <= 0.0 and pos.tp2_fraction <= 0.0:
+            if reached(pos.tp3_price):
+                t = self.close_position(pos.position_id, pos.tp3_price, timestamp, reason="TAKE_PROFIT_3")
                 if t:
                     triggered.append(t)
                 return
-            pos.tp2_hit = True
-            self._ladder_partial(pos, pos.tp2_price, pos.tp2_fraction, "TP2_PARTIAL", timestamp,
-                                 f"TP2 {label}", "trailing stop ativado no runner", triggered)
-            if pos.trailing_atr_mult > 0.0 and pos.entry_atr > 0.0:
-                pos.trailing_active = True
-                pos.trail_ref_extreme = pos.tp2_price   # TP2 foi negociado -> extremo já observado
-                pos.trail_bar_ts = 0.0
-                self._ratchet_trailing(pos, pos.tp2_price, pos.tp2_price)
-            pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
+        else:
+            if not pos.tp1_hit and reached(pos.tp1_price):
+                pos.tp1_hit = True
+                be = pos.entry_price * (1.0 + sgn * BREAKEVEN_FEE_BUFFER_PCT)
+                pos.stop_loss = max(pos.stop_loss, be) if long else min(pos.stop_loss, be)   # nunca afrouxa
+                self._ladder_partial(pos, pos.tp1_price, pos.tp1_fraction, "TP1_PARTIAL", timestamp,
+                                     f"TP1 {label}", "SL elevado para Breakeven", triggered)
+                pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
+                # Se a barra possui open_price conhecido e fechou a salvo do BE (closed_safe),
+                # o extremo oposto é pavio/reteste que ocorreu antes da expansão do TP1.
+                # O Breakeven só estopa na mesma barra se fechar violando o BE (not closed_safe)
+                # ou na ausência de preços OHLC completos (fallback conservador).
+                closed_safe = (close > pos.stop_loss) if long else (close < pos.stop_loss)
+                same_bar_safe = open_price is not None and open_price > 0.0 and closed_safe
+                if stop_hit() and not same_bar_safe:
+                    self._close_ladder_on_stop(pos, high, low, timestamp, triggered)
+                    return
 
-        if pos.tp2_hit and reached(pos.tp3_price):
-            t = self.close_position(pos.position_id, pos.tp3_price, timestamp, reason="TAKE_PROFIT_3")
-            if t:
-                triggered.append(t)
-            return
+            if pos.tp1_hit and not pos.tp2_hit and reached(pos.tp2_price):
+                if pos.tp3_price <= 0.0:   # posição legada (pré-E7): TP2 encerra o restante
+                    t = self.close_position(pos.position_id, pos.tp2_price, timestamp, reason="TAKE_PROFIT_2")
+                    if t:
+                        triggered.append(t)
+                    return
+                pos.tp2_hit = True
+                self._ladder_partial(pos, pos.tp2_price, pos.tp2_fraction, "TP2_PARTIAL", timestamp,
+                                     f"TP2 {label}", "trailing stop ativado no runner", triggered)
+                if pos.trailing_atr_mult > 0.0 and pos.entry_atr > 0.0:
+                    pos.trailing_active = True
+                    pos.trail_ref_extreme = pos.tp2_price   # TP2 foi negociado -> extremo já observado
+                    pos.trail_bar_ts = 0.0
+                    self._ratchet_trailing(pos, pos.tp2_price, pos.tp2_price)
+                pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
+
+            if pos.tp2_hit and reached(pos.tp3_price):
+                t = self.close_position(pos.position_id, pos.tp3_price, timestamp, reason="TAKE_PROFIT_3")
+                if t:
+                    triggered.append(t)
+                return
 
         if pos.trailing_active:   # acumula esta barra; só vira stop quando a janela nativa seguinte chegar
             if pos.trail_bar_ts <= 0.0 or cur_bucket > prev_bucket:

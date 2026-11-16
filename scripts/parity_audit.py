@@ -203,7 +203,7 @@ def run_paper(symbol: str, feat: pd.DataFrame, signals: np.ndarray, test_start: 
         ts = int(row["timestamp"])
         # 1) update_active_positions (daemon): tick com a vela
         eng.update_market_tick(symbol=symbol, high=float(row["high"]), low=float(row["low"]),
-                               close=float(row["close"]), timestamp=ts)
+                               close=float(row["close"]), timestamp=ts, open_price=float(row["open"]))
         # 2) evaluate_swing_opportunities
         d = int(signals[i])
         if d in (1, 2):

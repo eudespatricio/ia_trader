@@ -779,3 +779,103 @@ def test_tradingview_chart_enhancements(make_page):
     assert "hidden" in p.page.locator("#btnJumpToLatest").get_attribute("class")
     assert p.page_errors == [] and p.console_errors == []
 
+
+# ----------------------------------------------------------------- evolução & patches
+def _mock_evolution_payload():
+    return {
+        "has_data": True,
+        "initial_capital": 10000.0,
+        "summary": {
+            "total_trades": 30, "winning_trades": 17, "losing_trades": 13,
+            "accuracy_pct": 56.7, "cum_pnl_usd": 420.5, "cum_pnl_pct": 4.21,
+            "trade_sum_pnl_usd": 420.5, "current_epoch_equity": 10650.0,
+            "current_epoch_pnl_usd": 650.0, "max_drawdown_pct": 5.4,
+            "profit_factor": 1.85, "expectancy_usd": 14.02, "payoff_ratio": 1.45,
+            "total_fees_usd": 62.1, "latest_week_label": "Sem 4 (09/11–15/11)",
+            "latest_week_accuracy_pct": 66.7, "baseline_accuracy_pct": 25.0,
+            "accuracy_delta_pp": 41.7, "latest_week_pf": 3.1, "baseline_pf": 0.25,
+            "committee_accuracy_pct": 60.0, "calibration_gap_pct": 12.5,
+        },
+        "patches": [
+            {"id": "S0", "short": "S0", "label": "S0 — Piloto Limpo", "version": "v1.0.0", "start_date": "2026-10-15", "end_date": "2026-10-18", "marker_date": "2026-10-16", "summary": "Baseline inicial."},
+            {"id": "S3_PATCH", "short": "Patch S3", "label": "Patch S3 — BE Intra-Barra", "version": "v1.0.5", "start_date": "2026-11-05", "end_date": None, "marker_date": "2026-11-05", "summary": "Proteção intra-barra."},
+        ],
+        "resets": [{"ts": 1793128470766, "dt": "2026-10-27 16:14", "date": "2026-10-27", "prev_equity": 9770.5, "new_equity": 10000.0, "offset_applied": -229.5}],
+        "portfolio_series": [
+            {"ts": 1, "dt": "2026-10-16 10:00", "date": "2026-10-16", "adj_equity": 10000.0, "raw_equity": 10000.0, "cum_pnl": 0.0, "dd_pct": 0.0},
+            {"ts": 2, "dt": "2026-10-20 10:00", "date": "2026-10-20", "adj_equity": 9770.5, "raw_equity": 9770.5, "cum_pnl": -229.5, "dd_pct": 2.3},
+            {"ts": 3, "dt": "2026-11-10 10:00", "date": "2026-11-10", "adj_equity": 10420.5, "raw_equity": 10650.0, "cum_pnl": 420.5, "dd_pct": 0.0},
+        ],
+        "trade_series": [
+            {"idx": 1, "ts": 1, "dt": "2026-10-16 12:00", "date": "2026-10-16", "symbol": "BTCUSDT", "strategy": "SCALP", "pnl": -50.0, "cum_pnl": -50.0, "rolling_acc_pct": 0.0, "cum_acc_pct": 0.0},
+            {"idx": 2, "ts": 3, "dt": "2026-11-10 12:00", "date": "2026-11-10", "symbol": "SOLUSDT", "strategy": "GOLDEN_POT", "pnl": 470.5, "cum_pnl": 420.5, "rolling_acc_pct": 50.0, "cum_acc_pct": 50.0},
+        ],
+        "by_week": [
+            {"key": "W00", "label": "Sem 0 (16–18/Out)", "date_range": "16–18/Out", "meta": "S0", "trades": 8, "wins": 2, "losses": 6, "accuracy_pct": 25.0, "pnl_usd": -229.5, "cum_pnl_usd": -229.5, "max_drawdown_pct": 2.3, "profit_factor": 0.25, "payoff_ratio": 0.6, "expectancy_usd": -28.69, "fees_usd": 12.0, "committee_n": 0, "committee_accuracy_pct": None, "strategies": {"SCALP": {"trades": 8, "wins": 2, "accuracy_pct": 25.0, "pnl_usd": -229.5, "profit_factor": 0.25}}},
+            {"key": "W04", "label": "Sem 4 (09/11–15/11)", "date_range": "09/11–15/11", "meta": "Patch S3", "trades": 22, "wins": 15, "losses": 7, "accuracy_pct": 66.7, "pnl_usd": 650.0, "cum_pnl_usd": 420.5, "max_drawdown_pct": 1.8, "profit_factor": 3.1, "payoff_ratio": 1.65, "expectancy_usd": 29.55, "fees_usd": 50.1, "committee_n": 15, "committee_accuracy_pct": 60.0, "strategies": {"GOLDEN_POT": {"trades": 10, "wins": 7, "accuracy_pct": 70.0, "pnl_usd": 450.0, "profit_factor": 3.5}, "SCALP": {"trades": 12, "wins": 8, "accuracy_pct": 66.7, "pnl_usd": 200.0, "profit_factor": 2.4}}},
+        ],
+        "by_patch": [
+            {"key": "P00_S0", "label": "S0", "date_range": "10-15 → 10-18", "meta": "v1.0.0", "trades": 8, "wins": 2, "losses": 6, "accuracy_pct": 25.0, "pnl_usd": -229.5, "cum_pnl_usd": -229.5, "max_drawdown_pct": 2.3, "profit_factor": 0.25, "payoff_ratio": 0.6, "expectancy_usd": -28.69, "fees_usd": 12.0, "committee_n": 0, "committee_accuracy_pct": None, "strategies": {}},
+            {"key": "P04_S3_PATCH", "label": "Patch S3", "date_range": "11-05 → Atual", "meta": "v1.0.5", "trades": 22, "wins": 15, "losses": 7, "accuracy_pct": 66.7, "pnl_usd": 650.0, "cum_pnl_usd": 420.5, "max_drawdown_pct": 1.8, "profit_factor": 3.1, "payoff_ratio": 1.65, "expectancy_usd": 29.55, "fees_usd": 50.1, "committee_n": 15, "committee_accuracy_pct": 60.0, "strategies": {}},
+        ],
+        "by_day": [],
+    }
+
+
+def test_evolution_not_loaded_while_tab_hidden(make_page):
+    hits = []
+    p = make_page(routes=[("**/api/telemetry/evolution*", lambda r: (hits.append(r.request.url), r.continue_()))])
+    p.page.wait_for_timeout(1200)
+    assert hits == []
+
+
+def test_evolution_tab_renders_charts_and_switches_mode(make_page):
+    p = make_page(routes=[
+        ("**/api/telemetry/evolution*", lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps(_mock_evolution_payload())
+        ))
+    ])
+    p.page.click("#tabNavEvolution")
+    p.page.wait_for_selector("#evolutionBody:not(.hidden)")
+    p.page.wait_for_function("document.getElementById('evoKpiAcc').innerText.includes('66.7%')")
+    assert p.page.locator("#evolutionEquityChart .js-plotly-plot, #evolutionEquityChart.js-plotly-plot").count() >= 1
+    assert p.page.locator("#evolutionMetricsChart.js-plotly-plot").count() == 1
+    assert p.page.locator("#evolutionScorecardBody tr").count() == 2
+    assert p.page.locator("#evolutionPatchesGrid > div").count() == 2
+
+    # Switch to Por Patch mode
+    p.page.click("button[data-evo-mode='patch']")
+    p.page.wait_for_function("document.getElementById('evoModeSubtitle').innerText === 'Por Patch'")
+    assert "Patch S3" in p.page.inner_text("#evolutionScorecardBody")
+
+    body = p.page.inner_text("body")
+    assert "NaN" not in body and "undefined" not in body and "null" not in body.lower().replace("nullable", "")
+    assert p.page_errors == [] and p.console_errors == []
+
+
+def test_evolution_empty_state(make_page):
+    p = make_page()
+    p.page.click("#tabNavEvolution")
+    p.page.wait_for_selector("#evolutionEmpty:not(.hidden)")
+    assert "Sem histórico" in p.page.inner_text("#evolutionEmpty")
+    assert p.page_errors == [] and p.console_errors == []
+
+
+@pytest.mark.parametrize("vp", ["desktop_1920x1080", "mobile_390x844"])
+def test_evolution_no_overflow(make_page, vp):
+    p = make_page(viewport=VIEWPORTS[vp], routes=[
+        ("**/api/telemetry/evolution*", lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps(_mock_evolution_payload())
+        ))
+    ])
+    p.page.click("#tabNavEvolution")
+    p.page.wait_for_selector("#evolutionBody:not(.hidden)")
+    over = p.page.evaluate("""() => {
+        const sec = document.getElementById('mainTabEvolution');
+        return {
+            doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            sec: sec.scrollWidth - sec.clientWidth,
+        };
+    }""")
+    assert over["doc"] <= 0 and over["sec"] <= 0, over
+

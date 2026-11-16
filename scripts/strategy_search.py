@@ -23,14 +23,14 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from statistical_rigor import calculate_annualized_sharpe, deflated_sharpe_ratio  # noqa: E402
+from statistical_rigor import calculate_annualized_sharpe, deflated_sharpe_ratio, get_prior_trials_count  # noqa: E402
 
 DB = "file:" + os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets", "market_cache.db") + "?mode=ro"
 ASSETS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 DEV_START, DEV_END = "2020-09-14", "2025-10-13"
 HOLD_START, HOLD_END = "2025-10-14", "2026-10-13"
 FEE = 0.0006 + 0.0002          # por unidade de giro
-PRIOR_TRIALS = 84              # linhas do trial_log.csv (histórico) antes desta busca
+PRIOR_TRIALS = get_prior_trials_count()  # derivado dinamicamente de datasets/reports/trial_log.csv
 BAND = 0.10
 
 

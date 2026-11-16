@@ -169,7 +169,10 @@ class MarketRegimeClassifier:
             rationale = f"Volatilidade extrema detectada (ATR ratio {atr_ratio:.2f}x). Pânico ou choque de liquidez no mercado."
 
         # 2. Tendência de Alta Consolidada (Bull Trend)
-        elif last_price > sma50 and (sma20 > sma50 or (sma200 is not None and last_price > sma200)) and rsi >= 50.0 and ret_24p >= 1.5:
+        elif (
+            (last_price > sma50 and (sma20 > sma50 or (sma200 is not None and last_price > sma200)) and rsi >= 50.0 and ret_24p >= 1.5)
+            or (has_real_sma200 and sma200 is not None and sma200 > 0 and last_price > sma50 > sma200 and ((last_price - sma200) / sma200) >= 0.015 and rsi >= 48.0 and ret_24p >= -1.0)
+        ):
             regime = "BULL_TREND"
             bias = "BULLISH"
             confidence = 0.85 if (sma200 is not None and last_price > sma200 and sma50 > sma200) else 0.70
@@ -177,7 +180,10 @@ class MarketRegimeClassifier:
             rationale = f"Estrutura altista dominante: Preço acima das médias (SMA50: ${sma50:,.2f}), RSI em {rsi:.1f} e retorno de {ret_24p:+.2f}%."
 
         # 3. Tendência de Baixa Consolidada (Bear Trend)
-        elif last_price < sma50 and (sma20 < sma50 or (sma200 is not None and last_price < sma200)) and rsi <= 50.0 and ret_24p <= -1.5:
+        elif (
+            (last_price < sma50 and (sma20 < sma50 or (sma200 is not None and last_price < sma200)) and rsi <= 50.0 and ret_24p <= -1.5)
+            or (has_real_sma200 and sma200 is not None and sma200 > 0 and last_price < sma50 < sma200 and ((last_price - sma200) / sma200) <= -0.015 and rsi <= 52.0 and ret_24p <= 1.0)
+        ):
             regime = "BEAR_TREND"
             bias = "BEARISH"
             confidence = 0.85 if (sma200 is not None and last_price < sma200 and sma50 < sma200) else 0.70

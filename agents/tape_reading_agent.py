@@ -193,9 +193,19 @@ class TapeReadingAgent:
         except Exception:
             return self._unavailable(sym, fallback_reason, now_ms)
 
-    def evaluate(self, symbol: str, direction: str = "", now_ms: Optional[int] = None) -> Dict[str, Any]:
+    def evaluate(
+        self,
+        symbol: str,
+        direction: str = "",
+        now_ms: Optional[int] = None,
+        allow_live_fallback: bool = False,
+    ) -> Dict[str, Any]:
         """Retorna dict AgentSignal-like. `direction` é só informativo (o voto não depende dele)."""
-        is_live_call = (now_ms is None) and (self.db_path == MICROSTRUCTURE_DB)
+        is_live_call = (
+            ((now_ms is None) or bool(allow_live_fallback))
+            and (self.db_path == MICROSTRUCTURE_DB)
+            and os.path.exists(self.db_path)
+        )
         now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
         sym = str(symbol).upper()
         if sym not in self.covered_symbols:

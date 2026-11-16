@@ -131,11 +131,15 @@ class RiskSentinelAgent(BaseAgent):
         intended_dir = context.get("intended_direction")
         dist_res = context.get("dist_resistance_pct")
         dist_supp = context.get("dist_support_pct")
+        nearest_bsl = context.get("nearest_bsl")
+        nearest_ssl = context.get("nearest_ssl")
+        has_valid_bsl = True if nearest_bsl is None else float(nearest_bsl or 0.0) > 0.0
+        has_valid_ssl = True if nearest_ssl is None else float(nearest_ssl or 0.0) > 0.0
         sweep_bull = bool(context.get("liquidity_sweep_bull", 0))
         sweep_bear = bool(context.get("liquidity_sweep_bear", 0))
 
-        if intended_dir == "BUY" and dist_res is not None and not sweep_bull:
-            if float(dist_res) < 0.15:
+        if intended_dir == "BUY" and dist_res is not None and has_valid_bsl and not sweep_bull:
+            if 0.0 < float(dist_res) < 0.15:
                 return AgentSignal(
                     agent_name=self.name,
                     direction="HOLD",
@@ -146,8 +150,8 @@ class RiskSentinelAgent(BaseAgent):
                     metrics={"veto_type": "RESISTANCE_PROXIMITY", "dist_resistance_pct": float(dist_res)},
                     timestamp=context.get("timestamp"),
                 )
-        elif intended_dir == "SELL" and dist_supp is not None and not sweep_bear:
-            if float(dist_supp) < 0.15:
+        elif intended_dir == "SELL" and dist_supp is not None and has_valid_ssl and not sweep_bear:
+            if 0.0 < float(dist_supp) < 0.15:
                 return AgentSignal(
                     agent_name=self.name,
                     direction="HOLD",

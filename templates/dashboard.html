@@ -169,13 +169,18 @@
     <!-- MAIN DASHBOARD CONTAINER -->
     <main class="flex-1 max-w-7xl w-full mx-auto p-4 space-y-4">
 
-        <!-- SESSION / VIEW SWITCHER: TRADING VS GOVERNANÇA DO PROJETO -->
+        <!-- SESSION / VIEW SWITCHER: TRADING VS EVOLUÇÃO VS GOVERNANÇA DO PROJETO -->
         <div class="flex flex-wrap items-center justify-between gap-3 pb-1 border-b border-dark-600/60">
-            <div class="flex items-center gap-1.5 bg-dark-900/90 p-1 rounded-xl border border-dark-600/80 shadow-inner">
+            <div class="flex flex-wrap items-center gap-1.5 bg-dark-900/90 p-1 rounded-xl border border-dark-600/80 shadow-inner">
                 <button id="tabNavTrading" onclick="switchMainTab('trading')" class="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold bg-cyan-600 text-white shadow-md transition-all">
                     <i data-lucide="candlestick-chart" class="h-4 w-4"></i>
                     <span>Terminal de Operações (Trading)</span>
                     <span class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">LIVE</span>
+                </button>
+                <button id="tabNavEvolution" onclick="switchMainTab('evolution')" class="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-dark-800 transition-all">
+                    <i data-lucide="trending-up" class="h-4 w-4"></i>
+                    <span>Evolução & Patches</span>
+                    <span class="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800">S0 → Atual</span>
                 </button>
                 <button id="tabNavProject" onclick="switchMainTab('project')" class="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-dark-800 transition-all">
                     <i data-lucide="folder-kanban" class="h-4 w-4"></i>
@@ -1184,6 +1189,175 @@
 
         </div><!-- END mainTabProject -->
 
+        <!-- ================================================================= -->
+        <!-- SESSÃO 3: EVOLUÇÃO DO MODELO & IMPACTO DOS PATCHES SEMANAIS       -->
+        <!-- ================================================================= -->
+        <div id="mainTabEvolution" class="hidden space-y-4">
+
+            <!-- Header & View Mode Controls -->
+            <div class="glass-panel p-4 rounded-xl border border-dark-600/80 flex flex-wrap items-center justify-between gap-3 shadow-md">
+                <div class="space-y-0.5">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="trending-up" class="h-4 w-4 text-cyan-400"></i>
+                        <h2 class="text-sm font-bold tracking-wide text-white uppercase">Evolução do Modelo desde a Semana 0 &amp; Impacto dos Patches</h2>
+                    </div>
+                    <p class="text-[11px] text-slate-400">
+                        Série contínua desde o piloto limpo (16/Out/2026) com reconciliação de taxas e do reset de banca S2 ($10k em 27/Out).
+                    </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <div class="flex items-center gap-1 bg-dark-900/90 p-1 rounded-lg border border-dark-600/80 text-[11px]">
+                        <button type="button" data-evo-mode="week" onclick="setEvolutionMode('week')" class="evo-mode-btn px-2.5 py-1 rounded font-semibold bg-cyan-600 text-white transition-all">Por Semana</button>
+                        <button type="button" data-evo-mode="patch" onclick="setEvolutionMode('patch')" class="evo-mode-btn px-2.5 py-1 rounded font-semibold text-slate-400 hover:text-white transition-all">Por Patch</button>
+                        <button type="button" data-evo-mode="day" onclick="setEvolutionMode('day')" class="evo-mode-btn px-2.5 py-1 rounded font-semibold text-slate-400 hover:text-white transition-all">Diário</button>
+                    </div>
+                    <button type="button" onclick="loadEvolutionDashboard(true)" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-dark-800 hover:bg-dark-700 border border-dark-600 text-xs font-medium text-slate-200 transition-all">
+                        <i data-lucide="refresh-cw" class="h-3.5 w-3.5 text-cyan-400"></i>
+                        <span>Atualizar</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Empty / Loading State -->
+            <div id="evolutionEmpty" class="glass-panel p-6 rounded-xl border border-dark-600/80 text-center text-xs text-slate-400 hidden">
+                Carregando histórico de evolução do modelo...
+            </div>
+
+            <!-- Main Content Body -->
+            <div id="evolutionBody" class="space-y-4 hidden">
+
+                <!-- Top KPI Strip (6 Cards) -->
+                <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                    <div class="glass-panel p-3.5 rounded-xl border border-dark-600/80 space-y-1">
+                        <div class="text-[11px] text-slate-400 uppercase font-medium">Acurácia (Últ. Semana)</div>
+                        <div class="flex items-baseline justify-between gap-2">
+                            <span id="evoKpiAcc" class="text-xl font-bold text-cyan-400 num-font">--</span>
+                            <span id="evoKpiAccDelta" class="text-[11px] font-semibold num-font text-emerald-400">--</span>
+                        </div>
+                        <div id="evoKpiAccSub" class="text-[10px] text-slate-500">vs S0 baseline</div>
+                    </div>
+
+                    <div class="glass-panel p-3.5 rounded-xl border border-dark-600/80 space-y-1">
+                        <div class="text-[11px] text-slate-400 uppercase font-medium">PnL Época Atual / Contínuo</div>
+                        <div id="evoKpiPnlEpoch" class="text-xl font-bold text-emerald-400 num-font">--</div>
+                        <div id="evoKpiPnlCont" class="text-[10px] text-slate-400 num-font">Contínuo S0: --</div>
+                    </div>
+
+                    <div class="glass-panel p-3.5 rounded-xl border border-dark-600/80 space-y-1">
+                        <div class="text-[11px] text-slate-400 uppercase font-medium">Max Drawdown</div>
+                        <div class="flex items-baseline justify-between gap-2">
+                            <span id="evoKpiDdLatest" class="text-xl font-bold text-amber-400 num-font">--</span>
+                            <span id="evoKpiDdGlobal" class="text-[10px] text-slate-400 num-font">Global: --</span>
+                        </div>
+                        <div class="text-[10px] text-slate-500">Último ciclo vs Pico S0</div>
+                    </div>
+
+                    <div class="glass-panel p-3.5 rounded-xl border border-dark-600/80 space-y-1">
+                        <div class="text-[11px] text-slate-400 uppercase font-medium">Profit Factor</div>
+                        <div class="flex items-baseline justify-between gap-2">
+                            <span id="evoKpiPfLatest" class="text-xl font-bold text-emerald-400 num-font">--</span>
+                            <span id="evoKpiPfBase" class="text-[10px] text-slate-400 num-font">S0: --</span>
+                        </div>
+                        <div id="evoKpiPfGlobal" class="text-[10px] text-slate-500 num-font">Global: --</div>
+                    </div>
+
+                    <div class="glass-panel p-3.5 rounded-xl border border-dark-600/80 space-y-1">
+                        <div class="text-[11px] text-slate-400 uppercase font-medium">Expectância / Payoff</div>
+                        <div id="evoKpiExp" class="text-xl font-bold text-white num-font">--</div>
+                        <div id="evoKpiPayoff" class="text-[10px] text-slate-400 num-font">Payoff: -- | Trades: --</div>
+                    </div>
+
+                    <div class="glass-panel p-3.5 rounded-xl border border-dark-600/80 space-y-1">
+                        <div class="text-[11px] text-slate-400 uppercase font-medium">Comitê ML (Memória)</div>
+                        <div id="evoKpiCommAcc" class="text-xl font-bold text-indigo-400 num-font">--</div>
+                        <div id="evoKpiCommGap" class="text-[10px] text-slate-400 num-font">Gap calibração: --</div>
+                    </div>
+                </div>
+
+                <!-- Chart 1: Curva de Equity Contínua & Drawdown Subaquático com Marcos de Patches -->
+                <div class="glass-panel p-4 rounded-xl border border-dark-600/80 space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <h3 class="text-xs font-bold text-white uppercase tracking-wider">Curva de Equity Contínua ($), PnL &amp; Drawdown Subaquático (%)</h3>
+                            <p class="text-[11px] text-slate-400">Linhas tracejadas marcam a entrada de cada patch semanal; ajuste automático no reset de $10k (27/Out).</p>
+                        </div>
+                        <span id="evoTradesCountBadge" class="px-2 py-0.5 rounded text-[10px] font-mono bg-dark-900 border border-dark-600 text-cyan-300">-- trades fechados</span>
+                    </div>
+                    <div id="evolutionEquityChart" class="w-full" style="height: 390px;"></div>
+                </div>
+
+                <!-- Chart 2: Comparativo Periódico (Acurácia, PnL, Max DD, Comitê) -->
+                <div class="glass-panel p-4 rounded-xl border border-dark-600/80 space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <h3 class="text-xs font-bold text-white uppercase tracking-wider">Evolução dos Principais Indicadores (<span id="evoModeSubtitle">Por Semana</span>)</h3>
+                            <p class="text-[11px] text-slate-400">Barras = PnL Líquido ($); Linhas = Acurácia / Win Rate (%), Max Drawdown (%) e Acurácia do Comitê ML (%).</p>
+                        </div>
+                    </div>
+                    <div id="evolutionMetricsChart" class="w-full" style="height: 360px;"></div>
+                </div>
+
+                <!-- Row 3: Rolling Accuracy + Strategy Breakdown -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div class="glass-panel p-4 rounded-xl border border-dark-600/80 space-y-2">
+                        <div>
+                            <h3 class="text-xs font-bold text-white uppercase tracking-wider">Acurácia Móvel (15 Trades) &amp; Acumulada (%)</h3>
+                            <p class="text-[11px] text-slate-400">Evolução trade a trade da assertividade operacional desde a Semana 0.</p>
+                        </div>
+                        <div id="evolutionRollingChart" class="w-full" style="height: 300px;"></div>
+                    </div>
+
+                    <div class="glass-panel p-4 rounded-xl border border-dark-600/80 space-y-2">
+                        <div>
+                            <h3 class="text-xs font-bold text-white uppercase tracking-wider">PnL por Estratégia (<span id="evoStratSubtitle">Por Semana</span>)</h3>
+                            <p class="text-[11px] text-slate-400">Contribuição líquida de SCALP, GOLDEN_POT e DIRECTIONAL em cada ciclo.</p>
+                        </div>
+                        <div id="evolutionStrategyChart" class="w-full" style="height: 300px;"></div>
+                    </div>
+                </div>
+
+                <!-- Scorecard Table -->
+                <div class="glass-panel p-4 rounded-xl border border-dark-600/80 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-xs font-bold text-white uppercase tracking-wider">Scorecard Detalhado de Performance &amp; Risco</h3>
+                        <span class="text-[11px] text-slate-400">Valores líquidos já descontando taxas de abertura e fechamento</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs">
+                            <thead>
+                                <tr class="border-b border-dark-600/80 text-slate-400 uppercase text-[10px]">
+                                    <th class="py-2 px-2">Período</th>
+                                    <th class="py-2 px-2">Patch</th>
+                                    <th class="py-2 px-2 text-right">Trades</th>
+                                    <th class="py-2 px-2 text-right">W / L</th>
+                                    <th class="py-2 px-2 text-right">Acurácia</th>
+                                    <th class="py-2 px-2 text-right">PnL ($)</th>
+                                    <th class="py-2 px-2 text-right">PnL Acum. ($)</th>
+                                    <th class="py-2 px-2 text-right">Max DD</th>
+                                    <th class="py-2 px-2 text-right">Profit Factor</th>
+                                    <th class="py-2 px-2 text-right">Payoff</th>
+                                    <th class="py-2 px-2 text-right">Expectância</th>
+                                    <th class="py-2 px-2 text-right">Taxas ($)</th>
+                                    <th class="py-2 px-2 text-right">Comitê ML</th>
+                                </tr>
+                            </thead>
+                            <tbody id="evolutionScorecardBody" class="divide-y divide-dark-600/30 text-slate-200 num-font"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Patch Impact Cards -->
+                <div class="glass-panel p-4 rounded-xl border border-dark-600/80 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-xs font-bold text-white uppercase tracking-wider">Linha do Tempo de Patches Semanais &amp; Impacto Medido</h3>
+                        <span class="text-[11px] text-slate-400">Referência: CHANGELOG.md &amp; EVOLUTION_LOG.md</span>
+                    </div>
+                    <div id="evolutionPatchesGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3"></div>
+                </div>
+
+            </div><!-- END evolutionBody -->
+        </div><!-- END mainTabEvolution -->
+
     </main>
 
     <!-- FOOTER -->
@@ -1745,6 +1919,7 @@
             const icon = document.getElementById("refreshIcon");
             if (icon) icon.classList.add("animate-spin");
             if (funnelProjectVisible()) loadSignalFunnel();
+            if (evolutionTabVisible()) loadEvolutionDashboard(true);
 
             Promise.all([
                 loadStatus(),
@@ -2085,27 +2260,481 @@
 
         function switchMainTab(tab) {
             const paneTrading = document.getElementById("mainTabTrading");
+            const paneEvolution = document.getElementById("mainTabEvolution");
             const paneProject = document.getElementById("mainTabProject");
             const btnTrading = document.getElementById("tabNavTrading");
+            const btnEvolution = document.getElementById("tabNavEvolution");
             const btnProject = document.getElementById("tabNavProject");
             if (!paneTrading || !paneProject) return;
 
+            const activeCls = "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold bg-cyan-600 text-white shadow-md transition-all";
+            const idleCls = "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-dark-800 transition-all";
+
+            paneTrading.classList.add("hidden");
+            if (paneEvolution) paneEvolution.classList.add("hidden");
+            paneProject.classList.add("hidden");
+            if (btnTrading) btnTrading.className = idleCls;
+            if (btnEvolution) btnEvolution.className = idleCls;
+            if (btnProject) btnProject.className = idleCls;
+
             if (tab === "project") {
-                paneTrading.classList.add("hidden");
                 paneProject.classList.remove("hidden");
+                if (btnProject) btnProject.className = activeCls;
                 loadSignalFunnel();
-                if (btnTrading) btnTrading.className = "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-dark-800 transition-all";
-                if (btnProject) btnProject.className = "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold bg-cyan-600 text-white shadow-md transition-all";
+            } else if (tab === "evolution" && paneEvolution) {
+                paneEvolution.classList.remove("hidden");
+                if (btnEvolution) btnEvolution.className = activeCls;
+                loadEvolutionDashboard();
+                if (typeof Plotly !== "undefined") {
+                    setTimeout(() => {
+                        ["evolutionEquityChart", "evolutionMetricsChart", "evolutionRollingChart", "evolutionStrategyChart"].forEach(id => {
+                            const el = document.getElementById(id);
+                            if (el && el.data) Plotly.Plots.resize(el);
+                        });
+                    }, 60);
+                }
             } else {
                 paneTrading.classList.remove("hidden");
-                paneProject.classList.add("hidden");
-                if (btnTrading) btnTrading.className = "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold bg-cyan-600 text-white shadow-md transition-all";
-                if (btnProject) btnProject.className = "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-dark-800 transition-all";
+                if (btnTrading) btnTrading.className = activeCls;
                 const container = document.getElementById('chartContainer');
                 if (container && typeof Plotly !== "undefined") {
                     setTimeout(() => Plotly.Plots.resize(container), 50);
                 }
             }
+        }
+
+        // ==========================================
+        // EVOLUÇÃO DO MODELO & IMPACTOS DE PATCHES
+        // ==========================================
+        let evolutionMode = "week"; // "week" | "patch" | "day"
+        let evolutionCachedData = null;
+
+        function evolutionTabVisible() {
+            const pane = document.getElementById("mainTabEvolution");
+            return !!pane && !pane.classList.contains("hidden");
+        }
+
+        function _evoNum(v, dec = 2, fallback = "--") {
+            const n = Number(v);
+            return Number.isFinite(n) ? n.toFixed(dec) : fallback;
+        }
+
+        function _evoSignedUsd(v) {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return "--";
+            return (n >= 0 ? "+$" : "-$") + Math.abs(n).toFixed(2);
+        }
+
+        function setEvolutionMode(mode) {
+            evolutionMode = mode;
+            document.querySelectorAll(".evo-mode-btn").forEach(btn => {
+                const on = btn.dataset.evoMode === mode;
+                btn.className = "evo-mode-btn px-2.5 py-1 rounded font-semibold transition-all " +
+                    (on ? "bg-cyan-600 text-white" : "text-slate-400 hover:text-white");
+            });
+            const labelMap = { week: "Por Semana", patch: "Por Patch", day: "Diário" };
+            const sub1 = document.getElementById("evoModeSubtitle");
+            const sub2 = document.getElementById("evoStratSubtitle");
+            if (sub1) sub1.textContent = labelMap[mode] || "Por Semana";
+            if (sub2) sub2.textContent = labelMap[mode] || "Por Semana";
+            if (evolutionCachedData) renderEvolutionView(evolutionCachedData);
+        }
+
+        async function loadEvolutionDashboard(force = false) {
+            if (evolutionCachedData && !force) {
+                renderEvolutionView(evolutionCachedData);
+                return;
+            }
+            const emptyEl = document.getElementById("evolutionEmpty");
+            const bodyEl = document.getElementById("evolutionBody");
+            if (emptyEl && !evolutionCachedData) {
+                emptyEl.textContent = "Carregando histórico de evolução do modelo...";
+                emptyEl.classList.remove("hidden");
+            }
+            try {
+                const res = await fetch("/api/telemetry/evolution");
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                const data = await res.json();
+                evolutionCachedData = data;
+                if (!data || !data.has_data) {
+                    if (bodyEl) bodyEl.classList.add("hidden");
+                    if (emptyEl) {
+                        emptyEl.textContent = "Sem histórico de operações ou portfólio registrado no banco de dados ainda.";
+                        emptyEl.classList.remove("hidden");
+                    }
+                    return;
+                }
+                if (emptyEl) emptyEl.classList.add("hidden");
+                if (bodyEl) bodyEl.classList.remove("hidden");
+                renderEvolutionView(data);
+            } catch (err) {
+                if (bodyEl && !evolutionCachedData) bodyEl.classList.add("hidden");
+                if (emptyEl && !evolutionCachedData) {
+                    emptyEl.textContent = "Não foi possível carregar os dados de evolução no momento.";
+                    emptyEl.classList.remove("hidden");
+                }
+            }
+        }
+
+        function _evoActiveRows(data) {
+            if (evolutionMode === "patch") return data.by_patch || [];
+            if (evolutionMode === "day") return data.by_day || [];
+            return data.by_week || [];
+        }
+
+        function renderEvolutionView(data) {
+            const s = data.summary || {};
+            const rows = _evoActiveRows(data);
+
+            // KPI Cards
+            const accEl = document.getElementById("evoKpiAcc");
+            const accDeltaEl = document.getElementById("evoKpiAccDelta");
+            const accSubEl = document.getElementById("evoKpiAccSub");
+            if (accEl) accEl.textContent = _evoNum(s.latest_week_accuracy_pct, 1) + "%";
+            if (accDeltaEl) {
+                const dpp = Number(s.accuracy_delta_pp);
+                const sign = Number.isFinite(dpp) && dpp >= 0 ? "+" : "";
+                accDeltaEl.textContent = Number.isFinite(dpp) ? `${sign}${dpp.toFixed(1)} pp` : "--";
+                accDeltaEl.className = "text-[11px] font-semibold num-font " + (dpp >= 0 ? "text-emerald-400" : "text-rose-400");
+            }
+            if (accSubEl) accSubEl.textContent = `S0 baseline: ${_evoNum(s.baseline_accuracy_pct, 1)}% | Global: ${_evoNum(s.accuracy_pct, 1)}%`;
+
+            const pnlEpEl = document.getElementById("evoKpiPnlEpoch");
+            const pnlContEl = document.getElementById("evoKpiPnlCont");
+            if (pnlEpEl) {
+                const ep = Number(s.current_epoch_pnl_usd);
+                pnlEpEl.textContent = _evoSignedUsd(ep);
+                pnlEpEl.className = "text-xl font-bold num-font " + (ep >= 0 ? "text-emerald-400" : "text-rose-400");
+            }
+            if (pnlContEl) {
+                const cp = Number(s.cum_pnl_usd);
+                const pct = Number(s.cum_pnl_pct);
+                pnlContEl.textContent = `Contínuo S0: ${_evoSignedUsd(cp)} (${Number.isFinite(pct) ? (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%" : "--"})`;
+            }
+
+            const lastRow = rows.length ? rows[rows.length - 1] : null;
+            const ddLatEl = document.getElementById("evoKpiDdLatest");
+            const ddGlobEl = document.getElementById("evoKpiDdGlobal");
+            if (ddLatEl) ddLatEl.textContent = _evoNum(lastRow ? lastRow.max_drawdown_pct : s.max_drawdown_pct, 2) + "%";
+            if (ddGlobEl) ddGlobEl.textContent = `Global: ${_evoNum(s.max_drawdown_pct, 2)}%`;
+
+            const pfLatEl = document.getElementById("evoKpiPfLatest");
+            const pfBaseEl = document.getElementById("evoKpiPfBase");
+            const pfGlobEl = document.getElementById("evoKpiPfGlobal");
+            if (pfLatEl) {
+                const pfv = Number(s.latest_week_pf);
+                pfLatEl.textContent = _evoNum(pfv, 2);
+                pfLatEl.className = "text-xl font-bold num-font " + (pfv >= 1.2 ? "text-emerald-400" : pfv >= 1.0 ? "text-amber-400" : "text-rose-400");
+            }
+            if (pfBaseEl) pfBaseEl.textContent = `S0: ${_evoNum(s.baseline_pf, 2)}`;
+            if (pfGlobEl) pfGlobEl.textContent = `Global: ${_evoNum(s.profit_factor, 2)} | Taxas: $${_evoNum(s.total_fees_usd, 2)}`;
+
+            const expEl = document.getElementById("evoKpiExp");
+            const payEl = document.getElementById("evoKpiPayoff");
+            if (expEl) {
+                const ex = Number(s.expectancy_usd);
+                expEl.textContent = _evoSignedUsd(ex);
+                expEl.className = "text-xl font-bold num-font " + (ex >= 0 ? "text-emerald-400" : "text-rose-400");
+            }
+            if (payEl) payEl.textContent = `Payoff: ${_evoNum(s.payoff_ratio, 2)}x | Trades: ${s.total_trades || 0}`;
+
+            const commAccEl = document.getElementById("evoKpiCommAcc");
+            const commGapEl = document.getElementById("evoKpiCommGap");
+            if (commAccEl) commAccEl.textContent = s.committee_accuracy_pct !== null && s.committee_accuracy_pct !== undefined ? _evoNum(s.committee_accuracy_pct, 1) + "%" : "--";
+            if (commGapEl) commGapEl.textContent = s.calibration_gap_pct !== null && s.calibration_gap_pct !== undefined ? `Gap confiança: ${_evoNum(s.calibration_gap_pct, 1)} pp` : "Aguardando memória ML";
+
+            const badge = document.getElementById("evoTradesCountBadge");
+            if (badge) badge.textContent = `${s.total_trades || 0} trades fechados (${s.winning_trades || 0}W / ${s.losing_trades || 0}L)`;
+
+            renderEvolutionEquityChart(data);
+            renderEvolutionMetricsChart(rows);
+            renderEvolutionRollingChart(data);
+            renderEvolutionStrategyChart(rows);
+            renderEvolutionScorecard(rows);
+            renderEvolutionPatchCards(data);
+            if (window.lucide) { try { lucide.createIcons(); } catch (_) {} }
+        }
+
+        function _evoBaseLayout(extra = {}) {
+            return Object.assign({
+                paper_bgcolor: "rgba(0,0,0,0)",
+                plot_bgcolor: "rgba(15, 23, 42, 0.45)",
+                font: { color: "#cbd5e1", size: 11, family: "Inter, system-ui, sans-serif" },
+                margin: { l: 55, r: 55, t: 28, b: 42 },
+                hovermode: "x unified",
+                legend: { orientation: "h", x: 0, y: 1.12, font: { size: 10, color: "#94a3b8" } },
+            }, extra);
+        }
+
+        function renderEvolutionEquityChart(data) {
+            const el = document.getElementById("evolutionEquityChart");
+            if (!el || typeof Plotly === "undefined") return;
+            const port = data.portfolio_series || [];
+            const trades = data.trade_series || [];
+            const patches = data.patches || [];
+            const resets = data.resets || [];
+
+            const traces = [];
+            if (port.length > 0) {
+                traces.push({
+                    x: port.map(p => p.dt),
+                    y: port.map(p => p.adj_equity),
+                    type: "scatter",
+                    mode: "lines",
+                    name: "Equity Contínua ($)",
+                    line: { color: "#22d3ee", width: 2.2 },
+                    yaxis: "y",
+                    hovertemplate: "Equity Contínua: $%{y:,.2f}<extra></extra>",
+                });
+                traces.push({
+                    x: port.map(p => p.dt),
+                    y: port.map(p => -p.dd_pct),
+                    type: "scatter",
+                    mode: "lines",
+                    name: "Drawdown (%)",
+                    fill: "tozeroy",
+                    fillcolor: "rgba(244, 63, 94, 0.22)",
+                    line: { color: "#f43f5e", width: 1.4 },
+                    yaxis: "y2",
+                    hovertemplate: "Drawdown: %{y:.2f}%<extra></extra>",
+                });
+            }
+            if (trades.length > 0) {
+                const baseCap = Number(data.initial_capital || 10000);
+                traces.push({
+                    x: trades.map(t => t.dt),
+                    y: trades.map(t => baseCap + Number(t.cum_pnl || 0)),
+                    type: "scatter",
+                    mode: "lines+markers",
+                    name: "PnL Realizado Acum. ($10k+)",
+                    line: { color: "#34d399", width: 1.6, dash: "dot" },
+                    marker: { size: 4, color: trades.map(t => Number(t.pnl) >= 0 ? "#10b981" : "#fb7185") },
+                    yaxis: "y",
+                    hovertemplate: "%{text}<extra></extra>",
+                    text: trades.map(t => `${t.symbol} (${t.strategy}) | PnL: ${_evoSignedUsd(t.pnl)} | Acum: ${_evoSignedUsd(t.cum_pnl)}`),
+                });
+            }
+
+            const shapes = [];
+            const annotations = [];
+            const xMin = port.length ? port[0].dt : (trades.length ? trades[0].dt : "");
+            const xMax = port.length ? port[port.length - 1].dt : (trades.length ? trades[trades.length - 1].dt : "");
+
+            patches.forEach((p, idx) => {
+                const md = p.marker_date + " 00:00";
+                if (xMin && xMax && md <= xMax) {
+                    const useX = md < xMin ? xMin : md;
+                    shapes.push({
+                        type: "line", x0: useX, x1: useX, y0: 0, y1: 1, yref: "paper",
+                        line: { color: "rgba(129, 140, 248, 0.55)", width: 1.2, dash: "dash" },
+                    });
+                    annotations.push({
+                        x: useX, y: 1.01, yref: "paper", xanchor: "left", yanchor: "bottom",
+                        text: p.short, showarrow: false,
+                        font: { size: 10, color: "#c7d2fe" },
+                        bgcolor: "rgba(49, 46, 129, 0.65)", bordercolor: "rgba(99, 102, 241, 0.5)", borderwidth: 1, borderpad: 2,
+                    });
+                }
+            });
+
+            resets.forEach(r => {
+                shapes.push({
+                    type: "line", x0: r.dt, x1: r.dt, y0: 0, y1: 1, yref: "paper",
+                    line: { color: "rgba(251, 191, 36, 0.7)", width: 1.4, dash: "dot" },
+                });
+                annotations.push({
+                    x: r.dt, y: 0.34, yref: "paper", xanchor: "left", yanchor: "bottom",
+                    text: "Reset $10k", showarrow: false,
+                    font: { size: 9, color: "#fde68a" },
+                    bgcolor: "rgba(120, 53, 15, 0.7)", borderpad: 2,
+                });
+            });
+
+            const layout = _evoBaseLayout({
+                margin: { l: 60, r: 24, t: 38, b: 36 },
+                xaxis: { gridcolor: "rgba(51,65,85,0.35)", showgrid: true },
+                yaxis: { domain: [0.34, 1.0], title: "Equity ($)", gridcolor: "rgba(51,65,85,0.35)", tickprefix: "$" },
+                yaxis2: { domain: [0.0, 0.26], title: "DD %", gridcolor: "rgba(51,65,85,0.35)", ticksuffix: "%" },
+                shapes,
+                annotations,
+            });
+            Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
+        }
+
+        function renderEvolutionMetricsChart(rows) {
+            const el = document.getElementById("evolutionMetricsChart");
+            if (!el || typeof Plotly === "undefined") return;
+            const labels = rows.map(r => r.label);
+            const pnls = rows.map(r => Number(r.pnl_usd || 0));
+            const accs = rows.map(r => Number(r.accuracy_pct || 0));
+            const dds = rows.map(r => Number(r.max_drawdown_pct || 0));
+            const commAccs = rows.map(r => r.committee_accuracy_pct !== null && r.committee_accuracy_pct !== undefined ? Number(r.committee_accuracy_pct) : null);
+
+            const traces = [
+                {
+                    x: labels, y: pnls, type: "bar", name: "PnL Líquido ($)",
+                    marker: { color: pnls.map(v => v >= 0 ? "rgba(16, 185, 129, 0.72)" : "rgba(244, 63, 94, 0.72)") },
+                    yaxis: "y",
+                    hovertemplate: "PnL: $%{y:.2f}<extra></extra>",
+                },
+                {
+                    x: labels, y: accs, type: "scatter", mode: "lines+markers", name: "Acurácia / Win Rate (%)",
+                    line: { color: "#22d3ee", width: 2.5 }, marker: { size: 7 },
+                    yaxis: "y2",
+                    hovertemplate: "Acurácia: %{y:.1f}%<extra></extra>",
+                },
+                {
+                    x: labels, y: dds, type: "scatter", mode: "lines+markers", name: "Max Drawdown (%)",
+                    line: { color: "#f59e0b", width: 2, dash: "dash" }, marker: { size: 6, symbol: "diamond" },
+                    yaxis: "y2",
+                    hovertemplate: "Max DD: %{y:.2f}%<extra></extra>",
+                },
+            ];
+            if (commAccs.some(v => v !== null)) {
+                traces.push({
+                    x: labels, y: commAccs, type: "scatter", mode: "lines+markers", name: "Comitê ML (%)",
+                    line: { color: "#a78bfa", width: 2, dash: "dot" }, marker: { size: 6 },
+                    connectgaps: false, yaxis: "y2",
+                    hovertemplate: "Comitê ML: %{y:.1f}%<extra></extra>",
+                });
+            }
+
+            const layout = _evoBaseLayout({
+                xaxis: { gridcolor: "rgba(51,65,85,0.35)" },
+                yaxis: { title: "PnL ($)", gridcolor: "rgba(51,65,85,0.35)", zeroline: true, zerolinecolor: "rgba(148,163,184,0.4)", tickprefix: "$" },
+                yaxis2: { title: "Taxa / DD (%)", overlaying: "y", side: "right", range: [0, 100], showgrid: false, ticksuffix: "%" },
+            });
+            Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
+        }
+
+        function renderEvolutionRollingChart(data) {
+            const el = document.getElementById("evolutionRollingChart");
+            if (!el || typeof Plotly === "undefined") return;
+            const trades = data.trade_series || [];
+            if (!trades.length) {
+                Plotly.newPlot(el, [], _evoBaseLayout({ annotations: [{ text: "Sem trades fechados", showarrow: false, font: { color: "#64748b" } }] }), { responsive: true, displayModeBar: false });
+                return;
+            }
+            const x = trades.map(t => `#${t.idx} (${t.date.slice(5)})`);
+            const traces = [
+                {
+                    x, y: trades.map(t => t.rolling_acc_pct), type: "scatter", mode: "lines",
+                    name: "Acurácia Móvel (15 trades)", line: { color: "#22d3ee", width: 2.3 },
+                    hovertemplate: "%{x}<br>Acurácia 15T: %{y:.1f}%<extra></extra>",
+                },
+                {
+                    x, y: trades.map(t => t.cum_acc_pct), type: "scatter", mode: "lines",
+                    name: "Acurácia Acumulada (%)", line: { color: "#a78bfa", width: 1.8, dash: "dash" },
+                    hovertemplate: "Acumulada: %{y:.1f}%<extra></extra>",
+                },
+            ];
+            const layout = _evoBaseLayout({
+                margin: { l: 48, r: 18, t: 28, b: 38 },
+                xaxis: { gridcolor: "rgba(51,65,85,0.3)", nticks: 8 },
+                yaxis: { title: "Acurácia (%)", range: [0, 100], gridcolor: "rgba(51,65,85,0.35)", ticksuffix: "%" },
+                shapes: [{ type: "line", x0: 0, x1: 1, xref: "paper", y0: 50, y1: 50, line: { color: "rgba(148,163,184,0.35)", dash: "dot", width: 1 } }],
+            });
+            Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
+        }
+
+        function renderEvolutionStrategyChart(rows) {
+            const el = document.getElementById("evolutionStrategyChart");
+            if (!el || typeof Plotly === "undefined") return;
+            const stratDefs = [
+                { key: "SCALP", name: "SCALP", color: "#22d3ee" },
+                { key: "GOLDEN_POT", name: "GOLDEN_POT", color: "#f59e0b" },
+                { key: "DIRECTIONAL", name: "DIRECTIONAL", color: "#818cf8" },
+                { key: "CARRY", name: "CARRY", color: "#34d399" },
+            ];
+            const labels = rows.map(r => r.label);
+            const traces = [];
+            stratDefs.forEach(st => {
+                const ys = rows.map(r => Number(((r.strategies || {})[st.key] || {}).pnl_usd || 0));
+                if (ys.some(v => Math.abs(v) > 0.001)) {
+                    traces.push({
+                        x: labels, y: ys, type: "bar", name: st.name,
+                        marker: { color: st.color },
+                        text: rows.map(r => {
+                            const info = (r.strategies || {})[st.key];
+                            return info ? `${st.name}: ${info.trades}T | Acc ${info.accuracy_pct}% | PnL $${info.pnl_usd}` : `${st.name}: 0T`;
+                        }),
+                        hovertemplate: "%{text}<extra></extra>",
+                    });
+                }
+            });
+            const layout = _evoBaseLayout({
+                barmode: "group",
+                margin: { l: 52, r: 18, t: 28, b: 38 },
+                xaxis: { gridcolor: "rgba(51,65,85,0.3)" },
+                yaxis: { title: "PnL ($)", gridcolor: "rgba(51,65,85,0.35)", zeroline: true, zerolinecolor: "rgba(148,163,184,0.4)", tickprefix: "$" },
+            });
+            Plotly.newPlot(el, traces, layout, { responsive: true, displayModeBar: false });
+        }
+
+        function renderEvolutionScorecard(rows) {
+            const tbody = document.getElementById("evolutionScorecardBody");
+            if (!tbody) return;
+            if (!rows.length) {
+                tbody.innerHTML = `<tr><td colspan="13" class="py-4 text-center text-slate-500">Sem registros para o recorte selecionado.</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = rows.map(r => {
+                const pnl = Number(r.pnl_usd || 0);
+                const cum = Number(r.cum_pnl_usd || 0);
+                const acc = Number(r.accuracy_pct || 0);
+                const pf = Number(r.profit_factor || 0);
+                const exp = Number(r.expectancy_usd || 0);
+                const comm = r.committee_accuracy_pct !== null && r.committee_accuracy_pct !== undefined ? `${_evoNum(r.committee_accuracy_pct, 1)}% (${r.committee_n})` : "--";
+                return `<tr class="hover:bg-dark-800/50 transition-colors">
+                    <td class="py-2 px-2 font-semibold text-white whitespace-nowrap">${escapeHtml(r.label)}</td>
+                    <td class="py-2 px-2"><span class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">${escapeHtml(r.meta || "--")}</span></td>
+                    <td class="py-2 px-2 text-right">${r.trades || 0}</td>
+                    <td class="py-2 px-2 text-right text-slate-300">${r.wins || 0} / ${r.losses || 0}</td>
+                    <td class="py-2 px-2 text-right font-semibold ${acc >= 50 ? "text-cyan-400" : "text-slate-300"}">${_evoNum(acc, 1)}%</td>
+                    <td class="py-2 px-2 text-right font-semibold ${pnl >= 0 ? "text-emerald-400" : "text-rose-400"}">${_evoSignedUsd(pnl)}</td>
+                    <td class="py-2 px-2 text-right ${cum >= 0 ? "text-emerald-300" : "text-rose-300"}">${_evoSignedUsd(cum)}</td>
+                    <td class="py-2 px-2 text-right text-amber-400">${_evoNum(r.max_drawdown_pct, 2)}%</td>
+                    <td class="py-2 px-2 text-right font-semibold ${pf >= 1.2 ? "text-emerald-400" : pf >= 1.0 ? "text-amber-300" : "text-rose-400"}">${_evoNum(pf, 2)}</td>
+                    <td class="py-2 px-2 text-right">${_evoNum(r.payoff_ratio, 2)}x</td>
+                    <td class="py-2 px-2 text-right ${exp >= 0 ? "text-emerald-400" : "text-rose-400"}">${_evoSignedUsd(exp)}</td>
+                    <td class="py-2 px-2 text-right text-slate-400">$${_evoNum(r.fees_usd, 2)}</td>
+                    <td class="py-2 px-2 text-right text-indigo-300">${comm}</td>
+                </tr>`;
+            }).join("");
+        }
+
+        function renderEvolutionPatchCards(data) {
+            const grid = document.getElementById("evolutionPatchesGrid");
+            if (!grid) return;
+            const patches = data.patches || [];
+            const byPatch = {};
+            (data.by_patch || []).forEach(b => { byPatch[b.label] = b; });
+
+            grid.innerHTML = patches.map(p => {
+                const m = byPatch[p.short] || null;
+                const pnl = m ? Number(m.pnl_usd || 0) : 0;
+                const acc = m ? _evoNum(m.accuracy_pct, 1) + "%" : "--";
+                const dd = m ? _evoNum(m.max_drawdown_pct, 2) + "%" : "--";
+                const pf = m ? _evoNum(m.profit_factor, 2) : "--";
+                const trades = m ? (m.trades || 0) : 0;
+                const pnlCls = !m ? "text-slate-400" : pnl >= 0 ? "text-emerald-400" : "text-rose-400";
+                return `<div class="p-3 rounded-xl bg-dark-900/70 border border-dark-600/80 space-y-2 flex flex-col justify-between">
+                    <div class="space-y-1">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="text-xs font-bold text-white">${escapeHtml(p.short)}</span>
+                            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-950/70 text-cyan-300 border border-cyan-800/60">${escapeHtml(p.version)}</span>
+                        </div>
+                        <div class="text-[10px] text-slate-500 font-mono">${escapeHtml(p.start_date)} → ${escapeHtml(p.end_date || "Atual")}</div>
+                        <p class="text-[11px] text-slate-300 leading-snug">${escapeHtml(p.summary)}</p>
+                    </div>
+                    <div class="pt-2 border-t border-dark-700/80 grid grid-cols-2 gap-1.5 text-[11px] num-font">
+                        <div><span class="text-slate-500">Acc:</span> <strong class="text-cyan-400">${acc}</strong></div>
+                        <div><span class="text-slate-500">PnL:</span> <strong class="${pnlCls}">${m ? _evoSignedUsd(pnl) : "--"}</strong></div>
+                        <div><span class="text-slate-500">Max DD:</span> <strong class="text-amber-400">${dd}</strong></div>
+                        <div><span class="text-slate-500">PF:</span> <strong class="text-slate-200">${pf}</strong> <span class="text-[10px] text-slate-500">(${trades}T)</span></div>
+                    </div>
+                </div>`;
+            }).join("");
         }
 
         function _getChartXRange(container) {

@@ -4,6 +4,34 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.7] - 2026-11-15 - Patch S4.2: Blindagem Multi-Estratégia, Reabilitação Universal do Scalp 15m e Paridade
+
+### Adicionado
+- **Reabilitação Universal do Scalp 15m (`smart_trade.py`, `scripts/run_paper_simulation.py`):**
+  - Integração do ensemble dedicado 15m (`models/lgbm_15m_v1.joblib` e `models/rf_15m_v1.joblib`) com gatilho Squeeze Bollinger Bands / Keltner Channels e filtro de convicção `ML 15m >= 0.45` (baseado no estudo `E10.9 x ML 15m OOS`).
+  - Saída estrutural com alvo único (`SL 1.4x ATR`, `TP 2.2x ATR`, `tp1_fraction=0.0`, `tp2_fraction=0.0`), eliminando a armadilha de atrito da escada `TP1 BE +4bps`.
+  - Operação universal com risco defensivo de `0.50x` em todos os 3 pares principais (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`) sob gate estrito `Tape status == "OK"`.
+- **Trava de Correlação no Directional 1h (`scripts/run_paper_simulation.py`):**
+  - Implementada restrição `MAX_SAME_DIR_MAJORS = 2`, impedindo exposição direcional simultânea em mais de 2 majors e mitigando o risco de squeeze triplo.
+- **Filtro Macro no Golden Pot 5m (`scripts/run_paper_simulation.py`):**
+  - Adicionado gate de alinhamento com a SMA 200 de 1h do BTC (`BTCUSDT 1h dist_sma_200` dentro de `±1.5%`), bloqueando compras contra tendência macro baixista.
+  - Implementada política L2 híbrida `M4`: lote integral (`1.00x`) quando `Tape status == "OK"` e lote defensivo (`0.50x`) sob `UNAVAILABLE`, mantendo cobertura ampla de altcoins para aprendizado.
+- **Aba de Evolução & Telemetria no Dashboard (`web/routes.py`, `web/templates/index.html`):**
+  - Adicionado endpoint `/api/telemetry/evolution` e interface gráfica para acompanhamento contínuo de PnL, Win Rate, acurácia por regime e calibração de modelos por versão/semana.
+
+### Modificado
+- **Gate de Microestrutura no Directional (`scripts/run_paper_simulation.py`):**
+  - Endurecido `_flow_gate` para modo *fail-closed* estrito nos majors, exigindo `status == "OK"` e eliminando passagens cegas (`UNAVAILABLE_PASSED`).
+
+### Corrigido
+- **Paridade do Motor de Backtest com Produção (`backtesting.py`):**
+  - Portada para o simulador de backtest a proteção intra-barra `closed_safe` (`v1.0.5`), garantindo paridade estrita na avaliação de Breakeven Stops contra pavios intra-barra.
+- **Calibração e Telemetria em Produção (`learning_tracker.py`, `agents/regime_classifier.py`):**
+  - Corrigida persistência do `brier_score` real em `agent_learning_memory` e ampliada janela de classificação de regime para `LIMIT 250`.
+  - Deduplicadas velas não-binance em `candles` com prioridade canônica `binance`.
+
+---
+
 ## [1.0.5] - 2026-11-05 - Sprint S3: Proteção Intra-Barra do Breakeven Stop contra Pavios Iniciais
 
 ### Corrigido

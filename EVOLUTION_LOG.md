@@ -1012,3 +1012,22 @@ Ao avançar qualquer tarefa ou módulo, a entrada deve seguir o padrão:
       - `RollbackGuard.reset_circuit_breaker()` executado com sucesso: estado restaurado para `CLEAR` (`is_trading_allowed = True`).
     - **4. Reinício e Liberação dos Daemons:**
       - Supervisor reiniciou o `paper_trading_daemon` com o novo código e saldo renovado. Status: 100% operante e escaneando o mercado.
+
+- **Patch S4.2 (v1.0.7) — Fechamento da S4, Descoberta ML 15m e Blindagem Multi-Estratégia (2026-11-15):**
+  - **1. Fechamento Consolidado da S4 (09/11 a 15/11/2026 — Janela Isolada):**
+    - `33` posições fechadas (`+2` posições abertas `SHORT` em `ETHUSDT` e `BTCUSDT`), patrimônio evoluindo de `$9.892,04` para `$11.604,55`, com lucro líquido real (`true_net`) de **`+$1.649,79`** (`WR 63,6%`, `TP2+ 45,5%`, `PF 3,21`, `Payoff 1,83`, `Sharpe 5,28`, `MaxDD 5,11%`).
+    - *Directional 1h:* `18` trades (`18 SHORT`), `WR 72,2%` (`TP2+ 66,7%`), `PF 4,12`, líquido `+$1.750,94`.
+    - *Golden Pot 5m:* `13` trades (`8S/5L`), `WR 61,5%` (`TP2+ 23,1%`), `PF 0,64`, líquido `-$48,99` (`LONG -$46,87`, `SHORT -$2,12`).
+    - *Scalp 15m:* `2` trades, `WR 0,0%`, líquido `-$52,17`.
+    - *Auditoria ML 50k:* Refutada como trava rígida no Directional (`5/7` wins com vs `8/11` sem; ambos os stops de domingo continham `ML 50k`), preservando amostragem completa; no Golden Pot manteve `7/8` wins (`87,5%`, `+$41,40`), conservada para modulação de confiança sem veto rígido.
+  - **2. Descoberta Empírica OOS do Scalp 15m (`E10.9 x ML 15m`, PurgedTimeSeriesSplit Maio–Nov/2026):**
+    - Identificada expectativa matemática positiva em 15m com ensemble dedicado:
+      - `A6_SQUEEZE_KELTNER_PULLBACK + ML15m >= 0.45`: `N=37`, `WR 54,0%`, `PF 1,447`, $\mathbb{E}[R] = +0,293R$, consistente em `H1` (`50,0% / PF 1,39`) e `H2` (`56,0% / PF 1,48`); por par: `SOL 60,0%` (`PF 1,75`), `ETH 52,9%` (`PF 1,38`), `BTC 40,0%` (`PF 0,72`).
+      - `A5_SQUEEZE_KELTNER_TAKER + ML15m >= 0.45`: `N=38`, `WR 52,6%`, `PF 1,217`, $\mathbb{E}[R] = +0,189R$.
+  - **3. Frentes Homologadas e Aplicadas no Patch S4.2 (`v1.0.7`):**
+    - *Frente 0 (Base S4.1 & Paridade):* Ativação definitiva de persistência de Brier score (`LearningTracker`), janela `LIMIT 250` no `RegimeClassifier`, descarte de velas sobrepostas não-binance, nova aba de evolução no dashboard e paridade intra-barra `closed_safe` em `backtesting.py`.
+    - *Frente 1 (Directional 1h):* Cap de correlação `MAX_SAME_DIR_MAJORS = 2` e `_flow_gate` estrito *fail-closed* (`status == "OK"` obrigatório nos majors).
+    - *Frente 2 (Scalp 15m Universal — Opção 3B):* Ativação dos modelos dedicados `models/lgbm_15m_v1.joblib` e `models/rf_15m_v1.joblib` com trigger Squeeze BB/Keltner, filtro `ML 15m >= 0.45`, `Tape status == "OK"` e saída de alvo único (`SL 1.4x ATR`, `TP 2.2x ATR`, removendo armadilha de `TP1 BE`) a `0.50x` de risco defensivo nos 3 majors (`BTC`, `ETH`, `SOL`).
+    - *Frente 3 (Golden Pot 5m):* Filtro macro `BTCUSDT 1h dist_sma_200` (`±1,5%`) e política L2 híbrida `M4` (`1.00x` quando `OK`, `0.50x` defensivo quando `UNAVAILABLE`), sem isolamento de altcoins.
+    - *Frente 4 (Governança & Continuidade):* Registro formal da hipótese `E10.11`, certificação da suíte de testes e hot-restart do supervisor preservando posições ativas.
+

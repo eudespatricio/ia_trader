@@ -74,6 +74,44 @@ class TradingCore:
         self.llm_assistant = llm_assistant or ChatGPTAssistant(enabled=False)
         self.learning_tracker: Optional[Any] = None
 
+    def _resolve_regime(self, context: Dict[str, Any]) -> str:
+        """
+        Patch S4 (v1.0.6-s4): Resolve o regime de mercado efetivo da barra/contexto.
+        Ordem de precedência:
+        1. `context["regime"]` explícito (quando injetado pelo chamador ou testes).
+        2. Tendência estrutural da barra via `dist_sma_200` (ou `close` vs `sma_200`) quando |dist| >= 0.8%,
+           evitando que ativos em tendência direcional clara caiam espuriamente em SIDEWAYS_RANGE.
+        3. Último regime global em `market_regime` (via LearningTracker) ou fallback `"SIDEWAYS_RANGE"`.
+        """
+        explicit = context.get("regime")
+        if explicit:
+            return str(explicit)
+
+        try:
+            dist200 = context.get("dist_sma_200")
+            if dist200 is None:
+                c_val = float(context.get("close") or 0.0)
+                s_val = float(context.get("sma_200") or 0.0)
+                if c_val > 0.0 and s_val > 0.0:
+                    dist200 = (c_val - s_val) / s_val
+            if dist200 is not None:
+                d_flt = float(dist200)
+                if d_flt == d_flt and abs(d_flt) >= 0.008:
+                    return "BULL_TREND" if d_flt > 0.0 else "BEAR_TREND"
+        except (TypeError, ValueError):
+            pass
+
+        lt = getattr(self, "learning_tracker", None)
+        if lt is not None and hasattr(lt, "_get_connection"):
+            try:
+                with lt._get_connection() as con:
+                    row = con.execute("SELECT regime FROM market_regime ORDER BY timestamp DESC LIMIT 1").fetchone()
+                if row and row[0]:
+                    return str(row[0])
+            except Exception:
+                pass
+        return "SIDEWAYS_RANGE"
+
     def _resolve_regime_weights(
         self, context: Dict[str, Any], weights_override: Optional[Dict[str, float]] = None
     ) -> Optional[Dict[str, float]]:
@@ -84,11 +122,7 @@ class TradingCore:
         if lt is None or not hasattr(lt, "get_calibrated_weights_for_regime"):
             return None
         try:
-            regime = context.get("regime")
-            if not regime:
-                with lt._get_connection() as con:
-                    row = con.execute("SELECT regime FROM market_regime ORDER BY timestamp DESC LIMIT 1").fetchone()
-                regime = row[0] if row else "SIDEWAYS_RANGE"
+            regime = self._resolve_regime(context)
             return lt.get_calibrated_weights_for_regime(str(regime))
         except Exception:
             return None
@@ -101,11 +135,7 @@ class TradingCore:
         if lt is None or not hasattr(lt, "get_agent_calibration_for_regime"):
             return None
         try:
-            regime = context.get("regime")
-            if not regime:
-                with lt._get_connection() as con:
-                    row = con.execute("SELECT regime FROM market_regime ORDER BY timestamp DESC LIMIT 1").fetchone()
-                regime = row[0] if row else "SIDEWAYS_RANGE"
+            regime = self._resolve_regime(context)
             return lt.get_agent_calibration_for_regime(str(regime))
         except Exception:
             return None
@@ -134,13 +164,15 @@ class TradingCore:
                 agent_signals=[sentinel_signal],
                 consensus_summary=f"OPERAÇÃO VETADA PELO SENTINELA: {sentinel_signal.rationale}",
             )
-            return self.signal_generator.generate(
+            sig = self.signal_generator.generate(
                 decision=decision,
                 symbol=symbol,
                 current_price=current_price,
                 atr=atr,
                 timestamp=timestamp,
             )
+            sig.metrics["regime"] = self._resolve_regime(context)
+            return sig
 
         # 2. Avaliação dos demais agentes
         signals: List[AgentSignal] = [sentinel_signal]
@@ -151,7 +183,7 @@ class TradingCore:
         # 3. Deliberação do Juiz de Consenso
         eff_weights = self._resolve_regime_weights(context, weights_override)
         eff_calib = self._resolve_regime_calibration(context)
-        regime_str = str(context.get("regime") or "SIDEWAYS_RANGE")
+        regime_str = self._resolve_regime(context)
         decision = self.consensus_judge.judge_deterministic(
             signals, eff_weights, regime=regime_str, agent_calibration=eff_calib
         )
@@ -174,13 +206,15 @@ class TradingCore:
                 )
 
         # 5. Geração do Sinal Operacional
-        return self.signal_generator.generate(
+        sig = self.signal_generator.generate(
             decision=decision,
             symbol=symbol,
             current_price=current_price,
             atr=atr,
             timestamp=timestamp,
         )
+        sig.metrics["regime"] = regime_str
+        return sig
 
     async def evaluate_market_async(
         self,
@@ -207,13 +241,15 @@ class TradingCore:
                 agent_signals=[sentinel_signal],
                 consensus_summary=f"OPERAÇÃO VETADA PELO SENTINELA: {sentinel_signal.rationale}",
             )
-            return self.signal_generator.generate(
+            sig = self.signal_generator.generate(
                 decision=decision,
                 symbol=symbol,
                 current_price=current_price,
                 atr=atr,
                 timestamp=timestamp,
             )
+            sig.metrics["regime"] = self._resolve_regime(context)
+            return sig
 
         # 2. Executa os demais agentes em paralelo
         other_agents = [a for a in self.agents if a.name != self.risk_sentinel.name]
@@ -237,7 +273,7 @@ class TradingCore:
         # 3. Deliberação do Juiz de Consenso (com timeout LLM opcional de 1.0s)
         eff_weights = self._resolve_regime_weights(context)
         eff_calib = self._resolve_regime_calibration(context)
-        regime_str = str(context.get("regime") or "SIDEWAYS_RANGE")
+        regime_str = self._resolve_regime(context)
         decision = await self.consensus_judge.judge_async(
             signals=signals,
             llm_assistant=self.llm_assistant,
@@ -265,13 +301,15 @@ class TradingCore:
                 )
 
         # 5. Geração do Sinal Operacional
-        return self.signal_generator.generate(
+        sig = self.signal_generator.generate(
             decision=decision,
             symbol=symbol,
             current_price=current_price,
             atr=atr,
             timestamp=timestamp,
         )
+        sig.metrics["regime"] = regime_str
+        return sig
 
     def evaluate_multi_strategy(
         self,

@@ -71,3 +71,27 @@ def test_rsi_all_gains_is_100_not_neutral_50(tmp_path):
     df = pd.DataFrame({"close": close, "high": close + 0.5, "low": close - 0.5})
     res = MarketRegimeClassifier(db_path=str(tmp_path / "r.db")).classify_from_df(df)
     assert res.metrics["rsi_14"] == 100.0
+
+
+def test_consolidated_bear_trend_with_pause_in_24h():
+    """Tendência de baixa consolidada (< SMA50 < SMA200, -4% da SMA200) permanece BEAR_TREND com pausa 24p."""
+    # 225 barras caindo de 80k para 70k, depois 25 barras oscilando com ret_24p ~= -0.5% e RSI < 50
+    closes = [80000.0 - i * 44.0 for i in range(225)]
+    base = closes[-1]
+    for i in range(24):
+        closes.append(base - (5.0 if i % 2 == 0 else -3.0) - i * 1.5)
+    closes.append(closes[-24] * 0.995)  # ret_24p == -0.5%
+    n = len(closes)
+    df = pd.DataFrame({
+        "timestamp": [1700000000000 + i * 3600000 for i in range(n)],
+        "open": closes,
+        "high": [c + 20.0 for c in closes],
+        "low": [c - 20.0 for c in closes],
+        "close": closes,
+        "volume": [1000.0 for _ in range(n)],
+    })
+    res = MarketRegimeClassifier(db_path=None).classify_from_df(df)
+    assert res.metrics["has_real_sma200"] is True
+    assert res.regime == "BEAR_TREND"
+    assert res.bias == "BEARISH"
+

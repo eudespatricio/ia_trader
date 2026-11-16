@@ -534,6 +534,28 @@ class TestInstitutionalAgentRefinements:
         assert sig_sell_veto.is_veto is True
         assert "SUPPORT_PROXIMITY" in sig_sell_veto.metrics["veto_type"]
 
+        # Rompimento em céu aberto (dist_resistance_pct=0.0 oriundo de NaN -> fillna(0.0), nearest_bsl=0.0) -> NÃO VETA
+        ctx_breakout_buy = {
+            "intended_direction": "BUY",
+            "dist_resistance_pct": 0.0,
+            "nearest_bsl": 0.0,
+            "liquidity_sweep_bull": 0,
+        }
+        sig_breakout_buy = sentinel.evaluate(ctx_breakout_buy)
+        assert sig_breakout_buy.is_veto is False
+        assert sig_breakout_buy.metrics.get("status") == "CLEAR"
+
+        # Rompimento de fundo em céu aberto (dist_support_pct=0.0, nearest_ssl=0.0) -> NÃO VETA
+        ctx_breakout_sell = {
+            "intended_direction": "SELL",
+            "dist_support_pct": 0.0,
+            "nearest_ssl": 0.0,
+            "liquidity_sweep_bear": 0,
+        }
+        sig_breakout_sell = sentinel.evaluate(ctx_breakout_sell)
+        assert sig_breakout_sell.is_veto is False
+        assert sig_breakout_sell.metrics.get("status") == "CLEAR"
+
     def test_signal_generator_asymmetric_poi_risk_reward(self):
         """SignalGenerator calibra Stop Loss mais curto e Take Profit mais longo com POI / Sweeps."""
         gen = SignalGenerator(capital=10000.0, tp_atr_multiple=1.5, sl_atr_multiple=1.0)
@@ -696,4 +718,23 @@ class TestDecisionAuditRegressions:
         decision_bull = judge.judge_deterministic(sigs, regime="BULL_TREND", agent_calibration=calib)
         tech_bull = next(s for s in decision_bull.agent_signals if s.agent_name == "TechnicalAgent")
         assert tech_bull.confidence == pytest.approx(0.85)
+
+    @pytest.mark.asyncio
+    async def test_core_propagates_resolved_regime_into_trade_signal_metrics(self):
+        """TradingCore grava o regime efetivo em TradeSignal.metrics['regime'] nos caminhos síncrono e assíncrono."""
+        from core import TradingCore
+
+        core = TradingCore()
+        ctx_bear = {
+            "close": 97000.0, "open": 97500.0, "high": 97600.0, "low": 96800.0,
+            "volume": 2000.0, "volume_sma": 1000.0, "sma_200": 100000.0,
+            "dist_sma_200": -0.03, "rsi_14": 40.0, "atr_14": 500.0,
+        }
+        sig_det = core.evaluate_market_deterministic(ctx_bear, symbol="BTCUSDT", current_price=97000.0, atr=500.0, timestamp=1)
+        assert sig_det.metrics.get("regime") == "BEAR_TREND"
+
+        ctx_bull = {**ctx_bear, "close": 103000.0, "dist_sma_200": 0.03, "rsi_14": 60.0}
+        sig_async = await core.evaluate_market_async(ctx_bull, symbol="BTCUSDT", current_price=103000.0, atr=500.0, timestamp=2, use_llm=False)
+        assert sig_async.metrics.get("regime") == "BULL_TREND"
+
 

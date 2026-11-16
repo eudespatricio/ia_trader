@@ -526,3 +526,15 @@ def get_total_trials_count() -> int:
         return initialize_trial_log()
     df = pd.read_csv(TRIAL_LOG_PATH)
     return len(df)
+
+
+def get_prior_trials_count(log_path: Optional[str] = None) -> int:
+    """Conta as linhas de dados registradas em datasets/reports/trial_log.csv (fallback 83)."""
+    target_path = log_path or TRIAL_LOG_PATH
+    if not os.path.exists(target_path):
+        return 83
+    df = pd.read_csv(target_path)
+    return int(len(df))
+
+
+load_prior_trials = get_prior_trials_count

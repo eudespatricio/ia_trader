@@ -97,11 +97,11 @@ def load_candles_from_sqlite(symbol: str, timeframe: str) -> pd.DataFrame:
         SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume
         FROM candles
         WHERE symbol = ? AND timeframe = ?
-        ORDER BY timestamp ASC
+        ORDER BY timestamp ASC, CASE WHEN exchange='binance' THEN 0 ELSE 1 END ASC
     """
     df = pd.read_sql_query(query, conn, params=(symbol.upper(), timeframe.lower()))
     conn.close()
-    return df
+    return df.drop_duplicates(subset=["timestamp"], keep="first").reset_index(drop=True)
 
 
 def calculate_bootstrap_ci(trades: List[TradeRecord], n_iterations: int = 1000) -> Tuple[float, float]:

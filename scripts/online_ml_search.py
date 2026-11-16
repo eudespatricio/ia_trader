@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from data.feature_engineering import FeatureEngineer  # noqa: E402
-from statistical_rigor import calculate_annualized_sharpe, deflated_sharpe_ratio  # noqa: E402
+from statistical_rigor import calculate_annualized_sharpe, deflated_sharpe_ratio, get_prior_trials_count  # noqa: E402
 import lightgbm as lgb  # noqa: E402
 
 DB = "file:" + os.path.join(ROOT, "datasets", "market_cache.db") + "?mode=ro"
@@ -40,7 +40,7 @@ DEV_END = pd.Timestamp("2025-10-13 23:00")
 HOLD_START, HOLD_END = pd.Timestamp("2025-10-14 00:00"), pd.Timestamp("2026-10-13 23:00")
 TP_M, SL_M, COST = 1.5, 1.0, 0.0016  # sobrescritos por --tp/--sl
 EV_MIN = 0.10
-PRIOR_TRIALS = 97     # tentativas anteriores à rodada de padrões (95 + 2 maker)
+PRIOR_TRIALS = get_prior_trials_count()  # derivado dinamicamente de datasets/reports/trial_log.csv
 NEW_TRIALS = 2        # rodada de padrões: H=24 e H=48 com --patterns (N do DSR = 99)
 WARMUP = 300
 FIRST_PRED = pd.Timestamp("2022-01-01")

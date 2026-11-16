@@ -227,12 +227,26 @@ class LearningTracker:
         all_weights: Dict[str, Dict[str, float]] = {}
 
         try:
+            # Patch S4 (v1.0.6-s4): Janela deslizante pós-S2/S3 (a partir de 02/11/2026 = 1793577600000 ms,
+            # últimas 30 decisões concluídas), evitando que falhas legadas da S1/S2 (v1.0.0-v1.0.3)
+            # contaminem permanentemente o ECE dos modelos recém-curados da S3/S4.
+            s3_epoch_ms = 1793577600000
             with self._get_connection() as conn:
                 rows = conn.execute("""
                     SELECT regime, consensus_direction, agent_signals_json, outcome, realized_pnl
                     FROM agent_learning_memory
-                    WHERE outcome IN ('WIN', 'LOSS')
-                """).fetchall()
+                    WHERE outcome IN ('WIN', 'LOSS') AND timestamp >= ?
+                    ORDER BY timestamp DESC
+                    LIMIT 30
+                """, (s3_epoch_ms,)).fetchall()
+                if len(rows) < 5:
+                    rows = conn.execute("""
+                        SELECT regime, consensus_direction, agent_signals_json, outcome, realized_pnl
+                        FROM agent_learning_memory
+                        WHERE outcome IN ('WIN', 'LOSS')
+                        ORDER BY timestamp DESC
+                        LIMIT 30
+                    """).fetchall()
 
             if not rows:
                 # Retorna pesos padrão caso ainda não haja desfechos acumulados
@@ -288,10 +302,13 @@ class LearningTracker:
                     })
 
             # Calcula ECE (Expected Calibration Error) para cada (regime, agente)
+            # Patch S4 (v1.0.6-s4): Para amostras pequenas (5 <= tot < 20), bins finos de 0.10 com 1-2 trades
+            # geram ruído extremo (ex.: 1 LOSS em bin 0.90 produz |0.0 - 0.90| = 0.90). Usa o gap agregado
+            # |mean_acc - mean_conf| quando tot < 20, e ECE particionado em 5 bins quando tot >= 20.
             for key, s in stats.items():
                 preds = s.get("predictions", [])
                 tot = len(preds)
-                if tot >= 5:
+                if tot >= 20:
                     bins = [[] for _ in range(5)]
                     for conf, corr in preds:
                         b_idx = min(4, max(0, int((conf - 0.50) / 0.10)))
@@ -303,6 +320,10 @@ class LearningTracker:
                             b_conf = sum(c for c, _ in b) / len(b)
                             ece += (len(b) / tot) * abs(b_acc - b_conf)
                     s["ece"] = round(ece, 4)
+                elif tot >= 5:
+                    overall_acc = sum(1 for _, c in preds if c) / tot
+                    overall_conf = sum(c for c, _ in preds) / tot
+                    s["ece"] = round(abs(overall_acc - overall_conf), 4)
                 else:
                     s["ece"] = 0.0
 
@@ -366,6 +387,7 @@ class LearningTracker:
                             tot = stats[key]["total"] if key in stats else 0
                             ece = stats[key].get("ece", 0.0) if key in stats else 0.0
 
+                        brier = round(stats[key]["brier_sum"] / stats[key]["total"], 4) if (key in stats and stats[key]["total"] > 0) else 0.0
                         all_weights[r][agent_name] = cal_w
                         conn.execute("""
                             INSERT OR REPLACE INTO agent_regime_weights (
@@ -376,7 +398,7 @@ class LearningTracker:
                             INSERT OR REPLACE INTO agent_regime_calibration (
                                 regime, agent_name, ece, brier_score, updated_at
                             ) VALUES (?, ?, ?, ?, ?)
-                        """, (r, agent_name, ece, 0.0, now_ms))
+                        """, (r, agent_name, ece, brier, now_ms))
 
                 conn.commit()
 
@@ -533,9 +555,10 @@ class ModelEvolutionManager:
         max_candles: int = 50000,
         model_type: str = "lgbm",
         horizon: int = 5,
-        multiple_tp: float = 1.8,
-        multiple_sl: float = 1.0,
-        confidence_threshold: float = 0.55,
+        multiple_tp: float = 1.2,
+        multiple_sl: float = 1.2,
+        confidence_threshold: float = 0.50,
+        force_promote: bool = False,
     ) -> Dict[str, Any]:
         """
         Executa uma rodada completa de treinamento Walk-Forward + avaliação Champion-Challenger
@@ -550,15 +573,23 @@ class ModelEvolutionManager:
         with sqlite3.connect(self.db_path, timeout=15.0) as conn:
             df = pd.read_sql(
                 "SELECT timestamp, open, high, low, close, volume, quote_volume "
-                "FROM candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT ?",
+                "FROM candles WHERE symbol = ? AND timeframe = ? AND (exchange = 'binance' OR exchange IS NULL) "
+                "ORDER BY timestamp DESC LIMIT ?",
                 conn,
                 params=(symbol, timeframe, int(max_candles)),
             )
+            if len(df) < 500:
+                df = pd.read_sql(
+                    "SELECT timestamp, open, high, low, close, volume, quote_volume "
+                    "FROM candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT ?",
+                    conn,
+                    params=(symbol, timeframe, int(max_candles)),
+                )
 
+        df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
         if len(df) < 500:
             return {"status": "SKIPPED", "reason": f"Candles insuficientes ({len(df)} < 500) para {symbol} {timeframe}."}
 
-        df = df.sort_values("timestamp").reset_index(drop=True)
         fe = FeatureEngineer()
         df_feat = fe.compute_all_features(df, drop_na=False)
         if len(df_feat) > 210:
@@ -570,9 +601,10 @@ class ModelEvolutionManager:
             "sma_20", "sma_50", "sma_200", "ema_9", "ema_21", "bb_high", "bb_mid", "bb_low",
             "obv", "vol_sma_20", "atr_14", "nearest_bsl", "nearest_ssl",
         }
+        structural_optional_nan = {"dist_resistance_pct", "dist_support_pct"}
         feature_cols = [
             c for c in df_feat.select_dtypes(include=["number"]).columns
-            if c not in non_stationary and df_feat[c].notna().mean() > 0.95
+            if c not in non_stationary and (c in structural_optional_nan or df_feat[c].notna().mean() > 0.95)
         ]
         df_clean = df_feat[["timestamp", "open", "high", "low", "close", "atr_14"] + feature_cols].fillna(0.0)
 
@@ -604,11 +636,15 @@ class ModelEvolutionManager:
             except Exception as exc:
                 logger.warning(f"Aviso ao ler Champion atual ({filepath}): {exc}")
 
-        promoted, rationale = self.evaluate_challenger(
-            champion_metric=champion_acc if champion_acc > 0 else challenger_acc * 0.95,
-            challenger_metric=challenger_acc,
-            metric_name="emitted_signals_accuracy",
-        )
+        if force_promote:
+            promoted = True
+            rationale = f"PROMOÇÃO FORÇADA (Saneamento de Base Desduplicada): Challenger promovido (acc={challenger_acc:.4f}, global={challenger_global:.4f})."
+        else:
+            promoted, rationale = self.evaluate_challenger(
+                champion_metric=champion_acc if champion_acc > 0 else challenger_acc * 0.95,
+                challenger_metric=challenger_acc,
+                metric_name="emitted_signals_accuracy",
+            )
 
         if promoted:
             if os.path.exists(filepath):

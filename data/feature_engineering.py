@@ -530,8 +530,16 @@ class FeatureEngineer:
         if missing_cols:
             raise ValueError(f"DataFrame de velas não contém as colunas mandatórias: {missing_cols}")
 
-        # Garante ordenação cronológica estrita ascendente
-        df = df.sort_values("timestamp").reset_index(drop=True)
+        # Garante ordenação cronológica estrita ascendente e deduplicação por timestamp (binance prioritário)
+        if df["timestamp"].duplicated().any():
+            if "exchange" in df.columns:
+                df["_ex_prio"] = df["exchange"].astype(str).str.lower() != "binance"
+                df = df.sort_values(["timestamp", "_ex_prio"]).drop_duplicates(subset=["timestamp"], keep="first")
+                df = df.drop(columns=["_ex_prio"]).reset_index(drop=True)
+            else:
+                df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="first").reset_index(drop=True)
+        else:
+            df = df.sort_values("timestamp").reset_index(drop=True)
 
         # Garante coerência geométrica dos dados numéricos
         for col in ["open", "high", "low", "close", "volume"]:

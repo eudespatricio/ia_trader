@@ -267,7 +267,9 @@ class TestEngineIntegrationAndFlaskAPI:
         assert can_golden is False
         assert "Circuit Breaker" in reason_golden
 
-    def test_flask_telemetry_endpoints(self, temp_db):
+    def test_flask_telemetry_endpoints(self, temp_db, monkeypatch):
+        # Isola DB_PATH para o banco temporário de teste (evita poluir datasets/market_cache.db)
+        monkeypatch.setattr("flask_interface.DB_PATH", temp_db)
         # Configura cliente Flask de teste
         client = app.test_client()
 

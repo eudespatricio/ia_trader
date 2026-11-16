@@ -197,7 +197,7 @@ def rows(d):
     ("SELL", "OK", "BUY", False, "BLOCKED"),     # voto oposto
     ("HOLD", "OK", "BUY", False, "BLOCKED"),     # HOLD
     ("HOLD", "OK", "SELL", False, "BLOCKED"),
-    ("HOLD", "UNAVAILABLE", "BUY", True, "UNAVAILABLE_PASSED"),   # fail-open
+    ("HOLD", "UNAVAILABLE", "BUY", False, "BLOCKED"),   # fail-closed em majors (Patch S4.2)
 ])
 def test_gate_decisions_and_log(tmp_path, vote, status, direction, expect, decision):
     d = daemon(tmp_path, FixedTape(vote, status))
@@ -234,3 +234,36 @@ def test_every_signal_logged(tmp_path):
     d._flow_gate("SCALP", "ETHUSDT", "SELL", s, 2.0, 100.0, 1.0)
     assert [r["strategy_type"] for r in rows(d)] == ["SCALP", "GOLDEN_POT", "DIRECTIONAL", "SCALP"]
     assert d.engine.flow_gate_counts() == {"PASSED": 3, "BLOCKED": 1, "UNAVAILABLE_PASSED": 0}
+
+
+def test_refresh_discovers_active_symbols_and_live_fallback_flag(tmp_path, monkeypatch):
+    """refresh_covered_symbols_from_db descobre símbolos via active_symbols e allow_live_fallback funciona com now_ms explícito."""
+    db = make_db(str(tmp_path / "micro_gp.db"), sym="INITUSDT")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE active_symbols (symbol TEXT PRIMARY KEY, updated_at INTEGER)")
+    con.execute("INSERT INTO active_symbols VALUES (?, ?)", ("INITUSDT", NOW - 10_000))
+    con.commit()
+    con.close()
+    ag = TapeReadingAgent(db_path=db)
+    ag.refresh_covered_symbols_from_db(now_ms=NOW)
+    assert "INITUSDT" in ag.covered_symbols
+
+    # allow_live_fallback=True dispara fallback mesmo com now_ms explícito quando MICROSTRUCTURE_DB existe
+    monkeypatch.setattr(tra, "MICROSTRUCTURE_DB", db)
+    ag_fb = TapeReadingAgent(db_path=db)
+    calls = []
+    monkeypatch.setattr(
+        ag_fb,
+        "_evaluate_live_binance_fallback",
+        lambda sym, ts, reason: calls.append((sym, ts, reason)) or {
+            "agent_name": "TapeReadingAgent", "symbol": sym, "vote": "BUY",
+            "status": "OK", "confidence": 0.8, "features": {}, "reason": "mock_fb", "timestamp": ts,
+        },
+    )
+    res_off = ag_fb.evaluate("NEWALTUSDT", "BUY", now_ms=NOW, allow_live_fallback=False)
+    assert res_off["status"] == "UNAVAILABLE" and not calls
+
+    res_on = ag_fb.evaluate("NEWALTUSDT", "BUY", now_ms=NOW, allow_live_fallback=True)
+    assert res_on["status"] == "OK" and res_on["vote"] == "BUY"
+    assert calls == [("NEWALTUSDT", NOW, "symbol_not_covered")]
+

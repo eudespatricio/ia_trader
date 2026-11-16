@@ -281,3 +281,17 @@ class TestInstitutionalFeatures:
         assert "funding_zscore" in feat.columns
         assert feat["funding_rate"].iloc[-1] == 0.0005
 
+    def test_deduplicates_interleaved_exchange_timestamps_prioritizing_binance(self):
+        df_bin = generate_synthetic_candles(n=250, base_price=60000.0)
+        df_bin["exchange"] = "binance"
+        df_bit = df_bin.copy()
+        df_bit["exchange"] = "bitget"
+        df_bit["close"] = df_bit["close"] + 1234.0
+        interleaved = pd.concat([df_bit.iloc[:50], df_bin, df_bit.iloc[50:]], ignore_index=True)
+
+        feat = FeatureEngineer.compute_all_features(interleaved, drop_na=False)
+        assert len(feat) == 250
+        assert not feat["timestamp"].duplicated().any()
+        assert np.allclose(feat["close"].values, df_bin["close"].values)
+
+

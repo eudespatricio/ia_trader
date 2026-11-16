@@ -613,6 +613,24 @@ def get_tape_agent_card(symbol: str, consensus_direction: str = "") -> Dict[str,
     }
 
 
+def _load_recent_candles_1h_priority(con, sym: str, limit: int = 250):
+    """Carrega até `limit` candles recentes priorizando 1h + binance com fallback p/ DBs sintéticos."""
+    import pandas as pd
+    queries = (
+        ("SELECT timestamp, open, high, low, close, volume FROM candles "
+         "WHERE symbol=? AND timeframe='1h' AND exchange='binance' ORDER BY timestamp DESC LIMIT ?", (sym, limit)),
+        ("SELECT timestamp, open, high, low, close, volume FROM candles "
+         "WHERE symbol=? AND timeframe='1h' ORDER BY timestamp DESC LIMIT ?", (sym, limit)),
+        ("SELECT timestamp, open, high, low, close, volume FROM candles "
+         "WHERE symbol=? ORDER BY timestamp DESC LIMIT ?", (sym, limit)),
+    )
+    for sql, params in queries:
+        df = pd.read_sql_query(sql, con, params=params)
+        if not df.empty:
+            return df.drop_duplicates(subset=["timestamp"], keep="first").sort_values("timestamp").reset_index(drop=True)
+    return pd.DataFrame()
+
+
 def get_live_agents_deliberation(symbol: str = "BTCUSDT") -> Dict[str, Any]:
     """
     Executa a deliberação em tempo real do Comitê Multi-Agente com dados reais de mercado
@@ -633,18 +651,11 @@ def get_live_agents_deliberation(symbol: str = "BTCUSDT") -> Dict[str, Any]:
         if os.path.exists(DB_PATH):
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
             with _closing_connect(uri, uri=True, timeout=5.0) as con:
-                df = pd.read_sql_query(
-                    "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol=? ORDER BY timestamp DESC LIMIT 200",
-                    con, params=(sym,)
-                )
+                df = _load_recent_candles_1h_priority(con, sym, limit=250)
                 if df.empty and sym != "BTCUSDT":
-                    df = pd.read_sql_query(
-                        "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' ORDER BY timestamp DESC LIMIT 200",
-                        con
-                    )
+                    df = _load_recent_candles_1h_priority(con, "BTCUSDT", limit=250)
 
         if not df.empty:
-            df = df.sort_values("timestamp").reset_index(drop=True)
             last_close = float(df["close"].iloc[-1])
             last_open = float(df["open"].iloc[-1])
             last_high = float(df["high"].iloc[-1])
@@ -2212,12 +2223,7 @@ def api_regime():
         if os.path.exists(DB_PATH):
             uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
             with _closing_connect(uri, uri=True, timeout=5.0) as con:
-                df_btc = pd.read_sql_query(
-                    "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' ORDER BY timestamp DESC LIMIT 150",
-                    con
-                )
-                if not df_btc.empty:
-                    df_btc = df_btc.sort_values("timestamp").reset_index(drop=True)
+                df_btc = _load_recent_candles_1h_priority(con, "BTCUSDT", limit=250)
         res = clf.classify_from_df(df_btc)
         return jsonify(res.to_dict())
     except Exception as e:
@@ -2247,6 +2253,18 @@ def api_telemetry_performance():
     except Exception as e:
         logger.error(f"Erro ao obter telemetria de performance: {e}")
         return jsonify({"error": str(e), "current_equity": 10000.0, "net_pnl": 0.0}), 500
+
+
+@app.route("/api/telemetry/evolution", methods=["GET"])
+def api_telemetry_evolution():
+    """Retorna evolução histórica desde a Semana 0 (acurácia, PnL, Max DD e impacto por patch; somente leitura)."""
+    try:
+        from performance_tracker import PerformanceTracker
+        tracker = PerformanceTracker(db_path=DB_PATH, read_only=True)
+        return jsonify(tracker.compute_evolution_from_db())
+    except Exception as e:
+        logger.error(f"Erro ao obter evolução histórica do modelo: {e}")
+        return jsonify({"has_data": False, "error": str(e)}), 500
 
 
 @app.route("/api/telemetry/circuit-breaker", methods=["GET"])

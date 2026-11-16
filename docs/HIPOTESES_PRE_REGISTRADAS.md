@@ -371,3 +371,150 @@ Voto: **BUY** se `taker_imb_5m >= +0.15` **E** `book_imb_10 >= +0.10` **E** `mic
    - **Escalonamento de `ATR_PCT_EXTREME` por Timeframe (`leverage_policy.py`):** reducción de `-1x` na alavancagem aplicada em `>= 1.2%` (`3m`), `>= 1.5%` (`5m`), `>= 2.0%` (`15m`), `>= 3.0%` (`1h`) e `>= 5.0%` (`4h`).
    - **Consolidação por `position_id` (`PerformanceTracker` e `LearningTracker`):** métricas de assertividade, `consecutive_losses` (que acionam o `RollbackGuard`) e feedback ao `LearningTracker` utilizam o PnL líquido consolidado da posição (`pos.realized_pnl`), não tratando saídas parciais no `BREAKEVEN_STOP` (`-$0.05`) ou liquidações de `FUNDING` como derrotas independentes.
 
+---
+
+# ADDENDUM E10 — Consolidação S2/S3 → S4 e Alinhamento de Invariantes (`v1.0.6`, 2026-11-08)
+
+## E10.1 Parâmetros Vivos de `STRATEGY_PROFILES` (Resolução C1, C2, C3, C9/I9, C12)
+Este addendum reconcilia a documentação com os parâmetros vivos em `smart_trade.py` validados a partir da calibração da S2 e prevalece sobre E7/E9 onde houver divergência:
+
+| Perfil | Timeframe (`bar_ms`) | `sl_atr_mult` | `tp1_atr_mult` (40%, BE) | `tp2_atr_mult` (30%, ativa Trail) | `tp3_atr_mult` (30%, Runner) | `trail_atr_mult` | `max_holding_bars` |
+|---|---|---|---|---|---|---|---|
+| **SCALP** (BTC/ETH/SOL) | `15m` (`900_000 ms`) | **0.9** | **1.2** (`1.33R`) | **2.0** (`2.22R`) | **3.6** (`4.00R`) | **0.8** | `30` (`7h30`) |
+| **DIRECTIONAL** (Majors) | `1h` (`3_600_000 ms`) | **1.0** | **1.5** (`1.50R`) | **2.5** (`2.50R`) | **4.0** (`4.00R`) | **1.2** | `48` (`48h`) |
+| **GOLDEN_POT** (Altcoins) | `5m` (`300_000 ms`) | **1.5** | **1.5** (`1.00R`) | **2.5** (`1.67R`) | **6.0** (`4.00R`) | **1.5** | `36` (`3h`) |
+
+- **Justificativa da migração SCALP `3m -> 15m` (C1/C2):** Redução do atrito de taxas/slippage de `0.79R` em `3m` para `0.16R` em `15m`, com alvos escalonados `1.2 / 2.0 / 3.6 ATR`.
+- **Justificativa do `tp1_atr_mult = 1.5` no GOLDEN_POT (C3/C12):** Com `sl_atr_mult = 1.5`, o TP1 em `1.5x ATR` garante realização parcial de `1.0R` exato na ida ao breakeven.
+- **Invariante I9:** Coberto por teste de regressão automatizado (`tests/test_strategy_profiles_invariants.py`).
+
+## E10.2 Patches de Execução S3 (`v1.0.5` e `v1.0.6`) (Resolução I1)
+1. **Proteção de Pavio Pré-Rompimento no Breakeven na Mesma Barra (`406c1fd`, `v1.0.5`):** Na barra em que `TP1` é atingido e arma o `BREAKEVEN_STOP`, o pavio adverso da própria barra de expansão (ocorrido antes do rompimento a favor) só aciona o breakeven na mesma barra se o fechamento (`close`) reverter contra o `breakeven_price`, eliminando falsos stops retroativos de intra-barra.
+2. **Ajuste de Tolerância de Barra Recente (`d75fff8`):** Alinhamento de janela de frescor para barras fechadas no loop de avaliação.
+3. **Correção do Falso Veto Estrutural em Rompimentos (`v1.0.6`):** Quando o preço opera em rompimento de topo/fundo sem resistência acima (`nearest_bsl` ausente -> `dist_resistance_pct = NaN`) ou sem suporte abaixo (`nearest_ssl` ausente -> `dist_support_pct = NaN`), a limpeza `clean_features(drop_na=False)` converte `NaN` para `0.0`. O `RiskSentinelAgent` e o `TechnicalAgent` passam a exigir distância estritamente positiva (`0.0 < dist_pct < threshold` e nível `nearest_bsl/ssl > 0`) para acionar `RESISTANCE_PROXIMITY` / `SUPPORT_PROXIMITY`, destravando entradas legítimas de rompimento na S4.
+
+## E10.3 Derivação Dinâmica de `PRIOR_TRIALS` e Registro no `trial_log.csv` (Resolução C4, C5, I2)
+- `statistical_rigor.get_prior_trials_count()` lê diretamente o número de tentativas acumuladas em `datasets/reports/trial_log.csv`.
+- `scripts/strategy_search.py` e `scripts/online_ml_search.py` derivam `PRIOR_TRIALS` dinamicamente de `get_prior_trials_count()`, eliminando constantes literais divergentes.
+- As calibrações de S1 (`TRIAL_0084`), S2 (`TRIAL_0085`) e S3→S4 (`TRIAL_0086`) estão registradas em `datasets/reports/trial_log.csv`.
+
+## E10.4 Critério Operacional de Parada / Alerta por Trajetória de Versão (Resolução C6 / D28 / I11)
+O critério oficial de avaliação até dezembro/2026 é medido **por versão carimbada** (`strategy_version`):
+- **Estagnação:** `E[R]` líquido por trade com IC95 incluindo `0` **e** delta entre versões consecutivas também incluindo `0`.
+- **Retração (Vermelho):** `E[R]` líquido negativo com IC95 excluindo `0`, **ou** drawdown acumulado total `>= 10.0%` (`RollbackGuard.max_total_drawdown_pct = 10.0`, com trava diária operacional `max_daily_drawdown_pct = 5.0`).
+
+## E10.5 Patch S4 Abertura (`v1.0.6-s4`, 2026-11-09) — Destravamento de Calibração e Regime Dinâmico
+1. **Resolução Dinâmica de Regime no Orquestrador (`core._resolve_regime`):**
+   - Evita o fallback estático cego para `SIDEWAYS_RANGE` quando o contexto não traz a chave `regime`.
+   - Avalia a distância estrutural do preço em relação à SMA 200 (`|dist_sma_200| >= 0.8%`), classificando ativos em expansão tendencial como `BULL_TREND` ou `BEAR_TREND`.
+   - Consulta o registro mais recente em `market_regime` antes de aplicar qualquer fallback.
+2. **Janela Deslizante no `LearningTracker` Pós-S2/S3:**
+   - O cálculo de acurácia, pesos e ECE em `recalibrate_agent_weights` foca na janela pós-virada da S3 (`timestamp >= 1793577600000`), expurgando ruídos legados da S1/S2 e calculando o gap de calibração adaptado para amostragens em formação.
+3. **Dampening Proporcional no Juiz de Consenso (`consensus_judge`):**
+   - A trava defensiva de confiança máxima em `0.55` no regime lateral passa a agir estritamente sobre agentes com sobreconfiança improdutiva (`ECE > 0.15` **e** `Acurácia < 55%`) ou baixa assertividade (`Acurácia < 45%`).
+   - Agentes com assertividade empírica validada na S3 (`Acurácia >= 55%`, como os `64.3%` alcançados na S3) mantêm suas convicções nominais, permitindo que sinais legítimos superem os limiares operacionais (`0.65` Scalp, `0.70` Golden Pot, `0.75` Day Trade).
+
+## E10.6 Patch S4 Contínuo (`v1.0.6-s4.1`, 2026-11-09) — Blindagem Contra Compras de Exaustão no Topo
+1. **Teto de Exaustão por RSI no `TechnicalAgent`:**
+   - Adicionado teto de sobrecompra (`RSI <= 75.0`) para emissão de `BUY` em tendência de alta. Leituras de `RSI > 75.0` são forçadas a `HOLD (0.55)`, impedindo que o momentum tabular confunda topo esticado com aceleração compradora.
+   - Adicionado piso de sobrevenda simétrico (`RSI >= 25.0`) para emissão de `SELL` em tendência de baixa, evitando vendas no fundo esticado (`RSI < 25.0`).
+2. **Aperto e Janela Ampliada no Filtro de Clímax do Golden Pot (`run_paper_simulation.py`):**
+   - Redução de `GP_CLIMAX_RSI_OVERBOUGHT` de `85.0` para **`75.0`** e elevação de `GP_CLIMAX_RSI_OVERSOLD` de `15.0` para **`25.0`**.
+   - Redução de `GP_CLIMAX_MAX_ATR_MOVE` de `2.5x` para **`2.0x ATR`**, avaliando simultaneamente a variação acumulada de 3 e 4 barras (capturando pumps e dumps parabólicos que se estendem por 15-20 minutos).
+
+## E10.7 Validação de Estratégias de Abertura & Reversão de Fluxo — Reauditado em Pilot-Parity & OOS Estrito (2026-11-13, S4)
+Reauditoria completa do estudo de 10/11/2026 (baseado no dump das 21:00 BRT em 09/11/2026 e no perfil horário completo de `174.341` velas 1h limpas pós-`sma_200` em `BTCUSDT`/`ETHUSDT`/`SOLUSDT`):
+
+1. **Invalidação Empírica dos Números Anteriores (10/11/2026):**
+   - **`68,1%` WR (bug inicial):** Causado por duplicação intra-barra de timestamps (`binance` + `bitget` coexistindo em ~`12.107–12.280` das `25.000` velas no SQLite), bug de escala `atr_pct` e vazamento in-sample de modelos `.joblib`.
+   - **`51,3%` (Opção A) e `47,5%` (Opção B) / `+13,0%` em BTC:** Invalidados por **vazamento in-sample** (uso dos `.joblib` finais de produção sobre todo o histórico de BTC), simulador *toy* simplificado (sem escada Smart Trade 40/30/30, sem BE `+0,04%`, sem trailing pós-TP2 e sem funding real 8h) e mistura de modelo `1h` no timeframe `15m`.
+   - **Perfil horário `174.341` velas 1h limpas (`21:00 BRT`):** Range/ATR médio `1,093`, Vol Ratio `1,013` e taxa de reversão 4h em movimentos >=0,3% de **`53,09%`** (inferior às `20:00 BRT` com `54,29%` e menor que a expansão das `11:00 BRT` com Range/ATR `1,352` e Vol `1,810`).
+
+2. **Resultados Reais Estritamente OOS em `BacktestEngine(..., pilot_parity=True)` (`TRIAL_0087..TRIAL_0097`):**
+   - **1h OOS (`2025-02-26 23:00 UTC .. 2026-11-13 19:00 UTC`, ML `PurgedTimeSeriesSplit` 4-folds em 1h):**
+     - **Baseline Momentum (1h):** Portfólio `2.995 trades`, WR `40,5%`, PF `0,56`, E[R] `-0,342R`, PnL `-$838,15`, MaxDD `8,48%` (`BTC 39,5%/0,44/-$282` | `ETH 42,6%/0,59/-$263` | `SOL 39,3%/0,61/-$294`).
+     - **Opção A: Flow Reversal (Pura / ML OOS):** Pura `1.979 tr`, WR `39,6%`, PF `0,65`, E[R] `-0,278R`, PnL `-$483,38`; com filtro ML OOS cai para `711 tr`, WR `39,2%`, PF `0,69`, E[R] `-0,302R`, PnL `-$160,11` (`BTC 36,0%/0,46/-$64` | `ETH 37,3%/0,69/-$58` | `SOL 43,2%/0,82/-$39`).
+     - **Opção B: Session Sweep 21/05/11h (Pura / ML OOS):** Pura `553 tr`, WR `38,9%`, PF `0,61`, PnL `-$147,29`; com ML OOS `194 tr`, WR `36,1%`, PF `0,49`, E[R] `-0,417R`, PnL `-$68,31`.
+     - **Opção B-21h: Daily Open 21h BRT (Pura / ML OOS):** Pura `143 tr`, WR `38,5%`, PF `0,74`, E[R] `-0,248R`, PnL `-$26,07` (`ETH 47,3%/0,95/-$2`); com ML OOS `33 tr`, WR `39,4%`, PF `0,51`, E[R] `-0,321R`, PnL `-$10,50`.
+   - **15m OOS (`2026-06-05 08:00 UTC .. 2026-11-13 21:15 UTC`, ML `PurgedTimeSeriesSplit` treinado nativamente em 15m):**
+     - **Opção C Scalp VWAP (Baseline 2.0%):** `129 tr`, WR `44,2%`, PF `0,67`, E[R] `-0,245R`, PnL `-$17,38`.
+     - **Opção C Scalp VWAP (Live DB 0.8%):** `781 tr`, WR `40,3%`, PF `0,55`, E[R] `-0,371R`, PnL `-$112,48`.
+     - **Opção C Scalp VWAP (Calibrado 0.6% / + ML OOS 15m):** Pura `1.080 tr`, WR `40,7%`, PF `0,50`, PnL `-$157,64`; com ML OOS 15m `392 tr`, WR `42,6%`, PF `0,55`, E[R] `-0,365R`, PnL `-$49,65`.
+   - **Conclusão E10.7:** Nenhuma variante autônoma de abertura/reversão em 1h ou 15m sem microestrutura de book/CVD obteve `E[R] > 0` ou `PF > 1,0` líquido de custos reais (`Status: REJECTED` para ativação autônoma).
+
+## E10.8 Saneamento Estrutural do Banco, Reparo de Telemetria/Calibração e Benchmark S4.2 (2026-11-13, S4)
+Auditoria cirúrgica executada em `2026-11-13` (preservando daemons live e `2` posições abertas) com artefatos completos em [`docs/S4_AUDITORIA_EMPIRICA_E_CALIBRACAO.md`](S4_AUDITORIA_EMPIRICA_E_CALIBRACAO.md) e [`datasets/reports/s4_empirical_audit_20261113.json`](../datasets/reports/s4_empirical_audit_20261113.json):
+
+1. **Saneamento de Dados & Isolamento de Testes:**
+   - Removidas `47` linhas `'Reset de teste'` de `circuit_breaker_events` (backup em `datasets/backups/cb_test_pollution_backup_20261113.json`) e isolado `tests/test_performance_and_rollback.py`.
+   - Deduplicadas **`63.008`** velas sobrepostas não-`binance` em `candles` (backup `datasets/backups/candles_overlap_backup_20261113.sqlite`, `0` duplicatas restantes; `174.344` velas 1h limpas em majors) + loaders endurecidos com prioridade `binance`.
+   - **Impacto ML Walk-Forward Antes vs Depois (`25.000` linhas 1h, `14.976` amostras OOS/ativo):** A contaminação inflava artificialmente a acurácia de sinais emitidos (`BTC RF 68,99% -> 43,01%`, `LGBM 61,80% -> 40,06%`; `ETH RF 70,94% -> 41,64%`, `LGBM 58,29% -> 38,24%`; `SOL RF 74,11% -> 36,27%`, `LGBM 65,14% -> 42,07%`) e a acurácia global (`~45–50% -> ~39–41%`), alinhando-se aos `.joblib` auditados (`lgbm_model_v1.joblib`: `41,73%` global / `42,71%` em `487` sinais; `rf_model_v1.joblib`: `41,82%` global / `47,37%` em `57` sinais).
+
+2. **Correções de Telemetria, Regime e Fluxo ao Vivo (Aplicadas e Verificadas):**
+   - `core.py` propaga `regime` para `TradeSignal.metrics`; `agents/regime_classifier.py` usa janela `LIMIT 250` e detecta tendência consolidada (`BEAR_TREND` confirmado no vivo); `learning_tracker.py` persiste `brier_score` real; `TapeReadingAgent` diferencia replay (`allow_live_fallback=False`) de `_flow_gate` live (`allow_live_fallback=True` em `run_paper_simulation.py`).
+   - Backfill de `40` registros pós-S3 em `agent_learning_memory` e recálculo via `LearningTracker.recalibrate_agent_weights()` corrigiu pesos degenerados (`BEAR_TREND`: `Technical 1,314`, `OrderFlow 0,486` com `68,2%` acc em `22` amostras e `Brier 0,217/0,241`; `BULL_TREND`: `0,920 / 0,880` em `6` amostras).
+
+3. **Benchmark S4.2 Antes vs Depois & Gate GO / NO-GO (Thresholds Candidatos Pendentes de Aprovação — Não Aplicados em Produção):**
+   - **Holdout OOS `DIRECTIONAL` 1h (`2024-02-24 .. 2026-11-13`, `TRIAL_0098..TRIAL_0102`):** `DIR_BASE` (`6.883 tr`, `39,4%`, PF `0,629`, `-$5.329,03`, DD `53,68%`, SR `-7,118`) vs `DIR_CAL1_P2` (`6.869 tr`, `-0,2930R`, neutro/descartado como filtro de alfa) vs `DIR_CAL2_CORR_CAP` (`max_same_dir_majors=2`: `5.924 tr`, `-$4.492,47`, DD `-8,57pp` para `45,11%`) vs `DIR_CAL3_REGIME_WEIGHTS` (`5.956 tr`, WR `39,7%`, PF `0,647`, E[R] `-0,2775R`, SR `-6,473`; mantém ganho na subjanela pré-S3 `2024-02-24..2026-10-30` com PF `0,628 -> 0,647` e DD `53,36% -> 44,74%`) vs `DIR_S4_2_COMBINED` (`5.144 tr`, WR `39,6%`, PF `0,649`, E[R] `-0,2815R`, `-$3.722,59`, DD `37,60%`, DSR `0,0000`).
+   - **Holdout OOS `SCALP` 15m (`2026-02-20 .. 2026-11-13`, `TRIAL_0103..TRIAL_0105`):** `SCALP_BASE_DB` (`775 tr`, WR `39,4%`, PF `0,365`, `-$427,02`) vs `SCALP_CAL_TRIGGER` e `SCALP_CAL_ALIGNED` (`721 tr`, WR `39,8%`, PF `0,349`, `-$405,30`; aperto de VWAP/VolZ cortou fallback de `2.688` para `146`, e guarda contra-regime bloqueou `352` candidatos).
+   - **Replay 29d Real em `microstructure.db` (`2026-10-15 .. 2026-11-13`, `122` símbolos):** `TapeReadingAgent` no `DIRECTIONAL` reduziu perdas em `52%` no Base (`194 -> 105 tr`, WR `41,2% -> 45,7%`, `-$103,93 -> -$50,11`) e `65%` no S4.2 combinado (`139 -> 87 tr`, WR `39,6% -> 46,0%`, PF `0,542 -> 0,711`, `-$100,14 -> -$35,09`); no `SCALP` 15m continuou negativo em todas variantes (`PF 0,167..0,259`).
+   - **Contrafactual S4 Ao Vivo (`N=24` fechados desde `2026-11-09 00:00 UTC`):** Realizado antes `+$991,08` (`15/24`, WR `62,5%`) -> com filtros candidatos **`+$1.108,01`** (`11/16`, WR `68,8%`): `DIRECTIONAL` Cap 2 (`+$1.064,93 -> +$1.095,00`), `GOLDEN_POT` macro BTC `dist_sma_200 >= -1,5%` (`-$23,27` em `11 tr` -> **`+$23,05`** em `6 tr`), `SCALP` bloqueio contra-regime (`-$50,58 -> -$10,04`, removendo `ETHUSDT LONG -$40,54` a `-11,75%` da SMA200).
+   - **Decisão Recomendada S4.2:** **GO** como mitigação de risco/drawdown para `DIR_CAL2_CORR_CAP` (`max_same_dir_majors=2`), **GO** para filtro macro BTC em `GOLDEN_POT` e **GO** (como trava/rebaixamento defensivo ou pausa) para `SCALP_CAL_ALIGNED`; **NO-GO** para promover `DIR_CAL1_P2` isolado ou tratar qualquer modelo autônomo sem gate de fluxo como gerador líquido positivo no OOS longo (`E[R] < 0`).
+
+---
+
+## E10.9 Backlog do Patch de Domingo (Itens 1 & 2) e Pesquisa Estrutural de Viabilidade do `SCALP` (2026-11-13, S4)
+
+1. **Backlog Congelado para o Patch S4.2 de Domingo ([PATCH_S4_DOMINGO_BACKLOG.md](file:///home/eudespatricio/ia_trader/docs/PATCH_S4_DOMINGO_BACKLOG.md) — sem alterações em produção nesta sessão):**
+   - **Item 1 (`GOLDEN_POT`, GO):** Alinhamento macro via `BTCUSDT 1h dist_sma_200` (`±1,5%`), bloqueando `LONG` quando BTC `< -1,5%` da SMA200 (`N=11` S4: `-$23,27` -> `+$23,05` em `6` trades `SHORT`).
+   - **Item 2 (`DIRECTIONAL`, GO):** `max_same_dir_majors=2` (DD OOS `53,68% -> 45,11%`, combinado `37,60%`; ao vivo S4 `+$1.064,93 -> +$1.095,00`) + `_flow_gate` estrito exigindo `status == "OK"` em `BTCUSDT`, `ETHUSDT` e `SOLUSDT` (eliminando `unavailable_passed=63` no replay 29d em `microstructure.db`, onde o gate já havia cortado perdas em `65%`: `-$100,14 -> -$35,09`).
+
+2. **Pesquisa Estrutural & Microestrutura do `SCALP` 15m (`E10.9_SCALP_RESEARCH`, `TRIAL_0106..TRIAL_0130`, `BTCUSDT/ETHUSDT/SOLUSDT`):**
+   - **Hipótese pré-registrada:** Testar se a substituição de entrada Taker + escada `40/30/30` com `BE +4bps` (que paga `54%–67%` de `1R` em RT taker e limita ganhos de `TP1` em `+0,27R` líquido contra `-1,34R` no stop em `79,8%` de retornos) por `Limit Pullback` maker (`2 bps`, `0 bp` slip, guarda anti-lookahead na barra de fill), alvos únicos/BE tardio, gatilhos de volatilidade/sessão (`Horizonte A`, 9-13m), séries Binance 5m `oi`/`taker`/`ls_*`/`funding` (`Horizonte B`, 60d) e leitura L2 `book_features`/`tick_agg` (`Horizonte C`, 29d) viabilizaria `E[R] > 0` e `DSR >= 0,95`.
+   - **Resultados verificados ([ESTUDO_SCALP_S4_ALTERNATIVAS.md](file:///home/eudespatricio/ia_trader/docs/ESTUDO_SCALP_S4_ALTERNATIVAS.md), [scalp_research_s4_20261113.json](file:///home/eudespatricio/ia_trader/datasets/reports/scalp_research_s4_20261113.json)):**
+     - **Horizonte A (`TRIAL_0106..TRIAL_0117`):** `A0_LIVE_SIM_PARITY` (`1.027 tr`, PF `0,349`, `E[R] -0,5396`, `-$598,88`) e `A0_LIVE_REAL_TAKER` (`1.027 tr`, PF `0,271`, `E[R] -0,6707`, `-$733,46`). Melhorias estruturais reduziram a perda esperada por trade em até **6x**: `A4_BO20_DELAYED_BE_PULLBACK` (`535 tr`, PF `0,838`, `E[R] -0,1120`, `-$149,91`, DD `1,64%`) e `A8_RANGE_VWAP_REV_PULLBACK` (`69 tr`, WR `47,8%`, PF `0,877`, `E[R] -0,1155`, `-$11,35`), porém todas permaneceram com `E[R] < 0` (`DSR 0,0000`).
+     - **Horizonte B (`TRIAL_0118..TRIAL_0124`, 60d Binance 5m):** `B0_BASE_60D_TAKER` (`152 tr`, PF `0,180`, `E[R] -0,7794`, `-$111,79`). `B4_FUNDING_WINDOW_FADE` atingiu PF `1,218` e `+$7,14` (`N=31 tr`, WR `48,4%`), mas com `E[R] = -0,0573` (IC 95% `[-0,5112, +0,3415]`), `DSR = 0,0000` e `E[R]` negativo em `H1 (-0,0084)` e `H2 (-0,1095)`.
+     - **Horizonte C (`TRIAL_0125..TRIAL_0130`, 29d L2 real):** `C0_BASE_29D_WITH_TAPE_TAKER` (`28 tr`, PF `0,106`, `E[R] -0,9843`, `-$23,12`). Melhor variante foi `C2b_L2_TOXIC_OBI_PULLBACK` (`15 tr`, WR `40,0%`, PF `0,951`, `E[R] -0,0995`, `-$0,86`, `DSR 0,0004`, instável entre H1 PF `5,713` e H2 PF `0,279`).
+   - **Veredito GO / NO-GO (`E10.9`):** **NO-GO** para promoção lucrativa de `SCALP` 15m (`0/25` variantes com `E[R] > 0` e `DSR >= 0,95`). **GO** para **pausar (`enabled=False`) ou rebaixar para modo `shadow` (risco zero)** no Patch de Domingo, mantendo o esqueleto `Limit Pullback` + saída sem armadilha `TP1 BE` apenas para observação passiva enquanto se coleta base L2 mais longa ou se pesquisa `30m/1h`.
+
+---
+
+## E10.10 Impacto do Gate vs Ponderação do `TapeReadingAgent` nas 3 Estratégias (2026-11-13, S4)
+
+1. **Hipótese pré-registrada:** Medir nos dados reais de `flow_gate_log` (`N=804`) e nos 29 dias L2 reais (`microstructure.db`, `2026-10-15 12:30 UTC .. 2026-11-13`) o ganho incremental (`ΔWR`, `PF`, `E[R]`, `PnL`) do `TapeReadingAgent` nas 3 estratégias (`DIRECTIONAL 1h`, `GOLDEN_POT 5m`, `SCALP 15m` — incluindo setups de maior WR do backtest `B4` e `A8`), comparando Sem Tape (`M0`), Gate Fail-Open Live (`M1`), Gate Estrito `OK` (`M2`), Ponderação Contínua `0.65*comitê + 0.35*tape` + sizing (`M3`) e Estrito+Peso (`M4`) ([NOTAS_IMPACTO_TAPE_READING_3_ESTRATEGIAS.md](file:///home/eudespatricio/ia_trader/docs/NOTAS_IMPACTO_TAPE_READING_3_ESTRATEGIAS.md), `TRIAL_0131..TRIAL_0165`).
+2. **Principais achados verificados (`E10.10_TAPE_WEIGHT_3STRAT`):**
+   - **Arquitetura atual:** [core.py](file:///home/eudespatricio/ia_trader/core.py#L62-L69) e [consensus_judge.py](file:///home/eudespatricio/ia_trader/consensus_judge.py#L57-L64) ponderam apenas `OrderFlowAgent` (`0.8`); o `TapeReadingAgent` atua pós-comitê via `_flow_gate` em [run_paper_simulation.py](file:///home/eudespatricio/ia_trader/scripts/run_paper_simulation.py#L531-L581) com brecha `fail-open` (`UNAVAILABLE_PASSED`). Em `flow_gate_log`, `562` sinais bloqueados de `DIRECTIONAL` acumulavam `PF 0,474 / -$479,47` e `103` de `SCALP` acumulavam `PF 0,080 / -$158,82`, enquanto `27/31` entradas do `GOLDEN_POT` passaram com `status == "UNAVAILABLE"`.
+   - **`DIRECTIONAL` (`TRIAL_0131..TRIAL_0135`):** `M1` elevou WR em **`+5,64 pp`** (`38,4% -> 44,0%`, PF `0,530 -> 0,661`, `-$103,38 -> -$41,17`); `M2` reduziu para `55 tr` (`-$43,32`); `M3` ponderado piorou para `-$65,93` (`PF 0,504`) por reintroduzir sinais `HOLD`.
+   - **`GOLDEN_POT` com macro BTC (`TRIAL_0136..TRIAL_0140`):** `M2` estrito estrangula o universo 5m para `2 tr` em 29d (`-$0,10`); `M4` (estrito quando `OK`, `0.50x` quando `symbol_not_covered`) cortou o prejuízo de `-$155,12` (`M0`) para `-$7,62` (`PF 0,384 -> 0,750`, `H2 PF 1,01`).
+   - **`SCALP` campeões de WR (`TRIAL_0141..TRIAL_0165`):** Em `B4_FUNDING_WINDOW_FADE`, `M2`/`M4` atingiram `CANDIDATE` exploratório com `N=6 tr` (`WR 50,0%`, `+3,33 pp`, PF `1,160 / 1,182`, `E[R] +0,0060`) e `M3` reteve `12 tr` (`WR 50,0%`, PF `1,462`, `+$4,43`, `E[R] -0,0188`), ainda sem significância estatística para promoção live. Em `A8` (`8->2 tr`, `-$4,23`) e `A9b` (`104->25 tr`, WR `-5,65 pp`), gate direcional padrão penalizou setups contrarian/sweep.
+3. **Veredito:** Manter `_flow_gate` binário fail-closed nos majors (`DIRECTIONAL`), política híbrida com sizing defensivo em altcoins do `GOLDEN_POT`, e `SCALP` pausado/`shadow` no domingo.
+
+---
+
+## E10.11 Homologação e Aplicação do Patch S4.2 (v1.0.7, 2026-11-15)
+
+1. **Contexto & Fechamento Consolidado da S4 (2026-11-09 a 2026-11-15):**
+   - **Janela isolada S4:** `33` posições fechadas (`+2` posições abertas `SHORT` em `ETHUSDT` e `BTCUSDT`).
+   - **Equity & Risco:** `$9.892,04 -> $11.604,55`, resultado líquido `true_net` **`+$1.649,79`** (`WR 63,6%`, `TP2+ 45,5%`, `PF 3,21`, `Payoff 1,83`, `Sharpe 5,28`, `MaxDD 5,11%`).
+   - **Performance por Estratégia:**
+     - `DIRECTIONAL` 1h: `18` trades (`18 SHORT`), `WR 72,2%` (`TP2+ 66,7%`), `PF 4,12`, líquido **`+$1.750,94`**.
+     - `GOLDEN_POT` 5m: `13` trades (`8 SHORT / 5 LONG`), `WR 61,5%` (`TP2+ 23,1%`), `PF 0,64`, líquido **`-$48,99`** (`LONG -$46,87`, `SHORT -$2,12`).
+     - `SCALP` 15m: `2` trades, `WR 0,0%`, líquido **`-$52,17`**.
+   - **Reavaliação Pós-Sábado da Convergência `ML 50k` no `DIRECTIONAL`:** Teste refutou a hipótese de filtro rígido (*hard filter*): fez `5/7` wins (`71,4%`, `+$549,68`) com ML50k vs `8/11` (`72,7%`, `+$1.201,26`) sem; ambos os stops de domingo continham `[ML 50k]`. No `GOLDEN_POT`, manteve `7/8` (`87,5%`, `+$41,40`) com `ML 50k`, sendo mantida como modulação/telemetria sem bloqueio rígido para preservar amostragem estatística.
+
+2. **Descoberta do Estudo Cruzado `E10.9 x ML 15m OOS` (`PurgedTimeSeriesSplit`, Maio a Nov/2026):**
+   - Treinamento dedicado de ensemble 15m (`models/lgbm_15m_v1.joblib` + `models/rf_15m_v1.joblib`) cruzado com os gatilhos estruturais da suíte `E10.9`:
+   - `A6_SQUEEZE_KELTNER_PULLBACK + ML15m >= 0.45`: `N=37`, `WR 54,0%`, `PF 1,447`, $\mathbb{E}[R] = +0,293R$, positivo em ambas metades temporais (`H1 50,0% / PF 1,39` e `H2 56,0% / PF 1,48`). Por ativo: `SOL 60,0%` (`PF 1,75`), `ETH 52,9%` (`PF 1,38`), `BTC 40,0%` (`PF 0,72`).
+   - `A5_SQUEEZE_KELTNER_TAKER + ML15m >= 0.45`: `N=38`, `WR 52,6%`, `PF 1,217`, $\mathbb{E}[R] = +0,189R$.
+   - **Decisão Arquitetural:** Em vez de manter o Scalp desativado ou isolar pares em quarentena, adotou-se a **Opção 3B Universal** em todos os 3 majors (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`) com risco defensivo de `0.50x`, gerando aprendizado estatístico contínuo até dezembro.
+
+3. **As 5 Frentes Implementadas e Certificadas no Patch S4.2 (`v1.0.7`):**
+   - **Frente 0 (Base S4.1 + Paridade Histórica):** Ativação definitiva via hot-restart da persistência de `brier_score` no `LearningTracker`, janela `LIMIT 250` no `RegimeClassifier`, deduplicação canônica `binance` em `candles`, aba de telemetria e evolução no dashboard web, e porte da proteção intra-barra `closed_safe` (`v1.0.5`) para o motor `backtesting.py`.
+   - **Frente 1 (`DIRECTIONAL` 1h):** Trava de correlação `MAX_SAME_DIR_MAJORS = 2` contra squeezes simultâneos + `_flow_gate` estrito *fail-closed* exigindo `status == "OK"` nos majors.
+   - **Frente 2 (`SCALP` 15m Universal — Opção 3B):** Ensemble nativo 15m (`lgbm_15m_v1` + `rf_15m_v1`) + gatilho `Squeeze BB/Keltner` + filtro de convicção `ML 15m >= 0.45` + `Tape status == "OK"` + saída limpa com alvo único (`SL 1.4x ATR`, `TP 2.2x ATR`, `tp1_fraction=0.0`, `tp2_fraction=0.0`, eliminando a armadilha do `TP1 BE +4bps`) com dimensionamento defensivo a `0.50x` em todos os 3 majors (`BTC`, `ETH`, `SOL`).
+   - **Frente 3 (`GOLDEN_POT` 5m):** Gate macro via `BTCUSDT 1h dist_sma_200` (`±1,5%`) bloqueando contra-tendência + política L2 híbrida `M4` (`1.00x` quando `status == "OK"` e `0.50x` defensivo em `UNAVAILABLE`), mantendo todas as altcoins ativas para telemetria.
+   - **Frente 4 (Governança, Continuidade & Rollback):** Registro formal da hipótese `E10.11`, certificação da suíte de testes unitários/regressão, commit pontual de rollback e hot-restart do supervisor preservando posições abertas.
+
+
+
+

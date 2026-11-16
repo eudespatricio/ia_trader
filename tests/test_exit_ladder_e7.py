@@ -70,7 +70,7 @@ def tick(e, side, k, hi, lo, close=None, ts_off=0):
 
 def open_scalp(e, side="BUY", **kw):
     sig = _sig(direction=side)
-    params = {"tp1_atr_mult": 1.0, "tp2_atr_mult": 2.0, "tp3_atr_mult": 3.0, "sl_atr_mult": 1.0}
+    params = {"tp1_atr_mult": 1.0, "tp2_atr_mult": 2.0, "tp3_atr_mult": 3.0, "sl_atr_mult": 1.0, "trail_atr_mult": 0.8}
     params.update(kw)
     return e.execute_scalp_signal(sig, 100.0, TS0, **params)
 
@@ -161,7 +161,7 @@ def test_trailing_rises_never_falls_and_uses_only_previous_bars(temp_db, side):
     assert pos.trailing_active
     trail0 = pos.trailing_stop_price
     assert trail0 == pytest.approx(m(101.21))             # tp2 - 0.8 x ATR
-    assert pos.trailing_atr_mult == STRATEGY_PROFILES["SCALP"].trail_atr_mult
+    assert pos.trailing_atr_mult == pytest.approx(0.8)
 
     # Barra 3 tem máxima 105 e mínima 103: com stop calculado da PRÓPRIA barra (104.2) sairia; não pode.
     # Ao chegar a barra 3, a barra 2 (fechada, máx 102.1) entra: 102.1 - 0.8 = 101.3; a barra 3 NÃO.

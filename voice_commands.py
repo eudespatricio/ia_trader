@@ -181,12 +181,15 @@ class VoiceCommandDispatcher:
             if os.path.exists(self.db_path):
                 uri = f"file:{os.path.abspath(self.db_path)}?mode=ro"
                 with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
-                    df_btc = pd.read_sql_query(
-                        "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' ORDER BY timestamp DESC LIMIT 150",
-                        con
-                    )
-                    if not df_btc.empty:
-                        df_btc = df_btc.sort_values("timestamp").reset_index(drop=True)
+                    for sql in (
+                        "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' AND timeframe='1h' AND exchange='binance' ORDER BY timestamp DESC LIMIT 250",
+                        "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' AND timeframe='1h' ORDER BY timestamp DESC LIMIT 250",
+                        "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' ORDER BY timestamp DESC LIMIT 250",
+                    ):
+                        df_btc = pd.read_sql_query(sql, con)
+                        if not df_btc.empty:
+                            df_btc = df_btc.drop_duplicates(subset=["timestamp"], keep="first").sort_values("timestamp").reset_index(drop=True)
+                            break
             res = classifier.classify_from_df(df_btc)
             response_text = f"O regime atual do mercado é {res.regime} com viés {res.bias}. Justificativa: {res.rationale}"
             return {

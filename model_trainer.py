@@ -283,6 +283,9 @@ class ModelTrainer:
                 learning_rate=0.03,
                 max_depth=4,
                 num_leaves=15,
+                min_child_samples=100,
+                reg_alpha=1.0,
+                reg_lambda=5.0,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 class_weight="balanced",
@@ -294,8 +297,9 @@ class ModelTrainer:
         else:
             return RandomForestClassifier(
                 n_estimators=200,
-                max_depth=6,
+                max_depth=8,
                 min_samples_split=20,
+                min_samples_leaf=10,
                 max_features="sqrt",
                 class_weight="balanced",
                 n_jobs=self.n_jobs,

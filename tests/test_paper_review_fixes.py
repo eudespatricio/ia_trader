@@ -199,7 +199,10 @@ class TestWinRateByPosition:
     def test_tp1_partial_not_separate_trade(self, temp_db):
         e = make_engine(temp_db)
         # Posição A: TP1 positivo + saída final negativa, soma líquida negativa => 1 loss
-        a = e.execute_scalp_signal(sig("ETHUSDT", "BUY", 2000, atr=10, price=3000), 3000.0, NOW_MS)
+        a = e.execute_scalp_signal(
+            sig("ETHUSDT", "BUY", 2000, atr=10, price=3000), 3000.0, NOW_MS,
+            tp1_atr_mult=1.2, tp2_atr_mult=2.0,
+        )
         e.update_market_tick("ETHUSDT", a.tp1_price + 0.5, a.tp1_price - 1.0, a.tp1_price - 1.0, a.entry_timestamp + 1000)
         e.close_position(a.position_id, a.entry_price - 300.0, NOW_MS + 2000, reason="MANUAL")
         # Posição B: ganho simples
@@ -245,7 +248,7 @@ class _StubLoader:
 
 def _daemon(db, df):
     from run_paper_simulation import PaperTradingDaemon
-    return PaperTradingDaemon(engine=make_engine(db), loader=_StubLoader(df))
+    return PaperTradingDaemon(engine=make_engine(db), loader=_StubLoader(df), require_strict_tape_majors=False)
 
 
 class TestSwingWarmup:

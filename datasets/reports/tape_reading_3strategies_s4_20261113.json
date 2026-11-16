@@ -1,0 +1,2390 @@
+{
+  "generated_at_utc": "2026-11-13T23:15:47.811888+00:00",
+  "elapsed_seconds": 89.94,
+  "window_29d_start_utc": "2026-10-15 12:30 UTC",
+  "window_29d_end_utc": "2026-11-13 22:45 UTC",
+  "block_a_flow_gate_log": {
+    "total_logged": 804,
+    "evaluated": 801,
+    "missing_or_invalid": 3,
+    "by_strategy": {
+      "DIRECTIONAL": {
+        "all_candidates_no_gate": {
+          "count": 639,
+          "win_rate_pct": 48.36,
+          "pf": 0.509,
+          "expectancy_r": -0.2401,
+          "pnl_usd": -505.35
+        },
+        "current_fail_open_executed": {
+          "count": 77,
+          "win_rate_pct": 41.56,
+          "pf": 0.78,
+          "expectancy_r": -0.1777,
+          "pnl_usd": -25.88
+        },
+        "strict_ok_only": {
+          "count": 59,
+          "win_rate_pct": 37.29,
+          "pf": 0.691,
+          "expectancy_r": -0.2321,
+          "pnl_usd": -30.8
+        },
+        "unavail_passed": {
+          "count": 18,
+          "win_rate_pct": 55.56,
+          "pf": 1.273,
+          "expectancy_r": 0.0005,
+          "pnl_usd": 4.92
+        },
+        "blocked_by_gate": {
+          "count": 562,
+          "win_rate_pct": 49.29,
+          "pf": 0.474,
+          "expectancy_r": -0.2486,
+          "pnl_usd": -479.47
+        },
+        "delta_wr_strict_vs_nogate_pp": -11.07,
+        "delta_wr_failopen_vs_nogate_pp": -6.8
+      },
+      "SCALP": {
+        "all_candidates_no_gate": {
+          "count": 131,
+          "win_rate_pct": 25.95,
+          "pf": 0.099,
+          "expectancy_r": -1.1661,
+          "pnl_usd": -175.52
+        },
+        "current_fail_open_executed": {
+          "count": 28,
+          "win_rate_pct": 25.0,
+          "pf": 0.25,
+          "expectancy_r": -1.4225,
+          "pnl_usd": -16.7
+        },
+        "strict_ok_only": {
+          "count": 24,
+          "win_rate_pct": 25.0,
+          "pf": 0.22,
+          "expectancy_r": -1.5341,
+          "pnl_usd": -14.5
+        },
+        "unavail_passed": {
+          "count": 4,
+          "win_rate_pct": 25.0,
+          "pf": 0.402,
+          "expectancy_r": -0.7532,
+          "pnl_usd": -2.2
+        },
+        "blocked_by_gate": {
+          "count": 103,
+          "win_rate_pct": 26.21,
+          "pf": 0.08,
+          "expectancy_r": -1.0964,
+          "pnl_usd": -158.82
+        },
+        "delta_wr_strict_vs_nogate_pp": -0.95,
+        "delta_wr_failopen_vs_nogate_pp": -0.95
+      },
+      "GOLDEN_POT": {
+        "all_candidates_no_gate": {
+          "count": 31,
+          "win_rate_pct": 61.29,
+          "pf": 0.906,
+          "expectancy_r": 0.0266,
+          "pnl_usd": -12.78
+        },
+        "current_fail_open_executed": {
+          "count": 27,
+          "win_rate_pct": 62.96,
+          "pf": 0.85,
+          "expectancy_r": 0.016,
+          "pnl_usd": -16.87
+        },
+        "strict_ok_only": {
+          "count": 0,
+          "win_rate_pct": 0.0,
+          "pf": 0.0,
+          "expectancy_r": 0.0,
+          "pnl_usd": 0.0
+        },
+        "unavail_passed": {
+          "count": 27,
+          "win_rate_pct": 62.96,
+          "pf": 0.85,
+          "expectancy_r": 0.016,
+          "pnl_usd": -16.87
+        },
+        "blocked_by_gate": {
+          "count": 4,
+          "win_rate_pct": 50.0,
+          "pf": 1.171,
+          "expectancy_r": 0.0979,
+          "pnl_usd": 4.09
+        },
+        "delta_wr_strict_vs_nogate_pp": null,
+        "delta_wr_failopen_vs_nogate_pp": 1.67
+      }
+    }
+  },
+  "block_b_29d": {
+    "directional": {
+      "M0_NO_TAPE": {
+        "trades": 138,
+        "win_rate_pct": 38.41,
+        "profit_factor": 0.53,
+        "net_pnl_usd": -103.38,
+        "net_pnl_pct": -1.03,
+        "expectancy_r": -0.3642,
+        "expectancy_r_ci95": [
+          -0.5499,
+          -0.1623
+        ],
+        "max_dd_pct": 1.15,
+        "sharpe_daily_ann": -9.881,
+        "dsr": 0.0032,
+        "total_fees": 43.17,
+        "exit_reasons": {
+          "STOP_LOSS": 84,
+          "BREAKEVEN_STOP": 35,
+          "TRAILING_STOP": 10,
+          "TAKE_PROFIT_3": 7,
+          "HORIZON_TIMEOUT": 1,
+          "END_OF_DATA": 1
+        },
+        "h1": {
+          "trades": 74,
+          "wr": 33.8,
+          "pf": 0.386,
+          "pnl": -71.96
+        },
+        "h2": {
+          "trades": 64,
+          "wr": 43.8,
+          "pf": 0.694,
+          "pnl": -31.42
+        },
+        "gate_stats": {
+          "candidates": 307,
+          "kept": 307,
+          "ok_dir_agree": 0,
+          "ok_hold": 0,
+          "ok_opp_or_spread": 0,
+          "unavail_kept": 0,
+          "unavail_blocked": 0,
+          "score_blocked": 0
+        },
+        "delta_wr_pp": 0.0,
+        "dsr_pool_n": 135,
+        "var_trials_pool": 3.6694
+      },
+      "M1_GATE_FAIL_OPEN": {
+        "trades": 84,
+        "win_rate_pct": 44.05,
+        "profit_factor": 0.661,
+        "net_pnl_usd": -41.17,
+        "net_pnl_pct": -0.41,
+        "expectancy_r": -0.2597,
+        "expectancy_r_ci95": [
+          -0.4943,
+          -0.0016
+        ],
+        "max_dd_pct": 0.65,
+        "sharpe_daily_ann": -4.791,
+        "dsr": 0.0956,
+        "total_fees": 25.97,
+        "exit_reasons": {
+          "TRAILING_STOP": 7,
+          "STOP_LOSS": 47,
+          "BREAKEVEN_STOP": 25,
+          "TAKE_PROFIT_3": 5
+        },
+        "h1": {
+          "trades": 34,
+          "wr": 47.1,
+          "pf": 0.687,
+          "pnl": -13.06
+        },
+        "h2": {
+          "trades": 50,
+          "wr": 42.0,
+          "pf": 0.648,
+          "pnl": -28.1
+        },
+        "gate_stats": {
+          "candidates": 307,
+          "kept": 136,
+          "ok_dir_agree": 73,
+          "ok_hold": 95,
+          "ok_opp_or_spread": 76,
+          "unavail_kept": 63,
+          "unavail_blocked": 0,
+          "score_blocked": 0
+        },
+        "delta_wr_pp": 5.64,
+        "dsr_pool_n": 135,
+        "var_trials_pool": 3.6694
+      },
+      "M2_GATE_STRICT_OK": {
+        "trades": 55,
+        "win_rate_pct": 38.18,
+        "profit_factor": 0.541,
+        "net_pnl_usd": -43.32,
+        "net_pnl_pct": -0.43,
+        "expectancy_r": -0.3294,
+        "expectancy_r_ci95": [
+          -0.6309,
+          0.0148
+        ],
+        "max_dd_pct": 0.55,
+        "sharpe_daily_ann": -6.393,
+        "dsr": 0.0363,
+        "total_fees": 17.27,
+        "exit_reasons": {
+          "TRAILING_STOP": 4,
+          "STOP_LOSS": 34,
+          "BREAKEVEN_STOP": 13,
+          "TAKE_PROFIT_3": 4
+        },
+        "h1": {
+          "trades": 25,
+          "wr": 52.0,
+          "pf": 0.833,
+          "pnl": -5.06
+        },
+        "h2": {
+          "trades": 30,
+          "wr": 26.7,
+          "pf": 0.402,
+          "pnl": -38.26
+        },
+        "gate_stats": {
+          "candidates": 307,
+          "kept": 73,
+          "ok_dir_agree": 73,
+          "ok_hold": 95,
+          "ok_opp_or_spread": 76,
+          "unavail_kept": 0,
+          "unavail_blocked": 63,
+          "score_blocked": 0
+        },
+        "delta_wr_pp": -0.23,
+        "dsr_pool_n": 135,
+        "var_trials_pool": 3.6694
+      },
+      "M3_TAPE_WEIGHTED_SCORE": {
+        "trades": 68,
+        "win_rate_pct": 38.24,
+        "profit_factor": 0.504,
+        "net_pnl_usd": -65.93,
+        "net_pnl_pct": -0.66,
+        "expectancy_r": -0.3722,
+        "expectancy_r_ci95": [
+          -0.6365,
+          -0.0873
+        ],
+        "max_dd_pct": 0.79,
+        "sharpe_daily_ann": -7.846,
+        "dsr": 0.0222,
+        "total_fees": 24.41,
+        "exit_reasons": {
+          "BREAKEVEN_STOP": 17,
+          "TRAILING_STOP": 5,
+          "STOP_LOSS": 42,
+          "TAKE_PROFIT_3": 3,
+          "HORIZON_TIMEOUT": 1
+        },
+        "h1": {
+          "trades": 31,
+          "wr": 48.4,
+          "pf": 0.882,
+          "pnl": -5.13
+        },
+        "h2": {
+          "trades": 37,
+          "wr": 29.7,
+          "pf": 0.32,
+          "pnl": -60.8
+        },
+        "gate_stats": {
+          "candidates": 307,
+          "kept": 156,
+          "ok_dir_agree": 73,
+          "ok_hold": 95,
+          "ok_opp_or_spread": 76,
+          "unavail_kept": 0,
+          "unavail_blocked": 63,
+          "score_blocked": 12
+        },
+        "delta_wr_pp": -0.17,
+        "dsr_pool_n": 135,
+        "var_trials_pool": 3.6694
+      },
+      "M4_STRICT_OK_PLUS_WEIGHT": {
+        "trades": 55,
+        "win_rate_pct": 38.18,
+        "profit_factor": 0.542,
+        "net_pnl_usd": -54.03,
+        "net_pnl_pct": -0.54,
+        "expectancy_r": -0.3294,
+        "expectancy_r_ci95": [
+          -0.6309,
+          0.0148
+        ],
+        "max_dd_pct": 0.69,
+        "sharpe_daily_ann": -6.347,
+        "dsr": 0.0385,
+        "total_fees": 21.48,
+        "exit_reasons": {
+          "TRAILING_STOP": 4,
+          "STOP_LOSS": 34,
+          "BREAKEVEN_STOP": 13,
+          "TAKE_PROFIT_3": 4
+        },
+        "h1": {
+          "trades": 25,
+          "wr": 52.0,
+          "pf": 0.829,
+          "pnl": -6.54
+        },
+        "h2": {
+          "trades": 30,
+          "wr": 26.7,
+          "pf": 0.406,
+          "pnl": -47.49
+        },
+        "gate_stats": {
+          "candidates": 307,
+          "kept": 73,
+          "ok_dir_agree": 73,
+          "ok_hold": 95,
+          "ok_opp_or_spread": 76,
+          "unavail_kept": 0,
+          "unavail_blocked": 63,
+          "score_blocked": 0
+        },
+        "delta_wr_pp": -0.23,
+        "dsr_pool_n": 135,
+        "var_trials_pool": 3.6694
+      }
+    },
+    "golden_pot": {
+      "diagnostics": {
+        "symbols_scanned_5m": 224,
+        "symbols_with_trigger": 180,
+        "raw_momentum_triggers": 890,
+        "committee_agreed_conf70": 243,
+        "macro_btc_blocked": 58,
+        "covered_in_micro_db": 101
+      },
+      "gp_raw_all_symbols": {
+        "M0_NO_TAPE": {
+          "trades": 87,
+          "win_rate_pct": 49.43,
+          "profit_factor": 0.46,
+          "net_pnl_usd": -125.49,
+          "net_pnl_pct": -1.25,
+          "expectancy_r": -0.2476,
+          "expectancy_r_ci95": [
+            -0.4274,
+            -0.0678
+          ],
+          "max_dd_pct": 1.48,
+          "sharpe_daily_ann": -9.229,
+          "dsr": 0.0048,
+          "total_fees": 19.2,
+          "exit_reasons": {
+            "TRAILING_STOP": 13,
+            "STOP_LOSS": 42,
+            "BREAKEVEN_STOP": 27,
+            "HORIZON_TIMEOUT": 4,
+            "END_OF_DATA": 1
+          },
+          "h1": {
+            "trades": 45,
+            "wr": 42.2,
+            "pf": 0.36,
+            "pnl": -103.72
+          },
+          "h2": {
+            "trades": 42,
+            "wr": 57.1,
+            "pf": 0.691,
+            "pnl": -21.76
+          },
+          "gate_stats": {
+            "candidates": 243,
+            "kept": 243,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 16.2015
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 87,
+          "win_rate_pct": 49.43,
+          "profit_factor": 0.459,
+          "net_pnl_usd": -121.12,
+          "net_pnl_pct": -1.21,
+          "expectancy_r": -0.2615,
+          "expectancy_r_ci95": [
+            -0.4403,
+            -0.0819
+          ],
+          "max_dd_pct": 1.44,
+          "sharpe_daily_ann": -10.065,
+          "dsr": 0.0078,
+          "total_fees": 19.23,
+          "exit_reasons": {
+            "TRAILING_STOP": 13,
+            "STOP_LOSS": 43,
+            "BREAKEVEN_STOP": 27,
+            "HORIZON_TIMEOUT": 3,
+            "END_OF_DATA": 1
+          },
+          "h1": {
+            "trades": 45,
+            "wr": 44.4,
+            "pf": 0.374,
+            "pnl": -94.96
+          },
+          "h2": {
+            "trades": 42,
+            "wr": 54.8,
+            "pf": 0.637,
+            "pnl": -26.16
+          },
+          "gate_stats": {
+            "candidates": 243,
+            "kept": 231,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 12,
+            "unavail_kept": 229,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 16.2015
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 2,
+          "win_rate_pct": 50.0,
+          "profit_factor": 0.894,
+          "net_pnl_usd": -0.1,
+          "net_pnl_pct": -0.0,
+          "expectancy_r": -0.1461,
+          "expectancy_r_ci95": [
+            -1.3941,
+            1.1019
+          ],
+          "max_dd_pct": 0.01,
+          "sharpe_daily_ann": -0.27,
+          "dsr": 0.4695,
+          "total_fees": 0.4,
+          "exit_reasons": {
+            "HORIZON_TIMEOUT": 1,
+            "STOP_LOSS": 1
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 100.0,
+            "pf": 99.0,
+            "pnl": 0.89
+          },
+          "h2": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -0.99
+          },
+          "gate_stats": {
+            "candidates": 243,
+            "kept": 2,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 12,
+            "unavail_kept": 0,
+            "unavail_blocked": 229,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 0.57,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 16.2015
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 86,
+          "win_rate_pct": 48.84,
+          "profit_factor": 0.482,
+          "net_pnl_usd": -60.09,
+          "net_pnl_pct": -0.6,
+          "expectancy_r": -0.266,
+          "expectancy_r_ci95": [
+            -0.4552,
+            -0.0794
+          ],
+          "max_dd_pct": 0.72,
+          "sharpe_daily_ann": -8.52,
+          "dsr": 0.0117,
+          "total_fees": 9.51,
+          "exit_reasons": {
+            "TRAILING_STOP": 13,
+            "STOP_LOSS": 42,
+            "BREAKEVEN_STOP": 27,
+            "HORIZON_TIMEOUT": 4
+          },
+          "h1": {
+            "trades": 44,
+            "wr": 43.2,
+            "pf": 0.364,
+            "pnl": -49.48
+          },
+          "h2": {
+            "trades": 42,
+            "wr": 54.8,
+            "pf": 0.723,
+            "pnl": -10.61
+          },
+          "gate_stats": {
+            "candidates": 243,
+            "kept": 213,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 12,
+            "unavail_kept": 211,
+            "unavail_blocked": 18,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": -0.59,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 16.2015
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 50,
+          "win_rate_pct": 36.0,
+          "profit_factor": 0.529,
+          "net_pnl_usd": -21.44,
+          "net_pnl_pct": -0.21,
+          "expectancy_r": -0.5116,
+          "expectancy_r_ci95": [
+            -0.7636,
+            -0.2548
+          ],
+          "max_dd_pct": 0.31,
+          "sharpe_daily_ann": -5.133,
+          "dsr": 0.1025,
+          "total_fees": 5.99,
+          "exit_reasons": {
+            "TRAILING_STOP": 5,
+            "STOP_LOSS": 31,
+            "BREAKEVEN_STOP": 11,
+            "HORIZON_TIMEOUT": 2,
+            "END_OF_DATA": 1
+          },
+          "h1": {
+            "trades": 26,
+            "wr": 34.6,
+            "pf": 0.578,
+            "pnl": -10.48
+          },
+          "h2": {
+            "trades": 24,
+            "wr": 37.5,
+            "pf": 0.47,
+            "pnl": -10.96
+          },
+          "gate_stats": {
+            "candidates": 243,
+            "kept": 58,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 12,
+            "unavail_kept": 56,
+            "unavail_blocked": 173,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": -13.43,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 16.2015
+        }
+      },
+      "gp_macro_btc_all_symbols": {
+        "M0_NO_TAPE": {
+          "trades": 83,
+          "win_rate_pct": 44.58,
+          "profit_factor": 0.384,
+          "net_pnl_usd": -155.12,
+          "net_pnl_pct": -1.55,
+          "expectancy_r": -0.3275,
+          "expectancy_r_ci95": [
+            -0.5132,
+            -0.134
+          ],
+          "max_dd_pct": 1.78,
+          "sharpe_daily_ann": -10.331,
+          "dsr": 0.0014,
+          "total_fees": 18.48,
+          "exit_reasons": {
+            "TRAILING_STOP": 10,
+            "STOP_LOSS": 44,
+            "BREAKEVEN_STOP": 24,
+            "HORIZON_TIMEOUT": 4,
+            "TAKE_PROFIT_3": 1
+          },
+          "h1": {
+            "trades": 42,
+            "wr": 45.2,
+            "pf": 0.419,
+            "pnl": -81.82
+          },
+          "h2": {
+            "trades": 41,
+            "wr": 43.9,
+            "pf": 0.34,
+            "pnl": -73.3
+          },
+          "gate_stats": {
+            "candidates": 185,
+            "kept": 185,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 27.6568
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 83,
+          "win_rate_pct": 45.78,
+          "profit_factor": 0.385,
+          "net_pnl_usd": -148.56,
+          "net_pnl_pct": -1.49,
+          "expectancy_r": -0.3236,
+          "expectancy_r_ci95": [
+            -0.5134,
+            -0.1317
+          ],
+          "max_dd_pct": 1.71,
+          "sharpe_daily_ann": -10.898,
+          "dsr": 0.0022,
+          "total_fees": 18.48,
+          "exit_reasons": {
+            "TRAILING_STOP": 10,
+            "STOP_LOSS": 44,
+            "BREAKEVEN_STOP": 25,
+            "HORIZON_TIMEOUT": 3,
+            "TAKE_PROFIT_3": 1
+          },
+          "h1": {
+            "trades": 42,
+            "wr": 47.6,
+            "pf": 0.44,
+            "pnl": -73.05
+          },
+          "h2": {
+            "trades": 41,
+            "wr": 43.9,
+            "pf": 0.32,
+            "pnl": -75.5
+          },
+          "gate_stats": {
+            "candidates": 185,
+            "kept": 176,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 174,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 1.2,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 27.6568
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 2,
+          "win_rate_pct": 50.0,
+          "profit_factor": 0.894,
+          "net_pnl_usd": -0.1,
+          "net_pnl_pct": -0.0,
+          "expectancy_r": -0.1461,
+          "expectancy_r_ci95": [
+            -1.3941,
+            1.1019
+          ],
+          "max_dd_pct": 0.01,
+          "sharpe_daily_ann": -0.27,
+          "dsr": 0.4695,
+          "total_fees": 0.4,
+          "exit_reasons": {
+            "HORIZON_TIMEOUT": 1,
+            "STOP_LOSS": 1
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 100.0,
+            "pf": 99.0,
+            "pnl": 0.89
+          },
+          "h2": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -0.99
+          },
+          "gate_stats": {
+            "candidates": 185,
+            "kept": 2,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 0,
+            "unavail_blocked": 174,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 5.42,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 27.6568
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 82,
+          "win_rate_pct": 45.12,
+          "profit_factor": 0.376,
+          "net_pnl_usd": -76.93,
+          "net_pnl_pct": -0.77,
+          "expectancy_r": -0.3353,
+          "expectancy_r_ci95": [
+            -0.5237,
+            -0.1355
+          ],
+          "max_dd_pct": 0.88,
+          "sharpe_daily_ann": -10.688,
+          "dsr": 0.0016,
+          "total_fees": 9.15,
+          "exit_reasons": {
+            "TRAILING_STOP": 9,
+            "STOP_LOSS": 43,
+            "BREAKEVEN_STOP": 25,
+            "HORIZON_TIMEOUT": 4,
+            "TAKE_PROFIT_3": 1
+          },
+          "h1": {
+            "trades": 41,
+            "wr": 46.3,
+            "pf": 0.422,
+            "pnl": -39.19
+          },
+          "h2": {
+            "trades": 41,
+            "wr": 43.9,
+            "pf": 0.32,
+            "pnl": -37.74
+          },
+          "gate_stats": {
+            "candidates": 185,
+            "kept": 167,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 165,
+            "unavail_blocked": 9,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 0.54,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 27.6568
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 39,
+          "win_rate_pct": 41.03,
+          "profit_factor": 0.75,
+          "net_pnl_usd": -7.62,
+          "net_pnl_pct": -0.08,
+          "expectancy_r": -0.444,
+          "expectancy_r_ci95": [
+            -0.7318,
+            -0.1302
+          ],
+          "max_dd_pct": 0.18,
+          "sharpe_daily_ann": -1.941,
+          "dsr": 0.3044,
+          "total_fees": 4.64,
+          "exit_reasons": {
+            "TRAILING_STOP": 4,
+            "STOP_LOSS": 23,
+            "BREAKEVEN_STOP": 11,
+            "HORIZON_TIMEOUT": 1
+          },
+          "h1": {
+            "trades": 25,
+            "wr": 40.0,
+            "pf": 0.657,
+            "pnl": -7.7
+          },
+          "h2": {
+            "trades": 14,
+            "wr": 42.9,
+            "pf": 1.01,
+            "pnl": 0.08
+          },
+          "gate_stats": {
+            "candidates": 185,
+            "kept": 43,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 41,
+            "unavail_blocked": 133,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": -3.55,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 27.6568
+        }
+      },
+      "gp_macro_btc_covered_l2_only": {
+        "M0_NO_TAPE": {
+          "trades": 78,
+          "win_rate_pct": 44.87,
+          "profit_factor": 0.383,
+          "net_pnl_usd": -154.68,
+          "net_pnl_pct": -1.55,
+          "expectancy_r": -0.3058,
+          "expectancy_r_ci95": [
+            -0.5068,
+            -0.1026
+          ],
+          "max_dd_pct": 1.85,
+          "sharpe_daily_ann": -10.565,
+          "dsr": 0.0038,
+          "total_fees": 17.24,
+          "exit_reasons": {
+            "TAKE_PROFIT_3": 2,
+            "BREAKEVEN_STOP": 23,
+            "STOP_LOSS": 41,
+            "HORIZON_TIMEOUT": 5,
+            "TRAILING_STOP": 7
+          },
+          "h1": {
+            "trades": 39,
+            "wr": 46.2,
+            "pf": 0.49,
+            "pnl": -69.17
+          },
+          "h2": {
+            "trades": 39,
+            "wr": 43.6,
+            "pf": 0.256,
+            "pnl": -85.51
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 144,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 36.1702
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 76,
+          "win_rate_pct": 44.74,
+          "profit_factor": 0.349,
+          "net_pnl_usd": -164.54,
+          "net_pnl_pct": -1.65,
+          "expectancy_r": -0.3183,
+          "expectancy_r_ci95": [
+            -0.5193,
+            -0.1095
+          ],
+          "max_dd_pct": 1.95,
+          "sharpe_daily_ann": -11.465,
+          "dsr": 0.0034,
+          "total_fees": 16.83,
+          "exit_reasons": {
+            "TAKE_PROFIT_3": 2,
+            "BREAKEVEN_STOP": 22,
+            "STOP_LOSS": 41,
+            "TRAILING_STOP": 7,
+            "HORIZON_TIMEOUT": 4
+          },
+          "h1": {
+            "trades": 38,
+            "wr": 47.4,
+            "pf": 0.445,
+            "pnl": -76.86
+          },
+          "h2": {
+            "trades": 38,
+            "wr": 42.1,
+            "pf": 0.233,
+            "pnl": -87.68
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 135,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 133,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": -0.13,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 36.1702
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 2,
+          "win_rate_pct": 50.0,
+          "profit_factor": 0.894,
+          "net_pnl_usd": -0.1,
+          "net_pnl_pct": -0.0,
+          "expectancy_r": -0.1461,
+          "expectancy_r_ci95": [
+            -1.3941,
+            1.1019
+          ],
+          "max_dd_pct": 0.01,
+          "sharpe_daily_ann": -0.27,
+          "dsr": 0.4695,
+          "total_fees": 0.4,
+          "exit_reasons": {
+            "HORIZON_TIMEOUT": 1,
+            "STOP_LOSS": 1
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 100.0,
+            "pf": 99.0,
+            "pnl": 0.89
+          },
+          "h2": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -0.99
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 2,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 0,
+            "unavail_blocked": 133,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 5.13,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 36.1702
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 75,
+          "win_rate_pct": 44.0,
+          "profit_factor": 0.344,
+          "net_pnl_usd": -83.92,
+          "net_pnl_pct": -0.84,
+          "expectancy_r": -0.3202,
+          "expectancy_r_ci95": [
+            -0.5182,
+            -0.0977
+          ],
+          "max_dd_pct": 0.99,
+          "sharpe_daily_ann": -11.148,
+          "dsr": 0.0026,
+          "total_fees": 8.37,
+          "exit_reasons": {
+            "TAKE_PROFIT_3": 2,
+            "BREAKEVEN_STOP": 21,
+            "STOP_LOSS": 40,
+            "TRAILING_STOP": 7,
+            "HORIZON_TIMEOUT": 5
+          },
+          "h1": {
+            "trades": 37,
+            "wr": 45.9,
+            "pf": 0.428,
+            "pnl": -41.09
+          },
+          "h2": {
+            "trades": 38,
+            "wr": 42.1,
+            "pf": 0.237,
+            "pnl": -42.83
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 127,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 125,
+            "unavail_blocked": 8,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": -0.87,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 36.1702
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 2,
+          "win_rate_pct": 50.0,
+          "profit_factor": 1.032,
+          "net_pnl_usd": 0.04,
+          "net_pnl_pct": 0.0,
+          "expectancy_r": -0.1461,
+          "expectancy_r_ci95": [
+            -1.3941,
+            1.1019
+          ],
+          "max_dd_pct": 0.01,
+          "sharpe_daily_ann": 0.076,
+          "dsr": 0.5086,
+          "total_fees": 0.48,
+          "exit_reasons": {
+            "HORIZON_TIMEOUT": 1,
+            "STOP_LOSS": 1
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 100.0,
+            "pf": 99.0,
+            "pnl": 1.15
+          },
+          "h2": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -1.12
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 2,
+            "ok_dir_agree": 2,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 0,
+            "unavail_blocked": 133,
+            "score_blocked": 0
+          },
+          "delta_wr_pp": 5.13,
+          "dsr_pool_n": 140,
+          "var_trials_pool": 36.1702
+        }
+      }
+    },
+    "scalp": {
+      "SCALP_PROD_BASE": {
+        "M0_NO_TAPE": {
+          "trades": 70,
+          "win_rate_pct": 31.43,
+          "profit_factor": 0.146,
+          "net_pnl_usd": -56.85,
+          "net_pnl_pct": -0.57,
+          "expectancy_r": -0.8759,
+          "expectancy_r_ci95": [
+            -1.0753,
+            -0.6701
+          ],
+          "max_dd_pct": 0.57,
+          "sharpe_daily_ann": -17.465,
+          "dsr": 0.0,
+          "total_fees": 23.1,
+          "exit_reasons": {
+            "STOP_LOSS": 48,
+            "BREAKEVEN_STOP": 20,
+            "TRAILING_STOP": 2
+          },
+          "h1": {
+            "trades": 28,
+            "wr": 32.1,
+            "pf": 0.13,
+            "pnl": -21.71
+          },
+          "h2": {
+            "trades": 42,
+            "wr": 31.0,
+            "pf": 0.156,
+            "pnl": -35.14
+          },
+          "gate_stats": {
+            "candidates": 76,
+            "kept": 76,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 76,
+            "orders_queued": 75,
+            "orders_filled": 70,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 11.5172
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 26,
+          "win_rate_pct": 26.92,
+          "profit_factor": 0.104,
+          "net_pnl_usd": -21.84,
+          "net_pnl_pct": -0.22,
+          "expectancy_r": -1.0151,
+          "expectancy_r_ci95": [
+            -1.3078,
+            -0.696
+          ],
+          "max_dd_pct": 0.23,
+          "sharpe_daily_ann": -13.046,
+          "dsr": 0.0,
+          "total_fees": 8.53,
+          "exit_reasons": {
+            "STOP_LOSS": 19,
+            "BREAKEVEN_STOP": 7
+          },
+          "h1": {
+            "trades": 11,
+            "wr": 27.3,
+            "pf": 0.075,
+            "pnl": -9.15
+          },
+          "h2": {
+            "trades": 15,
+            "wr": 26.7,
+            "pf": 0.123,
+            "pnl": -12.69
+          },
+          "gate_stats": {
+            "candidates": 76,
+            "kept": 27,
+            "ok_dir_agree": 13,
+            "ok_hold": 35,
+            "ok_opp_or_spread": 14,
+            "unavail_kept": 14,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 27,
+            "orders_queued": 26,
+            "orders_filled": 26,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": -4.51,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 11.5172
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 13,
+          "win_rate_pct": 38.46,
+          "profit_factor": 0.183,
+          "net_pnl_usd": -8.38,
+          "net_pnl_pct": -0.08,
+          "expectancy_r": -0.8053,
+          "expectancy_r_ci95": [
+            -1.265,
+            -0.3274
+          ],
+          "max_dd_pct": 0.08,
+          "sharpe_daily_ann": -9.24,
+          "dsr": 0.0002,
+          "total_fees": 4.13,
+          "exit_reasons": {
+            "STOP_LOSS": 8,
+            "BREAKEVEN_STOP": 5
+          },
+          "h1": {
+            "trades": 8,
+            "wr": 37.5,
+            "pf": 0.121,
+            "pnl": -5.38
+          },
+          "h2": {
+            "trades": 5,
+            "wr": 40.0,
+            "pf": 0.274,
+            "pnl": -3.0
+          },
+          "gate_stats": {
+            "candidates": 76,
+            "kept": 13,
+            "ok_dir_agree": 13,
+            "ok_hold": 35,
+            "ok_opp_or_spread": 14,
+            "unavail_kept": 0,
+            "unavail_blocked": 14,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 13,
+            "orders_queued": 13,
+            "orders_filled": 13,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": 7.03,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 11.5172
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 25,
+          "win_rate_pct": 40.0,
+          "profit_factor": 0.15,
+          "net_pnl_usd": -18.92,
+          "net_pnl_pct": -0.19,
+          "expectancy_r": -0.7422,
+          "expectancy_r_ci95": [
+            -1.0403,
+            -0.3831
+          ],
+          "max_dd_pct": 0.2,
+          "sharpe_daily_ann": -12.572,
+          "dsr": 0.0,
+          "total_fees": 8.01,
+          "exit_reasons": {
+            "STOP_LOSS": 15,
+            "BREAKEVEN_STOP": 10
+          },
+          "h1": {
+            "trades": 11,
+            "wr": 36.4,
+            "pf": 0.096,
+            "pnl": -9.22
+          },
+          "h2": {
+            "trades": 14,
+            "wr": 42.9,
+            "pf": 0.195,
+            "pnl": -9.7
+          },
+          "gate_stats": {
+            "candidates": 76,
+            "kept": 44,
+            "ok_dir_agree": 13,
+            "ok_hold": 35,
+            "ok_opp_or_spread": 14,
+            "unavail_kept": 0,
+            "unavail_blocked": 14,
+            "score_blocked": 4
+          },
+          "exec_stats": {
+            "signals_seen": 44,
+            "orders_queued": 44,
+            "orders_filled": 25,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": 8.57,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 11.5172
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 13,
+          "win_rate_pct": 38.46,
+          "profit_factor": 0.182,
+          "net_pnl_usd": -10.29,
+          "net_pnl_pct": -0.1,
+          "expectancy_r": -0.8053,
+          "expectancy_r_ci95": [
+            -1.265,
+            -0.3274
+          ],
+          "max_dd_pct": 0.1,
+          "sharpe_daily_ann": -9.234,
+          "dsr": 0.0002,
+          "total_fees": 5.1,
+          "exit_reasons": {
+            "STOP_LOSS": 8,
+            "BREAKEVEN_STOP": 5
+          },
+          "h1": {
+            "trades": 8,
+            "wr": 37.5,
+            "pf": 0.13,
+            "pnl": -6.45
+          },
+          "h2": {
+            "trades": 5,
+            "wr": 40.0,
+            "pf": 0.255,
+            "pnl": -3.85
+          },
+          "gate_stats": {
+            "candidates": 76,
+            "kept": 13,
+            "ok_dir_agree": 13,
+            "ok_hold": 35,
+            "ok_opp_or_spread": 14,
+            "unavail_kept": 0,
+            "unavail_blocked": 14,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 13,
+            "orders_queued": 13,
+            "orders_filled": 13,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": 7.03,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 11.5172
+        }
+      },
+      "B4_FUNDING_WINDOW_FADE": {
+        "M0_NO_TAPE": {
+          "trades": 15,
+          "win_rate_pct": 46.67,
+          "profit_factor": 1.234,
+          "net_pnl_usd": 3.82,
+          "net_pnl_pct": 0.04,
+          "expectancy_r": -0.1095,
+          "expectancy_r_ci95": [
+            -0.7283,
+            0.5196
+          ],
+          "max_dd_pct": 0.1,
+          "sharpe_daily_ann": 1.294,
+          "dsr": 0.6524,
+          "total_fees": 2.66,
+          "exit_reasons": {
+            "STOP_LOSS": 7,
+            "HORIZON_TIMEOUT": 1,
+            "TAKE_PROFIT_3": 7
+          },
+          "h1": {
+            "trades": 5,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -9.48
+          },
+          "h2": {
+            "trades": 10,
+            "wr": 70.0,
+            "pf": 2.95,
+            "pnl": 13.29
+          },
+          "gate_stats": {
+            "candidates": 32,
+            "kept": 32,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 32,
+            "orders_queued": 19,
+            "orders_filled": 15,
+            "orders_expired": 2
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.9332
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 8,
+          "win_rate_pct": 37.5,
+          "profit_factor": 0.852,
+          "net_pnl_usd": -1.48,
+          "net_pnl_pct": -0.01,
+          "expectancy_r": -0.3187,
+          "expectancy_r_ci95": [
+            -0.9632,
+            0.5739
+          ],
+          "max_dd_pct": 0.08,
+          "sharpe_daily_ann": -0.786,
+          "dsr": 0.4159,
+          "total_fees": 1.57,
+          "exit_reasons": {
+            "STOP_LOSS": 5,
+            "TAKE_PROFIT_3": 3
+          },
+          "h1": {
+            "trades": 4,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -7.0
+          },
+          "h2": {
+            "trades": 4,
+            "wr": 75.0,
+            "pf": 2.864,
+            "pnl": 5.53
+          },
+          "gate_stats": {
+            "candidates": 32,
+            "kept": 10,
+            "ok_dir_agree": 8,
+            "ok_hold": 15,
+            "ok_opp_or_spread": 7,
+            "unavail_kept": 2,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 10,
+            "orders_queued": 8,
+            "orders_filled": 8,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": -9.17,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.9332
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 6,
+          "win_rate_pct": 50.0,
+          "profit_factor": 1.16,
+          "net_pnl_usd": 1.17,
+          "net_pnl_pct": 0.01,
+          "expectancy_r": 0.006,
+          "expectancy_r_ci95": [
+            -0.7879,
+            0.7969
+          ],
+          "max_dd_pct": 0.06,
+          "sharpe_daily_ann": 0.684,
+          "dsr": 0.5803,
+          "total_fees": 1.09,
+          "exit_reasons": {
+            "STOP_LOSS": 3,
+            "TAKE_PROFIT_3": 3
+          },
+          "h1": {
+            "trades": 2,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -4.35
+          },
+          "h2": {
+            "trades": 4,
+            "wr": 75.0,
+            "pf": 2.864,
+            "pnl": 5.53
+          },
+          "gate_stats": {
+            "candidates": 32,
+            "kept": 8,
+            "ok_dir_agree": 8,
+            "ok_hold": 15,
+            "ok_opp_or_spread": 7,
+            "unavail_kept": 0,
+            "unavail_blocked": 2,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 8,
+            "orders_queued": 6,
+            "orders_filled": 6,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": 3.33,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.9332
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 12,
+          "win_rate_pct": 50.0,
+          "profit_factor": 1.462,
+          "net_pnl_usd": 4.43,
+          "net_pnl_pct": 0.04,
+          "expectancy_r": -0.0188,
+          "expectancy_r_ci95": [
+            -0.6284,
+            0.6048
+          ],
+          "max_dd_pct": 0.06,
+          "sharpe_daily_ann": 1.786,
+          "dsr": 0.729,
+          "total_fees": 1.55,
+          "exit_reasons": {
+            "STOP_LOSS": 5,
+            "HORIZON_TIMEOUT": 1,
+            "TAKE_PROFIT_3": 6
+          },
+          "h1": {
+            "trades": 3,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -4.7
+          },
+          "h2": {
+            "trades": 9,
+            "wr": 66.7,
+            "pf": 2.865,
+            "pnl": 9.13
+          },
+          "gate_stats": {
+            "candidates": 32,
+            "kept": 23,
+            "ok_dir_agree": 8,
+            "ok_hold": 15,
+            "ok_opp_or_spread": 7,
+            "unavail_kept": 0,
+            "unavail_blocked": 2,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 23,
+            "orders_queued": 15,
+            "orders_filled": 12,
+            "orders_expired": 2
+          },
+          "delta_wr_pp": 3.33,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.9332
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 6,
+          "win_rate_pct": 50.0,
+          "profit_factor": 1.182,
+          "net_pnl_usd": 1.6,
+          "net_pnl_pct": 0.02,
+          "expectancy_r": 0.006,
+          "expectancy_r_ci95": [
+            -0.7879,
+            0.7969
+          ],
+          "max_dd_pct": 0.07,
+          "sharpe_daily_ann": 0.733,
+          "dsr": 0.5867,
+          "total_fees": 1.33,
+          "exit_reasons": {
+            "STOP_LOSS": 3,
+            "TAKE_PROFIT_3": 3
+          },
+          "h1": {
+            "trades": 2,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -5.33
+          },
+          "h2": {
+            "trades": 4,
+            "wr": 75.0,
+            "pf": 2.997,
+            "pnl": 6.93
+          },
+          "gate_stats": {
+            "candidates": 32,
+            "kept": 8,
+            "ok_dir_agree": 8,
+            "ok_hold": 15,
+            "ok_opp_or_spread": 7,
+            "unavail_kept": 0,
+            "unavail_blocked": 2,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 8,
+            "orders_queued": 6,
+            "orders_filled": 6,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": 3.33,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.9332
+        }
+      },
+      "A8_RANGE_VWAP_REV_PULLBACK": {
+        "M0_NO_TAPE": {
+          "trades": 7,
+          "win_rate_pct": 42.86,
+          "profit_factor": 0.866,
+          "net_pnl_usd": -1.43,
+          "net_pnl_pct": -0.01,
+          "expectancy_r": -0.1768,
+          "expectancy_r_ci95": [
+            -0.8404,
+            0.782
+          ],
+          "max_dd_pct": 0.07,
+          "sharpe_daily_ann": -0.627,
+          "dsr": 0.4293,
+          "total_fees": 1.25,
+          "exit_reasons": {
+            "TAKE_PROFIT_3": 3,
+            "STOP_LOSS": 4
+          },
+          "h1": {
+            "trades": 3,
+            "wr": 33.3,
+            "pf": 0.63,
+            "pnl": -1.6
+          },
+          "h2": {
+            "trades": 4,
+            "wr": 50.0,
+            "pf": 1.027,
+            "pnl": 0.17
+          },
+          "gate_stats": {
+            "candidates": 8,
+            "kept": 8,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 8,
+            "orders_queued": 8,
+            "orders_filled": 7,
+            "orders_expired": 1
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4936
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 3,
+          "win_rate_pct": 33.33,
+          "profit_factor": 0.599,
+          "net_pnl_usd": -1.7,
+          "net_pnl_pct": -0.02,
+          "expectancy_r": -0.4094,
+          "expectancy_r_ci95": [
+            -1.1781,
+            1.1039
+          ],
+          "max_dd_pct": 0.05,
+          "sharpe_daily_ann": -2.957,
+          "dsr": 0.0838,
+          "total_fees": 0.57,
+          "exit_reasons": {
+            "STOP_LOSS": 2,
+            "TAKE_PROFIT_3": 1
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -1.98
+          },
+          "h2": {
+            "trades": 2,
+            "wr": 50.0,
+            "pf": 1.122,
+            "pnl": 0.28
+          },
+          "gate_stats": {
+            "candidates": 8,
+            "kept": 3,
+            "ok_dir_agree": 2,
+            "ok_hold": 3,
+            "ok_opp_or_spread": 2,
+            "unavail_kept": 1,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 3,
+            "orders_queued": 3,
+            "orders_filled": 3,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": -9.53,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4936
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 2,
+          "win_rate_pct": 0.0,
+          "profit_factor": 0.0,
+          "net_pnl_usd": -4.23,
+          "net_pnl_pct": -0.04,
+          "expectancy_r": -1.1661,
+          "expectancy_r_ci95": [
+            -1.1781,
+            -1.1541
+          ],
+          "max_dd_pct": 0.05,
+          "sharpe_daily_ann": -5.008,
+          "dsr": 0.0039,
+          "total_fees": 0.48,
+          "exit_reasons": {
+            "STOP_LOSS": 2
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -1.98
+          },
+          "h2": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -2.26
+          },
+          "gate_stats": {
+            "candidates": 8,
+            "kept": 2,
+            "ok_dir_agree": 2,
+            "ok_hold": 3,
+            "ok_opp_or_spread": 2,
+            "unavail_kept": 0,
+            "unavail_blocked": 1,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 2,
+            "orders_queued": 2,
+            "orders_filled": 2,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": -42.86,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4936
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 4,
+          "win_rate_pct": 25.0,
+          "profit_factor": 0.094,
+          "net_pnl_usd": -5.72,
+          "net_pnl_pct": -0.06,
+          "expectancy_r": -0.5955,
+          "expectancy_r_ci95": [
+            -1.1697,
+            0.5327
+          ],
+          "max_dd_pct": 0.07,
+          "sharpe_daily_ann": -4.454,
+          "dsr": 0.0176,
+          "total_fees": 0.73,
+          "exit_reasons": {
+            "TAKE_PROFIT_3": 1,
+            "STOP_LOSS": 3
+          },
+          "h1": {
+            "trades": 3,
+            "wr": 33.3,
+            "pf": 0.17,
+            "pnl": -2.9
+          },
+          "h2": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -2.82
+          },
+          "gate_stats": {
+            "candidates": 8,
+            "kept": 5,
+            "ok_dir_agree": 2,
+            "ok_hold": 3,
+            "ok_opp_or_spread": 2,
+            "unavail_kept": 0,
+            "unavail_blocked": 1,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 5,
+            "orders_queued": 5,
+            "orders_filled": 4,
+            "orders_expired": 1
+          },
+          "delta_wr_pp": -17.86,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4936
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 2,
+          "win_rate_pct": 0.0,
+          "profit_factor": 0.0,
+          "net_pnl_usd": -5.27,
+          "net_pnl_pct": -0.05,
+          "expectancy_r": -1.1661,
+          "expectancy_r_ci95": [
+            -1.1781,
+            -1.1541
+          ],
+          "max_dd_pct": 0.07,
+          "sharpe_daily_ann": -5.018,
+          "dsr": 0.0039,
+          "total_fees": 0.6,
+          "exit_reasons": {
+            "STOP_LOSS": 2
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -2.57
+          },
+          "h2": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -2.7
+          },
+          "gate_stats": {
+            "candidates": 8,
+            "kept": 2,
+            "ok_dir_agree": 2,
+            "ok_hold": 3,
+            "ok_opp_or_spread": 2,
+            "unavail_kept": 0,
+            "unavail_blocked": 1,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 2,
+            "orders_queued": 2,
+            "orders_filled": 2,
+            "orders_expired": 0
+          },
+          "delta_wr_pp": -42.86,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4936
+        }
+      },
+      "A9b_SWEEP_FAKEOUT_PULLBACK": {
+        "M0_NO_TAPE": {
+          "trades": 104,
+          "win_rate_pct": 33.65,
+          "profit_factor": 0.632,
+          "net_pnl_usd": -51.29,
+          "net_pnl_pct": -0.51,
+          "expectancy_r": -0.299,
+          "expectancy_r_ci95": [
+            -0.5268,
+            -0.0671
+          ],
+          "max_dd_pct": 0.72,
+          "sharpe_daily_ann": -5.016,
+          "dsr": 0.0645,
+          "total_fees": 20.74,
+          "exit_reasons": {
+            "TAKE_PROFIT_3": 35,
+            "STOP_LOSS": 68,
+            "HORIZON_TIMEOUT": 1
+          },
+          "h1": {
+            "trades": 34,
+            "wr": 55.9,
+            "pf": 1.673,
+            "pnl": 19.11
+          },
+          "h2": {
+            "trades": 70,
+            "wr": 22.9,
+            "pf": 0.365,
+            "pnl": -70.4
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 144,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 144,
+            "orders_queued": 139,
+            "orders_filled": 104,
+            "orders_expired": 24
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.2569
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 47,
+          "win_rate_pct": 31.91,
+          "profit_factor": 0.584,
+          "net_pnl_usd": -26.96,
+          "net_pnl_pct": -0.27,
+          "expectancy_r": -0.3486,
+          "expectancy_r_ci95": [
+            -0.6822,
+            -0.0093
+          ],
+          "max_dd_pct": 0.37,
+          "sharpe_daily_ann": -5.785,
+          "dsr": 0.0466,
+          "total_fees": 9.47,
+          "exit_reasons": {
+            "STOP_LOSS": 32,
+            "TAKE_PROFIT_3": 15
+          },
+          "h1": {
+            "trades": 13,
+            "wr": 53.8,
+            "pf": 1.515,
+            "pnl": 6.08
+          },
+          "h2": {
+            "trades": 34,
+            "wr": 23.5,
+            "pf": 0.376,
+            "pnl": -33.04
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 62,
+            "ok_dir_agree": 35,
+            "ok_hold": 54,
+            "ok_opp_or_spread": 28,
+            "unavail_kept": 27,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 62,
+            "orders_queued": 59,
+            "orders_filled": 47,
+            "orders_expired": 10
+          },
+          "delta_wr_pp": -1.74,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.2569
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 25,
+          "win_rate_pct": 28.0,
+          "profit_factor": 0.492,
+          "net_pnl_usd": -18.53,
+          "net_pnl_pct": -0.19,
+          "expectancy_r": -0.4501,
+          "expectancy_r_ci95": [
+            -0.8703,
+            0.0706
+          ],
+          "max_dd_pct": 0.25,
+          "sharpe_daily_ann": -4.948,
+          "dsr": 0.0678,
+          "total_fees": 5.13,
+          "exit_reasons": {
+            "STOP_LOSS": 18,
+            "TAKE_PROFIT_3": 7
+          },
+          "h1": {
+            "trades": 7,
+            "wr": 57.1,
+            "pf": 2.065,
+            "pnl": 5.87
+          },
+          "h2": {
+            "trades": 18,
+            "wr": 16.7,
+            "pf": 0.212,
+            "pnl": -24.41
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 35,
+            "ok_dir_agree": 35,
+            "ok_hold": 54,
+            "ok_opp_or_spread": 28,
+            "unavail_kept": 0,
+            "unavail_blocked": 27,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 35,
+            "orders_queued": 34,
+            "orders_filled": 25,
+            "orders_expired": 9
+          },
+          "delta_wr_pp": -5.65,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.2569
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 63,
+          "win_rate_pct": 33.33,
+          "profit_factor": 0.593,
+          "net_pnl_usd": -24.19,
+          "net_pnl_pct": -0.24,
+          "expectancy_r": -0.3049,
+          "expectancy_r_ci95": [
+            -0.5915,
+            -0.0148
+          ],
+          "max_dd_pct": 0.38,
+          "sharpe_daily_ann": -4.364,
+          "dsr": 0.0921,
+          "total_fees": 8.83,
+          "exit_reasons": {
+            "TAKE_PROFIT_3": 21,
+            "STOP_LOSS": 41,
+            "HORIZON_TIMEOUT": 1
+          },
+          "h1": {
+            "trades": 20,
+            "wr": 60.0,
+            "pf": 2.456,
+            "pnl": 12.13
+          },
+          "h2": {
+            "trades": 43,
+            "wr": 20.9,
+            "pf": 0.289,
+            "pnl": -36.32
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 89,
+            "ok_dir_agree": 35,
+            "ok_hold": 54,
+            "ok_opp_or_spread": 28,
+            "unavail_kept": 0,
+            "unavail_blocked": 27,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 89,
+            "orders_queued": 86,
+            "orders_filled": 63,
+            "orders_expired": 19
+          },
+          "delta_wr_pp": -0.32,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.2569
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 25,
+          "win_rate_pct": 28.0,
+          "profit_factor": 0.502,
+          "net_pnl_usd": -21.96,
+          "net_pnl_pct": -0.22,
+          "expectancy_r": -0.4501,
+          "expectancy_r_ci95": [
+            -0.8703,
+            0.0706
+          ],
+          "max_dd_pct": 0.3,
+          "sharpe_daily_ann": -4.929,
+          "dsr": 0.0655,
+          "total_fees": 6.25,
+          "exit_reasons": {
+            "STOP_LOSS": 18,
+            "TAKE_PROFIT_3": 7
+          },
+          "h1": {
+            "trades": 7,
+            "wr": 57.1,
+            "pf": 1.93,
+            "pnl": 6.54
+          },
+          "h2": {
+            "trades": 18,
+            "wr": 16.7,
+            "pf": 0.23,
+            "pnl": -28.5
+          },
+          "gate_stats": {
+            "candidates": 144,
+            "kept": 35,
+            "ok_dir_agree": 35,
+            "ok_hold": 54,
+            "ok_opp_or_spread": 28,
+            "unavail_kept": 0,
+            "unavail_blocked": 27,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 35,
+            "orders_queued": 34,
+            "orders_filled": 25,
+            "orders_expired": 9
+          },
+          "delta_wr_pp": -5.65,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 0.2569
+        }
+      },
+      "A4_BO20_DELAYED_BE_PULLBACK": {
+        "M0_NO_TAPE": {
+          "trades": 43,
+          "win_rate_pct": 20.93,
+          "profit_factor": 0.315,
+          "net_pnl_usd": -58.24,
+          "net_pnl_pct": -0.58,
+          "expectancy_r": -0.5308,
+          "expectancy_r_ci95": [
+            -0.8628,
+            -0.1678
+          ],
+          "max_dd_pct": 0.67,
+          "sharpe_daily_ann": -9.522,
+          "dsr": 0.001,
+          "total_fees": 9.5,
+          "exit_reasons": {
+            "HORIZON_TIMEOUT": 3,
+            "STOP_LOSS": 28,
+            "BREAKEVEN_STOP": 4,
+            "TRAILING_STOP": 4,
+            "TAKE_PROFIT_3": 2,
+            "END_OF_DATA": 2
+          },
+          "h1": {
+            "trades": 14,
+            "wr": 14.3,
+            "pf": 0.173,
+            "pnl": -25.53
+          },
+          "h2": {
+            "trades": 29,
+            "wr": 24.1,
+            "pf": 0.397,
+            "pnl": -32.71
+          },
+          "gate_stats": {
+            "candidates": 66,
+            "kept": 66,
+            "ok_dir_agree": 0,
+            "ok_hold": 0,
+            "ok_opp_or_spread": 0,
+            "unavail_kept": 0,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 66,
+            "orders_queued": 51,
+            "orders_filled": 43,
+            "orders_expired": 6
+          },
+          "delta_wr_pp": 0.0,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4183
+        },
+        "M1_GATE_FAIL_OPEN": {
+          "trades": 11,
+          "win_rate_pct": 9.09,
+          "profit_factor": 0.135,
+          "net_pnl_usd": -22.89,
+          "net_pnl_pct": -0.23,
+          "expectancy_r": -0.8888,
+          "expectancy_r_ci95": [
+            -1.1458,
+            -0.3879
+          ],
+          "max_dd_pct": 0.26,
+          "sharpe_daily_ann": -6.728,
+          "dsr": 0.006,
+          "total_fees": 2.58,
+          "exit_reasons": {
+            "STOP_LOSS": 10,
+            "TRAILING_STOP": 1
+          },
+          "h1": {
+            "trades": 2,
+            "wr": 50.0,
+            "pf": 1.647,
+            "pnl": 1.41
+          },
+          "h2": {
+            "trades": 9,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -24.3
+          },
+          "gate_stats": {
+            "candidates": 66,
+            "kept": 18,
+            "ok_dir_agree": 8,
+            "ok_hold": 39,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 10,
+            "unavail_blocked": 0,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 18,
+            "orders_queued": 17,
+            "orders_filled": 11,
+            "orders_expired": 5
+          },
+          "delta_wr_pp": -11.84,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4183
+        },
+        "M2_GATE_STRICT_OK": {
+          "trades": 4,
+          "win_rate_pct": 0.0,
+          "profit_factor": 0.0,
+          "net_pnl_usd": -10.06,
+          "net_pnl_pct": -0.1,
+          "expectancy_r": -1.1393,
+          "expectancy_r_ci95": [
+            -1.1554,
+            -1.119
+          ],
+          "max_dd_pct": 0.11,
+          "sharpe_daily_ann": -5.921,
+          "dsr": 0.0007,
+          "total_fees": 0.97,
+          "exit_reasons": {
+            "STOP_LOSS": 4
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -2.17
+          },
+          "h2": {
+            "trades": 3,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -7.89
+          },
+          "gate_stats": {
+            "candidates": 66,
+            "kept": 8,
+            "ok_dir_agree": 8,
+            "ok_hold": 39,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 0,
+            "unavail_blocked": 10,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 8,
+            "orders_queued": 8,
+            "orders_filled": 4,
+            "orders_expired": 4
+          },
+          "delta_wr_pp": -20.93,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4183
+        },
+        "M3_TAPE_WEIGHTED_SCORE": {
+          "trades": 33,
+          "win_rate_pct": 21.21,
+          "profit_factor": 0.308,
+          "net_pnl_usd": -27.01,
+          "net_pnl_pct": -0.27,
+          "expectancy_r": -0.4812,
+          "expectancy_r_ci95": [
+            -0.8651,
+            -0.0774
+          ],
+          "max_dd_pct": 0.31,
+          "sharpe_daily_ann": -9.447,
+          "dsr": 0.0006,
+          "total_fees": 4.47,
+          "exit_reasons": {
+            "HORIZON_TIMEOUT": 2,
+            "STOP_LOSS": 19,
+            "BREAKEVEN_STOP": 5,
+            "TRAILING_STOP": 3,
+            "TAKE_PROFIT_3": 2,
+            "END_OF_DATA": 2
+          },
+          "h1": {
+            "trades": 11,
+            "wr": 9.1,
+            "pf": 0.083,
+            "pnl": -12.56
+          },
+          "h2": {
+            "trades": 22,
+            "wr": 27.3,
+            "pf": 0.43,
+            "pnl": -14.45
+          },
+          "gate_stats": {
+            "candidates": 66,
+            "kept": 47,
+            "ok_dir_agree": 8,
+            "ok_hold": 39,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 0,
+            "unavail_blocked": 10,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 47,
+            "orders_queued": 37,
+            "orders_filled": 33,
+            "orders_expired": 3
+          },
+          "delta_wr_pp": 0.28,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4183
+        },
+        "M4_STRICT_OK_PLUS_WEIGHT": {
+          "trades": 4,
+          "win_rate_pct": 0.0,
+          "profit_factor": 0.0,
+          "net_pnl_usd": -11.99,
+          "net_pnl_pct": -0.12,
+          "expectancy_r": -1.1393,
+          "expectancy_r_ci95": [
+            -1.1554,
+            -1.119
+          ],
+          "max_dd_pct": 0.13,
+          "sharpe_daily_ann": -5.855,
+          "dsr": 0.0007,
+          "total_fees": 1.15,
+          "exit_reasons": {
+            "STOP_LOSS": 4
+          },
+          "h1": {
+            "trades": 1,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -2.39
+          },
+          "h2": {
+            "trades": 3,
+            "wr": 0.0,
+            "pf": 0.0,
+            "pnl": -9.6
+          },
+          "gate_stats": {
+            "candidates": 66,
+            "kept": 8,
+            "ok_dir_agree": 8,
+            "ok_hold": 39,
+            "ok_opp_or_spread": 9,
+            "unavail_kept": 0,
+            "unavail_blocked": 10,
+            "score_blocked": 0
+          },
+          "exec_stats": {
+            "signals_seen": 8,
+            "orders_queued": 8,
+            "orders_filled": 4,
+            "orders_expired": 4
+          },
+          "delta_wr_pp": -20.93,
+          "dsr_pool_n": 135,
+          "var_trials_pool": 3.4183
+        }
+      }
+    }
+  }
+}

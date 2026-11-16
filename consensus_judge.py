@@ -107,9 +107,13 @@ class ConsensusJudge:
                 if c_info:
                     acc = float(c_info.get("accuracy", 1.0))
                     ece = float(c_info.get("ece", 0.0))
-                    if ece > 0.15:
+                    # Patch S4 (v1.0.6-s4): Dampening em SIDEWAYS_RANGE só penaliza sobreconfiança
+                    # improdutiva (ece > 0.15 com acurácia < 55%) ou baixa assertividade (< 45%).
+                    # Agentes com acurácia empírica vencedora (>= 55%, ex.: 64.3% na S3) não são
+                    # travados em 0.55 (o que causava deadlock abaixo dos mínimos de 0.65/0.70/0.75).
+                    if ece > 0.15 and acc < 0.55:
                         should_dampen = True
-                        dampen_reason = f"ECE {ece:.2f} > 0.15 em SIDEWAYS_RANGE"
+                        dampen_reason = f"ECE {ece:.2f} > 0.15 (acc={acc:.1%}) em SIDEWAYS_RANGE"
                     elif acc < 0.45:
                         should_dampen = True
                         dampen_reason = f"Acurácia {acc:.1%} < 45% em SIDEWAYS_RANGE"

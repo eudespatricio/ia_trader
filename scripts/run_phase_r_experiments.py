@@ -56,10 +56,11 @@ def load_daily_candles_pre_holdout(symbol: str) -> pd.DataFrame:
         SELECT timestamp, open, high, low, close, volume
         FROM candles
         WHERE symbol = ? AND timeframe = '1d'
-        ORDER BY timestamp ASC
+        ORDER BY timestamp ASC, CASE WHEN exchange='binance' THEN 0 ELSE 1 END ASC
     """
     df = pd.read_sql_query(query, conn, params=(symbol.upper(),))
     conn.close()
+    df = df.drop_duplicates(subset=["timestamp"], keep="first").reset_index(drop=True)
 
     if df.empty:
         raise ValueError(f"Nenhum candle encontrado para {symbol} 1d")
