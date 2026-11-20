@@ -163,7 +163,10 @@ def simulate_symbol(
     ml_min: float,
     ts_start: int = 0,
     ts_end: int = 10**18,
+    maker_fill_mode: str = "optimistic",
 ) -> List[float]:
+    if maker_fill_mode not in ("optimistic", "realistic"):
+        raise ValueError(f"Unsupported maker_fill_mode: {maker_fill_mode}")
     prof = STRATEGY_PROFILES["SCALP"]
     df = data.df
     ts = df["timestamp"].to_numpy(dtype=np.int64)
@@ -195,6 +198,12 @@ def simulate_symbol(
 
         if direction is None or atrs[i] <= 0.0 or closes[i] <= 0.0:
             continue
+
+        if maker_fill_mode == "realistic":
+            if direction == "BUY" and lows[i + 1] > closes[i]:
+                continue
+            if direction == "SELL" and highs[i + 1] < closes[i]:
+                continue
 
         sgn = 1.0 if direction == "BUY" else -1.0
         entry_px = closes[i] * (1.0 + sgn * MAKER_SLIPPAGE_PCT)
@@ -286,15 +295,19 @@ def run_zero_leakage_calibration() -> None:
     # Select winner STRICTLY on IS validation metrics
     ranked_is = sorted(is_rows, key=lambda r: (r["n"] >= 8, r["pf"], r["sum_r"]), reverse=True)
     winner = ranked_is[0]
-    w_oos = _metrics([x for d in prep_oos for x in simulate_symbol(d, winner["natr"], winner["vz"], winner["ml"], split_ts, 10**18)])
-    base_oos = _metrics([x for d in prep_oos for x in simulate_symbol(d, 35.0, 1.0, 0.45, split_ts, 10**18)])
+    w_oos = _metrics([x for d in prep_oos for x in simulate_symbol(d, winner["natr"], winner["vz"], winner["ml"], split_ts, 10**18, maker_fill_mode="optimistic")])
+    base_oos = _metrics([x for d in prep_oos for x in simulate_symbol(d, 35.0, 1.0, 0.45, split_ts, 10**18, maker_fill_mode="optimistic")])
+    w_oos_real = _metrics([x for d in prep_oos for x in simulate_symbol(d, winner["natr"], winner["vz"], winner["ml"], split_ts, 10**18, maker_fill_mode="realistic")])
+    base_oos_real = _metrics([x for d in prep_oos for x in simulate_symbol(d, 35.0, 1.0, 0.45, split_ts, 10**18, maker_fill_mode="realistic")])
 
     print("=== IS-SELECTED (Purged [0.45..0.67], ZERO OOS peeking) ===")
     for r in ranked_is[:5]:
         print(f"  natr>={r['natr']:4.0f} vz>={r['vz']:.1f} ml>={r['ml']:.2f} | IS_VAL(n={r['n']:2d}, WR={r['wr']:5.1f}%, PF={r['pf']:5.2f}, R={r['sum_r']:+5.1f})")
     print(f"WINNER ON IS-VAL -> natr>={winner['natr']:.0f}, vz>={winner['vz']:.1f}, ml>={winner['ml']:.2f}")
-    print(f"UNTOUCHED PURGED OOS (winner): n={w_oos['n']}, WR={w_oos['wr']:.1f}%, PF={w_oos['pf']:.2f}, R={w_oos['sum_r']:+.1f}")
-    print(f"UNTOUCHED PURGED OOS (base 35/1.0/0.45): n={base_oos['n']}, WR={base_oos['wr']:.1f}%, PF={base_oos['pf']:.2f}, R={base_oos['sum_r']:+.1f}")
+    print(f"UNTOUCHED PURGED OOS [optimistic] (winner): n={w_oos['n']}, WR={w_oos['wr']:.1f}%, PF={w_oos['pf']:.2f}, R={w_oos['sum_r']:+.1f}")
+    print(f"UNTOUCHED PURGED OOS [optimistic] (base 35/1.0/0.45): n={base_oos['n']}, WR={base_oos['wr']:.1f}%, PF={base_oos['pf']:.2f}, R={base_oos['sum_r']:+.1f}")
+    print(f"UNTOUCHED PURGED OOS [realistic]  (winner): n={w_oos_real['n']}, WR={w_oos_real['wr']:.1f}%, PF={w_oos_real['pf']:.2f}, R={w_oos_real['sum_r']:+.1f}")
+    print(f"UNTOUCHED PURGED OOS [realistic]  (base 35/1.0/0.45): n={base_oos_real['n']}, WR={base_oos_real['wr']:.1f}%, PF={base_oos_real['pf']:.2f}, R={base_oos_real['sum_r']:+.1f}")
 
     # 3. Also report strict post-created_at unseen slice for production .joblib models
     prod_bundles = _load_ml15_bundles()
@@ -302,9 +315,16 @@ def run_zero_leakage_calibration() -> None:
         created_iso = prod_bundles[0].get("created_at")
         post_cut = int(datetime.fromisoformat(str(created_iso)).timestamp() * 1000) if created_iso else split_ts
         prep_prod = [_build_prepared(s, feats_by_sym[s], h1_by_sym[s], prod_bundles) for s in MAJORS]
+        print(f"=== [INFORMATIONAL ONLY — NOT FOR PROMOTION DECISION] PROD .joblib POST-{created_iso} ===")
         for label, natr, vz, ml in (("PROD_BASE", 35.0, 1.0, 0.45), ("P1B_CAND", winner["natr"], winner["vz"], winner["ml"]), ("SQUEEZE_20_08_45", 20.0, 0.8, 0.45)):
-            m_post = _metrics([x for d in prep_prod for x in simulate_symbol(d, natr, vz, ml, post_cut, 10**18)])
-            print(f"[PROD .joblib POST-{created_iso}] {label} ({natr:.0f}/{vz:.1f}/{ml:.2f}): n={m_post['n']}, WR={m_post['wr']:.1f}%, PF={m_post['pf']:.2f}, R={m_post['sum_r']:+.1f}")
+            m_post_opt = _metrics([x for d in prep_prod for x in simulate_symbol(d, natr, vz, ml, post_cut, 10**18, maker_fill_mode="optimistic")])
+            m_post_real = _metrics([x for d in prep_prod for x in simulate_symbol(d, natr, vz, ml, post_cut, 10**18, maker_fill_mode="realistic")])
+            print(
+                f"[INFORMATIONAL ONLY — NOT FOR PROMOTION DECISION] [PROD .joblib POST-{created_iso}] "
+                f"{label} ({natr:.0f}/{vz:.1f}/{ml:.2f}) | "
+                f"optimistic: n={m_post_opt['n']}, WR={m_post_opt['wr']:.1f}%, PF={m_post_opt['pf']:.2f}, R={m_post_opt['sum_r']:+.1f} | "
+                f"realistic: n={m_post_real['n']}, WR={m_post_real['wr']:.1f}%, PF={m_post_real['pf']:.2f}, R={m_post_real['sum_r']:+.1f}"
+            )
 
 
 if __name__ == "__main__":

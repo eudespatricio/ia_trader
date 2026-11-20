@@ -25,6 +25,7 @@ class LiveContextEnricher:
         self.micro_db_path = micro_db_path
         self.refresh_interval_s = refresh_interval_s
         self._last_refresh_mono: float = 0.0
+        self._enrich_error_count: int = 0
         # db_path="" evita que o classificador toque no market_cache.db padrão durante testes
         self._classifier = MarketRegimeClassifier(db_path="")
 
@@ -43,7 +44,11 @@ class LiveContextEnricher:
                 return []
             return con.execute(sql, params).fetchall()
         except Exception as e:
-            logger.debug(f"Erro ao consultar {path}: {e}")
+            if "no such table" in str(e).lower():
+                logger.debug(f"Tabela opcional ausente em {path}: {e}")
+            else:
+                self._enrich_error_count += 1
+                logger.warning(f"Erro ao consultar {path}: {e}")
             return []
         finally:
             if con is not None:
@@ -260,23 +265,35 @@ class LiveContextEnricher:
                     ctx["micro_taker_imb_5m"] = (total_buy - total_sell) / (total_buy + total_sell)
                     valid_taker = True
             if not valid_taker:
-                fallback = self._fetch_all(
+                bs_rows = self._fetch_all(
                     self.micro_db_path,
-                    "SELECT ts_ms, v2, v3 FROM binance_series WHERE symbol=? AND kind='taker' AND ts_ms + 300000 <= ? ORDER BY ts_ms DESC LIMIT 1",
+                    "SELECT ts_ms, v2, v3 FROM binance_series WHERE symbol=? AND kind='taker' AND ts_ms <= ? ORDER BY ts_ms DESC LIMIT 3",
                     (symbol, ts_ms),
                 )
-                if fallback:
-                    taker_ts, v2, v3 = fallback[0]
-                    if ts_ms - (int(taker_ts) + 300_000) <= 720_000:
-                        try:
-                            sum_val = float(v2) + float(v3)
-                            if sum_val > 0:
-                                ctx["micro_taker_imb_5m"] = (float(v2) - float(v3)) / sum_val
-                        except (TypeError, ValueError):
-                            pass
+                if bs_rows:
+                    deltas = [
+                        int(bs_rows[i][0]) - int(bs_rows[i + 1][0])
+                        for i in range(len(bs_rows) - 1)
+                        if int(bs_rows[i][0]) - int(bs_rows[i + 1][0]) > 0
+                    ]
+                    if deltas:
+                        period_ms = int(min(900_000, max(60_000, float(np.median(deltas)))))
+                    else:
+                        period_ms = 300_000
+                    closed_rows = [r for r in bs_rows if int(r[0]) + period_ms <= ts_ms]
+                    if closed_rows:
+                        taker_ts, v2, v3 = closed_rows[0]
+                        if ts_ms - (int(taker_ts) + period_ms) <= 720_000:
+                            try:
+                                sum_val = float(v2) + float(v3)
+                                if sum_val > 0:
+                                    ctx["micro_taker_imb_5m"] = (float(v2) - float(v3)) / sum_val
+                            except (TypeError, ValueError):
+                                pass
         except Exception as e:
             logger.debug(f"Falha ao processar tick_agg/binance_series: {e}")
 
+        ctx["enrich_errors"] = int(self._enrich_error_count)
         return ctx
 
     async def maybe_refresh_external_cache(self, force: bool = False) -> Dict[str, int]:
@@ -353,7 +370,8 @@ class LiveContextEnricher:
             await http.close()
 
     @staticmethod
-    def _parse_yf(res: Any) -> List[Tuple[str, int, float]]:
+    def _parse_yf(res: Any, utc_today: Optional[str] = None) -> List[Tuple[str, int, float]]:
+        today_str = utc_today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         out: List[Tuple[str, int, float]] = []
         if isinstance(res, list):
             for item in res:
@@ -371,7 +389,10 @@ class LiveContextEnricher:
                         continue
                     if not ds:
                         ds = datetime.fromtimestamp(its / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
-                    out.append((str(ds)[:10], its, fval))
+                    date_str = str(ds)[:10]
+                    if date_str >= today_str:
+                        continue
+                    out.append((date_str, its, fval))
                 except (TypeError, ValueError):
                     continue
             return out[-90:]
@@ -385,7 +406,10 @@ class LiveContextEnricher:
                     ts_dt = pd.Timestamp(d)
                     if pd.isna(v):
                         continue
-                    out.append((ts_dt.strftime("%Y-%m-%d"), int(ts_dt.timestamp() * 1000), float(v)))
+                    date_str = ts_dt.strftime("%Y-%m-%d")
+                    if date_str >= today_str:
+                        continue
+                    out.append((date_str, int(ts_dt.timestamp() * 1000), float(v)))
                 except (TypeError, ValueError):
                     continue
             return out[-90:]

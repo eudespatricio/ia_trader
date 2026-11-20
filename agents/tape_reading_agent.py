@@ -101,7 +101,10 @@ class TapeReadingAgent:
                 if r[0]:
                     self.covered_symbols.add(str(r[0]).upper())
         except Exception as e:
-            logger.debug(f"Falha ao sincronizar active_symbols: {e}")
+            if "no such table" in str(e).lower():
+                logger.debug(f"Tabela active_symbols ausente ao sincronizar: {e}")
+            else:
+                logger.warning(f"Falha ao sincronizar active_symbols: {e}")
         finally:
             if con is not None:
                 con.close()
@@ -206,16 +209,37 @@ class TapeReadingAgent:
                 return None
             rows = con.execute(
                 "SELECT ts_ms, v1, v2, v3 FROM binance_series "
-                "WHERE symbol=? AND kind='taker' AND ts_ms<=? ORDER BY ts_ms DESC LIMIT 2",
+                "WHERE symbol=? AND kind='taker' AND ts_ms<=? ORDER BY ts_ms DESC LIMIT 4",
                 (sym, now_ms),
             ).fetchall()
             if not rows:
                 return None
-            newest_ts = int(rows[0][0])
-            age_s = (now_ms - newest_ts) / 1000.0
+            if len(rows) >= 2:
+                deltas = sorted(
+                    int(rows[i][0]) - int(rows[i + 1][0])
+                    for i in range(len(rows) - 1)
+                    if int(rows[i][0]) - int(rows[i + 1][0]) > 0
+                )
+                if deltas:
+                    mid = len(deltas) // 2
+                    med = deltas[mid] if len(deltas) % 2 == 1 else (deltas[mid - 1] + deltas[mid]) / 2.0
+                    period_ms = int(min(900_000, max(60_000, med)))
+                else:
+                    period_ms = 300_000
+                closed_rows = [r for r in rows if int(r[0]) + period_ms <= now_ms]
+                if not closed_rows:
+                    return None
+                rows = closed_rows
+                newest_ts = int(rows[0][0])
+                age_s = (now_ms - (newest_ts + period_ms)) / 1000.0
+                win_span = max(300_000, period_ms)
+            else:
+                newest_ts = int(rows[0][0])
+                age_s = (now_ms - newest_ts) / 1000.0
+                win_span = 300_000
             if age_s > 720.0:
                 return None
-            win_start = newest_ts - 300_000
+            win_start = newest_ts - win_span
             buy = 0.0
             sell = 0.0
             for row in rows:
