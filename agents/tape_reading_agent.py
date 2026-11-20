@@ -90,18 +90,21 @@ class TapeReadingAgent:
         """Sincroniza símbolos monitorados a partir da tabela active_symbols gerenciada pelo coletor."""
         now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
         self._last_refresh_ms = now_ms
+        con = None
         try:
             con = self._connect_ro()
             rows = con.execute(
                 "SELECT symbol FROM active_symbols WHERE updated_at >= ?",
                 (now_ms - 3600_000,)
             ).fetchall()
-            con.close()
             for r in rows:
                 if r[0]:
                     self.covered_symbols.add(str(r[0]).upper())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Falha ao sincronizar active_symbols: {e}")
+        finally:
+            if con is not None:
+                con.close()
 
     def _evaluate_live_binance_fallback(self, sym: str, now_ms: int, fallback_reason: str) -> Dict[str, Any]:
         """Fallback on-demand REST (Binance Futures) para altcoins de Golden Pot sem histórico local no microstructure.db."""

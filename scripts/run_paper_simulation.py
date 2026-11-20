@@ -131,8 +131,8 @@ SWING_MAX_LEVERAGE = 3.0              # teto de alavancagem 3x no modo S1 para d
 MAX_SAME_DIR_MAJORS = 2               # trava de correlação direcional nos majors (BTC/ETH/SOL)
 GP_BTC_MACRO_MAX_COUNTER_DIST = 0.015 # bloqueia GP contra tendência macro do BTC (> ±1.5% SMA200 1h)
 GP_UNAVAILABLE_TAPE_RISK_MULT = 0.50  # sizing defensivo 0.50x no GP quando altcoin está sem cobertura L2
-SCALP_SQUEEZE_VOL_Z_MIN = 0.8         # volume_zscore_20 mínimo no rompimento de Squeeze BB/Keltner 15m
-SCALP_SQUEEZE_NATR_BPS_MIN = 20.0     # ATR normalizado mínimo (bps) no Squeeze 15m
+SCALP_SQUEEZE_VOL_Z_MIN = 1.0         # volume_zscore_20 mínimo no rompimento de Squeeze BB/Keltner 15m (gate zero-leakage P1-B)
+SCALP_SQUEEZE_NATR_BPS_MIN = 35.0     # ATR normalizado mínimo (bps) no Squeeze 15m (p25=25 deu PF OOS 1.24 < 1.25; manter 35 até Wave P2)
 SCALP_ML15_MIN_PROB = 0.45            # probabilidade mínima do ensemble dedicado 15m (LGBM+RF)
 # Filtro faca-caindo (legado do GP v2 de fade; mantido como utilitário, NÃO aplicado no gatilho de momentum v3)
 GP_KNIFE_RSI_LOW = 20.0             # RSI abaixo => "faca caindo" (LONG) se close < sma_200

@@ -175,6 +175,30 @@ def test_fd_leak_check(tmp_path):
     assert abs(fds_after - fds_before) <= 2
 
 
+def test_microstructure_taker_closed_bucket_anti_lookahead(tmp_path):
+    cache_db, micro_db = _init_dbs(tmp_path)
+    with sqlite3.connect(micro_db) as con:
+        con.execute("CREATE TABLE tick_agg (minute_ms INTEGER, symbol TEXT, buy_notional REAL, sell_notional REAL, n_trades INTEGER, saturated INTEGER)")
+        con.execute("CREATE TABLE binance_series (ts_ms INTEGER, symbol TEXT, kind TEXT, v1 REAL, v2 REAL, v3 REAL)")
+        ts_ms = 1_700_000_100_000  # inside minute bucket 1_700_000_040_000 .. 1_700_000_100_000? Wait align:
+        base_min = (ts_ms // 60_000) * 60_000
+        # 3 closed bullish buckets before base_min
+        for k in (1, 2, 3):
+            con.execute("INSERT INTO tick_agg VALUES (?, 'BTCUSDT', 80000.0, 20000.0, 50, 0)", (base_min - k * 60_000,))
+        # UNCLOSED current bucket at base_min (contains future intra-minute bearish spike) -> must be excluded!
+        con.execute("INSERT INTO tick_agg VALUES (?, 'BTCUSDT', 100.0, 999900.0, 500, 0)", (base_min,))
+        # Closed 5m binance_series taker vs unclosed current 5m taker
+        bs_base = (ts_ms // 300_000) * 300_000
+        con.execute("INSERT INTO binance_series VALUES (?, 'ETHUSDT', 'taker', 2.0, 300.0, 100.0)", (bs_base - 300_000,))
+        con.execute("INSERT INTO binance_series VALUES (?, 'ETHUSDT', 'taker', 0.1, 10.0, 9990.0)", (bs_base,))
+
+    enricher = LiveContextEnricher(cache_db_path=cache_db, micro_db_path=micro_db)
+    ctx_btc = enricher.enrich("BTCUSDT", {}, None, ts_ms)
+    assert ctx_btc["micro_taker_imb_5m"] == pytest.approx(0.60, abs=1e-6)
+    ctx_eth = enricher.enrich("ETHUSDT", {}, None, ts_ms)
+    assert ctx_eth["micro_taker_imb_5m"] == pytest.approx(0.50, abs=1e-6)
+
+
 def test_orderflow_agent_microstructure_and_candles():
     agent = OrderFlowAgent()
     base = {"open": 100.0, "high": 100.7, "low": 99.5, "close": 100.0}

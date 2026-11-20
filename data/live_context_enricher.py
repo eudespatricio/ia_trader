@@ -247,7 +247,8 @@ class LiveContextEnricher:
             valid_taker = False
             tick_rows = self._fetch_all(
                 self.micro_db_path,
-                "SELECT minute_ms, buy_notional, sell_notional, saturated FROM tick_agg WHERE symbol=? AND minute_ms<=? AND minute_ms>? AND COALESCE(saturated,0)=0 ORDER BY minute_ms",
+                "SELECT minute_ms, buy_notional, sell_notional, saturated FROM tick_agg "
+                "WHERE symbol=? AND minute_ms + 60000 <= ? AND minute_ms + 60000 > ? AND COALESCE(saturated,0)=0 ORDER BY minute_ms",
                 (symbol, ts_ms, ts_ms - 5 * 60_000),
             )
             if tick_rows:
@@ -255,18 +256,18 @@ class LiveContextEnricher:
                 max_min = max(r[0] for r in tick_rows)
                 total_buy = sum(float(r[1] or 0) for r in tick_rows)
                 total_sell = sum(float(r[2] or 0) for r in tick_rows)
-                if len(minutes) >= 3 and (ts_ms - int(max_min)) <= 180_000 and (total_buy + total_sell) > 0:
+                if len(minutes) >= 3 and (ts_ms - (int(max_min) + 60_000)) <= 180_000 and (total_buy + total_sell) > 0:
                     ctx["micro_taker_imb_5m"] = (total_buy - total_sell) / (total_buy + total_sell)
                     valid_taker = True
             if not valid_taker:
                 fallback = self._fetch_all(
                     self.micro_db_path,
-                    "SELECT ts_ms, v2, v3 FROM binance_series WHERE symbol=? AND kind='taker' AND ts_ms<=? ORDER BY ts_ms DESC LIMIT 1",
+                    "SELECT ts_ms, v2, v3 FROM binance_series WHERE symbol=? AND kind='taker' AND ts_ms + 300000 <= ? ORDER BY ts_ms DESC LIMIT 1",
                     (symbol, ts_ms),
                 )
                 if fallback:
                     taker_ts, v2, v3 = fallback[0]
-                    if ts_ms - int(taker_ts) <= 720_000:
+                    if ts_ms - (int(taker_ts) + 300_000) <= 720_000:
                         try:
                             sum_val = float(v2) + float(v3)
                             if sum_val > 0:
@@ -344,6 +345,9 @@ class LiveContextEnricher:
                 finally:
                     if con is not None:
                         con.close()
+            else:
+                # Se todas as fontes falharam, permite nova tentativa após 5 min (em vez de travar 6h)
+                self._last_refresh_mono = max(0.0, time.monotonic() - max(0.0, self.refresh_interval_s - 300.0))
             return counts
         finally:
             await http.close()
