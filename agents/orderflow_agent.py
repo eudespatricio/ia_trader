@@ -64,7 +64,7 @@ class OrderFlowAgent(BaseAgent):
             high = float(context["high"])
             low = float(context["low"])
             vol = float(context.get("volume", 1.0))
-            vol_mean = float(context.get("volume_sma", vol))
+            vol_mean = float(context.get("volume_sma") or context.get("vol_sma_20") or vol)
 
             bar_range = max(1e-8, high - low)
             # Posição relativa do fechamento na amplitude da vela: [-1, +1]
@@ -88,59 +88,97 @@ class OrderFlowAgent(BaseAgent):
             if funding_z is not None:
                 metrics["funding_zscore"] = float(funding_z)
 
-            # Prioridade 1: Volume Institucional Anômalo (Z-score >= 1.5)
-            if vol_z is not None and float(vol_z) >= 1.5 and close_position >= 0.35:
-                direction = "BUY"
-                confidence = min(0.92, 0.55 + min(0.25, float(vol_z) * 0.08))
-                rationale = f"Fluxo comprador institucional confirmado (Z-Score Volume={float(vol_z):.2f}, fechamento={close_position:+.2f})."
-            elif vol_z is not None and float(vol_z) >= 1.5 and close_position <= -0.35:
-                direction = "SELL"
-                confidence = min(0.92, 0.55 + min(0.25, float(vol_z) * 0.08))
-                rationale = f"Fluxo vendedor institucional confirmado (Z-Score Volume={float(vol_z):.2f}, fechamento={close_position:+.2f})."
-            # Prioridade 2: Reversão Elástica / Exaustão em relação ao Rolling VWAP
-            elif dist_vwap is not None and float(dist_vwap) <= -2.5 and close_position >= 0.0:
-                direction = "BUY"
-                confidence = min(0.85, 0.60 + min(0.20, abs(float(dist_vwap)) * 0.05))
-                rationale = f"Reversão elástica de VWAP (Preço {float(dist_vwap):.2f}% abaixo do VWAP móvel com suporte)."
-            elif dist_vwap is not None and float(dist_vwap) >= 2.5 and close_position <= 0.0:
-                direction = "SELL"
-                confidence = min(0.85, 0.60 + min(0.20, float(dist_vwap) * 0.05))
-                rationale = f"Exaustão sobreestendida de VWAP (Preço {float(dist_vwap):.2f}% acima do VWAP móvel com resistência)."
-            # Prioridade 3: Anomalias de Funding Rate Z-score
-            elif funding_z is not None and float(funding_z) > 2.0:
-                direction = "SELL"
-                confidence = min(0.85, 0.65 + min(0.15, (float(funding_z) - 2.0) * 0.08))
-                rationale = f"Funding Rate anômalo (Z-Score={float(funding_z):.2f} > +2.0): sobrealavancagem long e risco de cascata."
-            elif funding_z is not None and float(funding_z) < -2.0:
-                direction = "BUY"
-                confidence = min(0.85, 0.65 + min(0.15, (abs(float(funding_z)) - 2.0) * 0.08))
-                rationale = f"Funding Rate anômalo (Z-Score={float(funding_z):.2f} < -2.0): pessimismo extremo e risco de short squeeze."
-            # Prioridade 4: Sinais Clássicos de Volume Ratio e Fechamento Extremo
-            elif vol_ratio >= 1.2 and close_position >= 0.50:
-                direction = "BUY"
-                confidence = min(0.90, 0.50 + (close_position * 0.3) + min(0.15, (vol_ratio - 1.0) * 0.1))
-                rationale = f"Fluxo comprador dominante (fechamento a {close_position:+.2f} do range, volume {vol_ratio:.1f}x da média)."
-            elif vol_ratio >= 1.2 and close_position <= -0.50:
-                direction = "SELL"
-                confidence = min(0.90, 0.50 + (abs(close_position) * 0.3) + min(0.15, (vol_ratio - 1.0) * 0.1))
-                rationale = f"Fluxo vendedor agressivo (fechamento a {close_position:+.2f} do range, volume {vol_ratio:.1f}x da média)."
-            elif funding > 0.0003:
-                direction = "SELL"
-                confidence = 0.65
-                rationale = f"Funding rate excessivo ({funding:+.4%}), sugerindo exaustão de longs."
-            elif funding < -0.0003:
-                direction = "BUY"
-                confidence = 0.65
-                rationale = f"Funding rate negativo ({funding:+.4%}), propício para short squeeze."
-            # Prioridade 5: Neurônio de Fluxo Ativo (Microestrutura Intra-Bar)
-            elif close_position >= 0.20:
-                direction = "BUY"
-                confidence = min(0.82, 0.58 + close_position * 0.22)
-                rationale = f"Neurônio de Fluxo Ativo: Absorção compradora no fechamento da vela (posição={close_position:+.2f}, range={bar_range:.2f})."
-            elif close_position <= -0.20:
-                direction = "SELL"
-                confidence = min(0.82, 0.58 + abs(close_position) * 0.22)
-                rationale = f"Neurônio de Fluxo Ativo: Rejeição vendedora no fechamento da vela (posição={close_position:+.2f}, range={bar_range:.2f})."
+            # Microestrutura Real (features ao vivo, prioridade sobre proxies de vela)
+            micro_taker_raw = context.get("micro_taker_imb_5m")
+            micro_book_raw = context.get("micro_book_imb_10")
+            micro_has_both = False
+            m_taker = None
+            m_book = None
+            if micro_taker_raw is not None and micro_book_raw is not None:
+                try:
+                    m_taker = float(micro_taker_raw)
+                    m_book = float(micro_book_raw)
+                    # Verifica se são números finitos (não NaN, nem ±inf)
+                    if (m_taker == m_taker and m_book == m_book and
+                        m_taker not in (float('inf'), float('-inf')) and
+                        m_book not in (float('inf'), float('-inf'))):
+                        micro_has_both = True
+                except (TypeError, ValueError):
+                    micro_has_both = False
+                    m_taker = None
+                    m_book = None
+
+            if micro_has_both:
+                micro_score = 0.60 * m_taker + 0.40 * m_book
+                metrics["micro_taker_imb_5m"] = m_taker
+                metrics["micro_book_imb_10"] = m_book
+                metrics["micro_score"] = round(micro_score, 4)
+                if micro_score >= 0.18 and m_taker >= 0.10:
+                    direction = "BUY"
+                    confidence = min(0.88, 0.58 + abs(micro_score) * 0.50)
+                    rationale = f"Microestrutura Real: pressão compradora (taker={m_taker:+.3f}, book={m_book:+.3f}, score={micro_score:+.3f})."
+                elif micro_score <= -0.18 and m_taker <= -0.10:
+                    direction = "SELL"
+                    confidence = min(0.88, 0.58 + abs(micro_score) * 0.50)
+                    rationale = f"Microestrutura Real: pressão vendedora (taker={m_taker:+.3f}, book={m_book:+.3f}, score={micro_score:+.3f})."
+
+            # Só executar anomalias se a microestrutura real não definiu direção
+            if direction == "HOLD":
+                # Prioridade 1: Volume Institucional Anômalo (Z-score >= 1.5)
+                if vol_z is not None and float(vol_z) >= 1.5 and close_position >= 0.35:
+                    direction = "BUY"
+                    confidence = min(0.92, 0.55 + min(0.25, float(vol_z) * 0.08))
+                    rationale = f"Fluxo comprador institucional confirmado (Z-Score Volume={float(vol_z):.2f}, fechamento={close_position:+.2f})."
+                elif vol_z is not None and float(vol_z) >= 1.5 and close_position <= -0.35:
+                    direction = "SELL"
+                    confidence = min(0.92, 0.55 + min(0.25, float(vol_z) * 0.08))
+                    rationale = f"Fluxo vendedor institucional confirmado (Z-Score Volume={float(vol_z):.2f}, fechamento={close_position:+.2f})."
+                # Prioridade 2: Reversão Elástica / Exaustão em relação ao Rolling VWAP
+                elif dist_vwap is not None and float(dist_vwap) <= -2.5 and close_position >= 0.0:
+                    direction = "BUY"
+                    confidence = min(0.85, 0.60 + min(0.20, abs(float(dist_vwap)) * 0.05))
+                    rationale = f"Reversão elástica de VWAP (Preço {float(dist_vwap):.2f}% abaixo do VWAP móvel com suporte)."
+                elif dist_vwap is not None and float(dist_vwap) >= 2.5 and close_position <= 0.0:
+                    direction = "SELL"
+                    confidence = min(0.85, 0.60 + min(0.20, float(dist_vwap) * 0.05))
+                    rationale = f"Exaustão sobreestendida de VWAP (Preço {float(dist_vwap):.2f}% acima do VWAP móvel com resistência)."
+                # Prioridade 3: Anomalias de Funding Rate Z-score
+                elif funding_z is not None and float(funding_z) > 2.0:
+                    direction = "SELL"
+                    confidence = min(0.85, 0.65 + min(0.15, (float(funding_z) - 2.0) * 0.08))
+                    rationale = f"Funding Rate anômalo (Z-Score={float(funding_z):.2f} > +2.0): sobrealavancagem long e risco de cascata."
+                elif funding_z is not None and float(funding_z) < -2.0:
+                    direction = "BUY"
+                    confidence = min(0.85, 0.65 + min(0.15, (abs(float(funding_z)) - 2.0) * 0.08))
+                    rationale = f"Funding Rate anômalo (Z-Score={float(funding_z):.2f} < -2.0): pessimismo extremo e risco de short squeeze."
+                # Prioridade 4: Sinais Clássicos de Volume Ratio e Fechamento Extremo
+                elif vol_ratio >= 1.2 and close_position >= 0.50:
+                    direction = "BUY"
+                    confidence = min(0.90, 0.50 + (close_position * 0.3) + min(0.15, (vol_ratio - 1.0) * 0.1))
+                    rationale = f"Fluxo comprador dominante (fechamento a {close_position:+.2f} do range, volume {vol_ratio:.1f}x da média)."
+                elif vol_ratio >= 1.2 and close_position <= -0.50:
+                    direction = "SELL"
+                    confidence = min(0.90, 0.50 + (abs(close_position) * 0.3) + min(0.15, (vol_ratio - 1.0) * 0.1))
+                    rationale = f"Fluxo vendedor agressivo (fechamento a {close_position:+.2f} do range, volume {vol_ratio:.1f}x da média)."
+                elif funding > 0.0003:
+                    direction = "SELL"
+                    confidence = 0.65
+                    rationale = f"Funding rate excessivo ({funding:+.4%}), sugerindo exaustão de longs."
+                elif funding < -0.0003:
+                    direction = "BUY"
+                    confidence = 0.65
+                    rationale = f"Funding rate negativo ({funding:+.4%}), propício para short squeeze."
+
+            # Prioridade 5: Neurônio de Fluxo Ativo (somente se não houver microestrutura real)
+            if direction == "HOLD" and not micro_has_both:
+                if (close_position >= 0.55) or (vol_ratio >= 1.2 and close_position >= 0.25):
+                    direction = "BUY"
+                    confidence = min(0.82, 0.58 + close_position * 0.22)
+                    rationale = f"Neurônio de Fluxo Ativo: forte absorção compradora (posição={close_position:+.2f}, volume={vol_ratio:.1f}x)."
+                elif (close_position <= -0.55) or (vol_ratio >= 1.2 and close_position <= -0.25):
+                    direction = "SELL"
+                    confidence = min(0.82, 0.58 + abs(close_position) * 0.22)
+                    rationale = f"Neurônio de Fluxo Ativo: forte rejeição vendedora (posição={close_position:+.2f}, volume={vol_ratio:.1f}x)."
 
         return AgentSignal(
             agent_name=self.name,

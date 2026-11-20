@@ -80,14 +80,13 @@ class ConsensusJudge:
     ) -> List[AgentSignal]:
         """
         Nível 1 & Nível 2 do Protocolo S2 (docs/S2_CALIBRACAO_AGENTES_BACKTEST.md):
-        Dampening de confiança para agentes com sobreconfiança severa no regime SIDEWAYS_RANGE
-        (quando ECE > 0.15 ou acurácia < 45%, limitar confiança máxima a 0.55 ou aplicar shrinkage empírico).
+        Dampening de confiança para agentes com sobreconfiança severa em qualquer regime explícito,
+        incluindo SIDEWAYS_RANGE e demais regimes (ex.: TREND_FOLLOWING, BREAKOUT).
         """
         calib_map = agent_calibration if agent_calibration is not None else self.agent_calibration
         if not signals:
             return signals
 
-        is_sideways = (regime == "SIDEWAYS_RANGE")
         calibrated_signals = []
 
         for sig in signals:
@@ -98,15 +97,24 @@ class ConsensusJudge:
             conf = float(sig.confidence)
             should_dampen = False
             dampen_reason = ""
+            calibrated_conf = conf
 
-            if is_sideways:
-                c_info = calib_map.get(sig.agent_name) if calib_map else None
-                if c_info is None and getattr(sig, "metrics", None):
-                    c_info = sig.metrics
+            # Busca informações de calibração: primeiro no mapa, depois nas métricas do próprio sinal
+            c_info = calib_map.get(sig.agent_name) if calib_map else None
+            if c_info is None and getattr(sig, "metrics", None):
+                c_info = sig.metrics
 
-                if c_info:
-                    acc = float(c_info.get("accuracy", 1.0))
-                    ece = float(c_info.get("ece", 0.0))
+            if c_info:
+                # Guarda de amostragem: não aplicar dampening se houver poucas amostras
+                n_samples = c_info.get("total_samples")
+                if n_samples is not None and int(n_samples) < 5:
+                    calibrated_signals.append(sig)
+                    continue
+
+                acc = float(c_info.get("accuracy", 1.0))
+                ece = float(c_info.get("ece", 0.0))
+
+                if regime == "SIDEWAYS_RANGE":
                     # Patch S4 (v1.0.6-s4): Dampening em SIDEWAYS_RANGE só penaliza sobreconfiança
                     # improdutiva (ece > 0.15 com acurácia < 55%) ou baixa assertividade (< 45%).
                     # Agentes com acurácia empírica vencedora (>= 55%, ex.: 64.3% na S3) não são
@@ -114,13 +122,22 @@ class ConsensusJudge:
                     if ece > 0.15 and acc < 0.55:
                         should_dampen = True
                         dampen_reason = f"ECE {ece:.2f} > 0.15 (acc={acc:.1%}) em SIDEWAYS_RANGE"
+                        calibrated_conf = min(0.55, conf)
                     elif acc < 0.45:
                         should_dampen = True
                         dampen_reason = f"Acurácia {acc:.1%} < 45% em SIDEWAYS_RANGE"
+                        calibrated_conf = min(0.55, conf)
+                elif regime:
+                    # Demais regimes explícitos: penalizar sobreconfiança severa (ECE > 0.20 e acurácia < 50%)
+                    # ou acurácia muito baixa (< 40%).
+                    if (ece > 0.20 and acc < 0.50) or (acc < 0.40):
+                        should_dampen = True
+                        target_cap = 0.55 if acc < 0.35 else min(0.58, conf * max(0.65, acc + 0.25))
+                        calibrated_conf = min(conf, target_cap)
+                        dampen_reason = f"ECE {ece:.2f} e acc {acc:.1%} em {regime}"
 
             if should_dampen:
                 from dataclasses import replace
-                calibrated_conf = min(0.55, conf)
                 new_sig = replace(sig, confidence=calibrated_conf)
                 new_metrics = dict(sig.metrics) if getattr(sig, "metrics", None) else {}
                 new_metrics["raw_confidence"] = conf

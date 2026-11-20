@@ -47,12 +47,18 @@ def _flow_ctx(close=100.3, volume=100.0, **extra):
 def test_p4_requires_strong_close_or_volume():
     base, p4 = OrderFlowAgent(), ab.OrderFlowAgentP4()
     weak = _flow_ctx(close=100.3)            # close_position = +0.3, sem volume_sma (vol_ratio = 1)
-    assert base.evaluate(weak).direction == "BUY"
+    assert base.evaluate(weak).direction == "HOLD"
     assert p4.evaluate(weak).direction == "HOLD"
     strong = _flow_ctx(close=100.6)          # +0.6
+    assert base.evaluate(strong).direction == "BUY"
     assert p4.evaluate(strong).direction == "BUY"
     vol_conf = _flow_ctx(close=100.3, volume_sma=50.0)   # vol_ratio = 2.0
+    assert base.evaluate(vol_conf).direction == "BUY"
     assert p4.evaluate(vol_conf).direction == "BUY"
+    weak_sell = _flow_ctx(close=99.7)
+    strong_sell = _flow_ctx(close=99.4)
+    assert base.evaluate(weak_sell).direction == "HOLD"
+    assert base.evaluate(strong_sell).direction == "SELL"
 
 
 def test_p6_confidence_is_monotonic_at_25_and_75_but_original_is_not():

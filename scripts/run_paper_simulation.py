@@ -45,8 +45,9 @@ import pandas as pd
 
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
+from data.live_context_enricher import LiveContextEnricher
 from agents.golden_pot_agent import GoldenPotAgent
-from agents.tape_reading_agent import TapeReadingAgent
+from agents.tape_reading_agent import MICROSTRUCTURE_DB, TapeReadingAgent
 from agents.technical_agent import _disable_estimator_parallelism
 from signal_generator import TradeSignal
 from chatgpt_assistant import ChatGPTAssistant
@@ -206,6 +207,9 @@ class PaperTradingDaemon:
         self._swing_entered_bars: Set[Tuple[str, int]] = set()
         self._last_breaker_log_ts: Dict[str, float] = {}
         is_fake_loader = (type(self.loader).__name__ == "FakeLoader")
+        self.enable_live_context_enrichment: bool = not is_fake_loader
+        micro_db = getattr(self.tape_agent, "db_path", MICROSTRUCTURE_DB)
+        self.context_enricher = LiveContextEnricher(cache_db_path=self.engine.db_path, micro_db_path=micro_db)
         self.require_strict_tape_majors: bool = (not is_fake_loader) if require_strict_tape_majors is None else bool(require_strict_tape_majors)
         self.use_scalp_squeeze_ml15: bool = (not is_fake_loader) if use_scalp_squeeze_ml15 is None else bool(use_scalp_squeeze_ml15)
         self.enforce_gp_btc_macro: bool = (not is_fake_loader) if enforce_gp_btc_macro is None else bool(enforce_gp_btc_macro)
@@ -676,16 +680,26 @@ class PaperTradingDaemon:
         """Após execute_* retornar None: motivo real registrado pelo engine (quota/margin/breaker/veto/other)."""
         self._fr(strategy, sym, bar_ts, str(getattr(self.engine, "last_open_reject", "other")))
 
+    def _build_committee_context(
+        self, sym: str, latest: pd.Series, df_feat: Optional[pd.DataFrame], decision_ts_ms: int
+    ) -> Dict[str, Any]:
+        """Contexto causal para o comitê. Em produção, enriquece com macro/on-chain/microestrutura."""
+        if self.enable_live_context_enrichment and self.context_enricher is not None:
+            return self.context_enricher.enrich(sym, latest, df_feat, decision_ts_ms)
+        return latest.to_dict()
+
     async def _committee_gate(
         self, label: str, sym: str, direction: str, latest: pd.Series, close: float, atr: float, ts: int,
-        min_confidence: float,
+        min_confidence: float, df_feat: Optional[pd.DataFrame] = None, bar_ms: int = 0,
     ) -> Optional[TradeSignal]:
         """PORTA OBRIGATÓRIA (diretriz E7): SCALP e GOLDEN_POT só entram se o comitê completo
         (core.evaluate_market_async = agentes + consenso + veto do RiskSentinel + SignalGenerator) concordar
         na mesma direção, sem veto e com confiança >= mínimo do perfil. Retorna o TradeSignal REAL ou None."""
         self._committee_reject = "other"  # funil: motivo da última recusa do comitê
+        decision_ts = ts + int(bar_ms or 0)
+        context = self._build_committee_context(sym, latest, df_feat, decision_ts)
         committee = await self.engine.core.evaluate_market_async(
-            context=latest.to_dict(), symbol=sym, current_price=close, atr=atr, timestamp=ts, use_llm=True,
+            context=context, symbol=sym, current_price=close, atr=atr, timestamp=ts, use_llm=True,
         )
         if committee.is_vetoed:
             logger.info(f"[{sym}] {label} bloqueado: veto do RiskSentinel.")
@@ -762,21 +776,25 @@ class PaperTradingDaemon:
         last = f"{lt.get('vote')}/{lt.get('status')}({lt.get('reason')})" if lt else "n/a"
         return (f"Tape: último {last} | Gate P/B/U: {c['PASSED']}/{c['BLOCKED']}/{c['UNAVAILABLE_PASSED']}")
 
+    def _is_breaker_blocking(self, strategy_type: str) -> bool:
+        """True se o RollbackGuard (P0) bloquear novas posições da estratégia."""
+        guard = getattr(self.engine, "rollback_guard", None)
+        if guard is None:
+            return False
+        allowed, _ = guard.can_open_new_position(strategy_type, strategy=strategy_type)
+        return not allowed
+
     def _breaker_short_circuit(
         self, strategy_type: str, funnel_name: str, symbols: List[str], bar_ts: int
     ) -> bool:
         """Retorna True e registra reject:breaker (com log throttled 5m) se RollbackGuard bloquear."""
-        guard = getattr(self.engine, "rollback_guard", None)
-        if guard is None:
-            return False
-        allowed, reason = guard.can_open_new_position(strategy_type, strategy=strategy_type)
-        if allowed:
+        if not self._is_breaker_blocking(strategy_type):
             return False
         for sym in symbols:
             self._fr(funnel_name, sym, bar_ts, "breaker")
         now_mono = time.monotonic()
         if now_mono - self._last_breaker_log_ts.get(strategy_type, 0.0) >= 300.0:
-            logger.info(f"[BREAKER] {strategy_type} bloqueado: {reason}")
+            logger.info(f"[BREAKER] {strategy_type} bloqueado (RollbackGuard P0).")
             self._last_breaker_log_ts[strategy_type] = now_mono
         return True
 
@@ -968,7 +986,8 @@ class PaperTradingDaemon:
                 self._fi(GPN, sym, ts, "candidate")
 
                 committee = await self._committee_gate(
-                    "GP", sym, direction, latest, close, atr, ts, GP_MIN_COMMITTEE_CONFIDENCE)
+                    "GP", sym, direction, latest, close, atr, ts, GP_MIN_COMMITTEE_CONFIDENCE,
+                    df_feat=df_feat, bar_ms=GP_BAR_MS)
                 if committee is None:
                     self._fr(GPN, sym, ts, getattr(self, "_committee_reject", "other"))
                     continue
@@ -1177,7 +1196,8 @@ class PaperTradingDaemon:
                 self._fi(SCN, sym, ts, "candidate")
 
                 committee = await self._committee_gate(
-                    "Scalp", sym, direction, latest, close, atr, ts, SCALP_MIN_COMMITTEE_CONFIDENCE)
+                    "Scalp", sym, direction, latest, close, atr, ts, SCALP_MIN_COMMITTEE_CONFIDENCE,
+                    df_feat=df_feat, bar_ms=SCALP_BAR_MS)
                 if committee is None:
                     self._fr(SCN, sym, ts, getattr(self, "_committee_reject", "other"))
                     continue
@@ -1259,10 +1279,11 @@ class PaperTradingDaemon:
                     self._fr(DTN, sym, ts, "cooldown")
                     continue
 
+                context = self._build_committee_context(sym, latest, df_feat, ts + SWING_BAR_MS)
                 eval_res = self.engine.core.evaluate_multi_strategy(
                     symbol=sym,
                     current_price=close,
-                    context=latest.to_dict(),
+                    context=context,
                     annualized_funding_rate=0.0, # Carry em standby
                     timestamp=ts,
                 )
@@ -1342,6 +1363,12 @@ class PaperTradingDaemon:
                 cycle += 1
                 logger.debug(f"--- Ciclo de Simulação #{cycle} ---")
                 self.engine.sync_settings_from_db()
+
+                if self.enable_live_context_enrichment and max_cycles == 0:
+                    try:
+                        await self.context_enricher.maybe_refresh_external_cache()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"Falha ao atualizar cache externo macro/on-chain: {exc}")
 
                 # 1. Atualiza posições abertas e testa gatilhos de saída (SL, TP1, TP2) em paralelo
                 await self.update_active_positions()
