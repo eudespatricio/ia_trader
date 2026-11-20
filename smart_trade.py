@@ -107,6 +107,8 @@ FUNNEL_SUCCESS_STAGES: List[str] = [
 FUNNEL_REJECT_REASONS: List[str] = [
     "no_data", "no_trigger", "committee_disagree", "low_confidence", "veto", "cooldown", "bar_limit",
     "quota", "margin", "breaker", "gate_blocked", "excluded_symbol", "other",
+    "stale_bar", "stale_candle", "climax_exhaustion", "confidence", "stale_data", "tape_veto",
+    "kill_switch",
 ]
 FUNNEL_FLUSH_INTERVAL_S: float = 30.0
 FUNNEL_DEDUPE_MAX_AGE_S: float = 6 * 3600.0

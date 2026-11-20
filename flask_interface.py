@@ -1139,6 +1139,8 @@ def api_chart(symbol: str, timeframe: str):
 
     # On-demand auto-fetch caso o cache tenha poucas velas, esteja defasado (>2.5 barras de atraso) ou refresh forçado
     if needs_fetch:
+        dl = None
+        loop = None
         try:
             from data.data_loader import DataLoader
             dl = DataLoader(db_path=DB_PATH)
@@ -1148,9 +1150,17 @@ def api_chart(symbol: str, timeframe: str):
             fetched = loop.run_until_complete(dl.get_candles(sym, tf, limit=limit, force_refresh=True, as_dataframe=False, exchange="binance"))
             if not fetched:
                 fetched = loop.run_until_complete(dl.get_candles(sym, tf, limit=limit, force_refresh=True, as_dataframe=False, exchange="bitget"))
-            loop.close()
         except Exception as e:
             logger.debug(f"Auto-fetch candles failed for {sym} {tf}: {e}")
+        finally:
+            if dl is not None and loop is not None:
+                try:
+                    loop.run_until_complete(dl.close())
+                except Exception as close_err:
+                    logger.debug(f"Erro ao fechar DataLoader para {sym} {tf}: {close_err}")
+            if loop is not None:
+                loop.close()
+                asyncio.set_event_loop(None)
 
     try:
         with get_db_connection(read_only=True) as conn:
@@ -1399,6 +1409,8 @@ def refresh_symbol(symbol: str, timeframe: str):
     """Atualiza o cache SQLite sob demanda com dados públicos da Bitget."""
     sym = symbol.upper()
     tf = timeframe.lower()
+    dl = None
+    loop = None
     try:
         from data.data_loader import DataLoader
         dl = DataLoader(db_path=DB_PATH)
@@ -1407,7 +1419,6 @@ def refresh_symbol(symbol: str, timeframe: str):
         candles = loop.run_until_complete(dl.get_candles(sym, tf, limit=150, force_refresh=True, as_dataframe=False, exchange="binance"))
         if not candles:
             candles = loop.run_until_complete(dl.get_candles(sym, tf, limit=150, force_refresh=True, as_dataframe=False, exchange="bitget"))
-        loop.close()
         return jsonify({
             "success": True,
             "symbol": sym,
@@ -1422,6 +1433,15 @@ def refresh_symbol(symbol: str, timeframe: str):
             "timeframe": tf,
             "error": str(e)
         }), 500
+    finally:
+        if dl is not None and loop is not None:
+            try:
+                loop.run_until_complete(dl.close())
+            except Exception as close_err:
+                logger.debug(f"Erro ao fechar DataLoader para {sym} {tf}: {close_err}")
+        if loop is not None:
+            loop.close()
+            asyncio.set_event_loop(None)
 
 
 # ============================================================================

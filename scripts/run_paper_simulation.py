@@ -21,6 +21,7 @@ import signal
 import sys
 import time
 import warnings
+from logging.handlers import RotatingFileHandler
 
 _pw = os.environ.get("PYTHONWARNINGS", "")
 if "sklearn.utils.parallel" not in _pw:
@@ -29,7 +30,7 @@ if "sklearn.utils.parallel" not in _pw:
         if _pw
         else "ignore::UserWarning:sklearn.utils.parallel"
     )
-warnings.filterwarnings("ignore", category=UserWarning, module=r"^sklearn\.utils\.parallel$")
+warnings.filterwarnings("ignore", message=r".*sklearn\.utils\.parallel.*", category=UserWarning)
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -46,6 +47,7 @@ from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from agents.golden_pot_agent import GoldenPotAgent
 from agents.tape_reading_agent import TapeReadingAgent
+from agents.technical_agent import _disable_estimator_parallelism
 from signal_generator import TradeSignal
 from chatgpt_assistant import ChatGPTAssistant
 from smart_trade import (PaperTradingEngine, NON_CLOSING_TRADE_ACTIONS, STRATEGY_PROFILES,
@@ -55,9 +57,17 @@ from leverage_policy import decide_leverage, MAX_LEVERAGE
 
 logger = logging.getLogger("ia_trader.paper_simulation")
 if not logger.handlers:
+    formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] [paper_daemon] %(message)s")
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] [paper_daemon] %(message)s"))
+    handler.setFormatter(formatter)
     logger.addHandler(handler)
+    log_file = os.getenv("PAPER_DAEMON_LOG_FILE")
+    if log_file:
+        file_handler = RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
     logger.setLevel(logging.INFO)
 
 
@@ -194,6 +204,7 @@ class PaperTradingDaemon:
         self._funding_refresh_done: Dict[str, int] = {}    # liquidação de funding já consultada (evita rede repetida)
         self.stale_bar_max_age_ms: int = 0 if type(self.loader).__name__ == "FakeLoader" else GP_STALE_BAR_MAX_AGE_MS
         self._swing_entered_bars: Set[Tuple[str, int]] = set()
+        self._last_breaker_log_ts: Dict[str, float] = {}
         is_fake_loader = (type(self.loader).__name__ == "FakeLoader")
         self.require_strict_tape_majors: bool = (not is_fake_loader) if require_strict_tape_majors is None else bool(require_strict_tape_majors)
         self.use_scalp_squeeze_ml15: bool = (not is_fake_loader) if use_scalp_squeeze_ml15 is None else bool(use_scalp_squeeze_ml15)
@@ -215,6 +226,7 @@ class PaperTradingDaemon:
             try:
                 bundle = joblib.load(fpath)
                 if isinstance(bundle, dict) and bundle.get("model") is not None and bundle.get("feature_names"):
+                    _disable_estimator_parallelism(bundle["model"])
                     bundles.append(bundle)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Falha ao carregar modelo 15m {fname}: {exc}")
@@ -750,6 +762,24 @@ class PaperTradingDaemon:
         last = f"{lt.get('vote')}/{lt.get('status')}({lt.get('reason')})" if lt else "n/a"
         return (f"Tape: último {last} | Gate P/B/U: {c['PASSED']}/{c['BLOCKED']}/{c['UNAVAILABLE_PASSED']}")
 
+    def _breaker_short_circuit(
+        self, strategy_type: str, funnel_name: str, symbols: List[str], bar_ts: int
+    ) -> bool:
+        """Retorna True e registra reject:breaker (com log throttled 5m) se RollbackGuard bloquear."""
+        guard = getattr(self.engine, "rollback_guard", None)
+        if guard is None:
+            return False
+        allowed, reason = guard.can_open_new_position(strategy_type, strategy=strategy_type)
+        if allowed:
+            return False
+        for sym in symbols:
+            self._fr(funnel_name, sym, bar_ts, "breaker")
+        now_mono = time.monotonic()
+        if now_mono - self._last_breaker_log_ts.get(strategy_type, 0.0) >= 300.0:
+            logger.info(f"[BREAKER] {strategy_type} bloqueado: {reason}")
+            self._last_breaker_log_ts[strategy_type] = now_mono
+        return True
+
     def _build_ladder_signal(
         self, committee: TradeSignal, strategy_type: str, direction: str, close: float, atr: float,
         latest: pd.Series, margin_cap: float, rationale: str, low_liquidity: bool = False,
@@ -816,6 +846,9 @@ class PaperTradingDaemon:
         GPN = "GOLDEN_POT"
         now_ts = int(time.time() * 1000)
         nom = self._nominal_bar(now_ts, GP_BAR_MS)
+        if self._breaker_short_circuit("GOLDEN_POT", GPN, ["*"], nom):
+            return
+
         can_exec, reason = self.engine.can_execute_golden_pot(now_ts)
         if not can_exec:
             self._fr(GPN, "*", nom, "breaker" if "Circuit Breaker" in reason else "quota")
@@ -1006,6 +1039,9 @@ class PaperTradingDaemon:
         scalp_syms = ["ETHUSDT", "SOLUSDT", "BTCUSDT"]
         now_ts = int(time.time() * 1000)
         nom = self._nominal_bar(now_ts, SCALP_BAR_MS)
+        if self._breaker_short_circuit("SCALP", SCN, scalp_syms, nom):
+            return
+
         open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
         if self.engine.max_concurrent_positions is not None and open_count >= self.engine.max_concurrent_positions:
             for _s in scalp_syms:
@@ -1179,6 +1215,9 @@ class PaperTradingDaemon:
     async def evaluate_swing_opportunities(self) -> None:
         """Avalia oportunidades de Swing Trade (1h/4h) com o Comitê de Decisão."""
         DTN = "DAY_TRADE"
+        if self._breaker_short_circuit("DIRECTIONAL", DTN, self.core_symbols, self._nominal_bar(int(time.time() * 1000), SWING_BAR_MS)):
+            return
+
         for sym in self.core_symbols:
             nom = self._nominal_bar(int(time.time() * 1000), SWING_BAR_MS)
             bar_ref = nom

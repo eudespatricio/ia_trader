@@ -97,6 +97,7 @@ class RollbackGuard:
         cooldown_seconds: int = 7200,      # 2 horas de pausa
         min_win_rate_threshold: float = 30.0,
         min_trades_for_degradation: int = 12,
+        rolling_window_min_trades: int = 10,
         auto_rollback_enabled: bool = True,
     ):
         self.db_path = db_path
@@ -106,6 +107,7 @@ class RollbackGuard:
         self.cooldown_seconds = int(cooldown_seconds)
         self.min_win_rate_threshold = float(min_win_rate_threshold)
         self.min_trades_for_degradation = int(min_trades_for_degradation)
+        self.rolling_window_min_trades = int(rolling_window_min_trades)
         self.auto_rollback_enabled = auto_rollback_enabled
 
         self.day_start_equity: Optional[float] = None
@@ -267,6 +269,9 @@ class RollbackGuard:
         total_trades = int(m.get("total_trades", 0))
         win_rate = float(m.get("win_rate", 0.0))
         profit_factor = float(m.get("profit_factor", 0.0))
+        rolling_count = int(m.get("rolling_trades_count", 0))
+        rolling_wr = float(m.get("rolling_win_rate", 0.0))
+        rolling_pf = float(m.get("rolling_profit_factor", 0.0))
 
         # -------------------------------------------------------------
         # Cálculo de Drawdown Diário com baseline persistido
@@ -364,16 +369,32 @@ class RollbackGuard:
         # -------------------------------------------------------------
         # 4. Detecção de Degradação & Rollback Automático de Configuração
         # -------------------------------------------------------------
-        if self.auto_rollback_enabled and total_trades >= self.min_trades_for_degradation:
-            if win_rate < self.min_win_rate_threshold or (profit_factor < 0.60 and profit_factor > 0):
+        if rolling_count >= self.rolling_window_min_trades:
+            eval_wr, eval_pf, win_label = rolling_wr, rolling_pf, f"janela móvel n={rolling_count}"
+        elif total_trades >= self.min_trades_for_degradation:
+            eval_wr, eval_pf, win_label = win_rate, profit_factor, f"acumulado n={total_trades}"
+        else:
+            eval_wr, eval_pf, win_label = None, None, ""
+
+        if self.auto_rollback_enabled and eval_wr is not None:
+            is_degraded = (eval_wr < self.min_win_rate_threshold) or (0.0 < eval_pf < 0.60) or (eval_pf == 0.0 and eval_wr == 0.0)
+            if is_degraded:
                 if not self.status.is_rollback_active:
-                    reason = f"DEGRADAÇÃO DETECTADA: Win Rate={win_rate:.1f}% e Profit Factor={profit_factor:.2f} abaixo do limiar de segurança. Ativando rollback para modo defensivo ultra-conservador."
+                    reason = f"DEGRADAÇÃO DETECTADA: Win Rate={eval_wr:.1f}% e Profit Factor={eval_pf:.2f} abaixo do limiar de segurança em {win_label}. Ativando rollback para modo defensivo ultra-conservador."
                     self.status.is_rollback_active = True
                     self.active_policy = DefensiveRiskPolicy()
-                    self.status.actions_taken.append("ROLLBACK_TO_DEFENSIVE_MODE")
+                    if "ROLLBACK_TO_DEFENSIVE_MODE" not in self.status.actions_taken:
+                        self.status.actions_taken.append("ROLLBACK_TO_DEFENSIVE_MODE")
                     self._log_event("DEGRADATION_ROLLBACK_ACTIVATED", reason, current_dd, active_losses, actions=["ROLLBACK_TO_DEFENSIVE_MODE"])
                     self._persist_state()
                     logger.warning(f"🛡️ {reason}")
+            elif self.status.is_rollback_active and rolling_count >= self.rolling_window_min_trades and rolling_wr >= 50.0 and rolling_pf >= 1.25:
+                reason = f"RECUPERAÇÃO DA DEGRADAÇÃO CONFIRMADA: Win Rate da janela móvel={rolling_wr:.1f}% e Profit Factor={rolling_pf:.2f} restauraram patamares seguros. Retornando para política de risco normal."
+                self.status.is_rollback_active = False
+                self.active_policy = RiskPolicy()
+                self._log_event("DEGRADATION_ROLLBACK_RECOVERED", reason, current_dd, active_losses, actions=["ROLLBACK_RECOVERED"])
+                self._persist_state()
+                logger.info(f"🟢 {reason}")
 
         # Se passou por todas as barreiras sem disparar travas
         if self.status.state != "TRIPPED" and self.status.state != "COOLDOWN":

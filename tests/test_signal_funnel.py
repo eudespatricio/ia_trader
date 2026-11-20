@@ -40,7 +40,9 @@ def test_constants_contract():
                                         "gate_passed", "executed"]
     assert st.FUNNEL_REJECT_REASONS == ["no_data", "no_trigger", "committee_disagree", "low_confidence", "veto",
                                         "cooldown", "bar_limit", "quota", "margin", "breaker", "gate_blocked",
-                                        "excluded_symbol", "other"]
+                                        "excluded_symbol", "other", "stale_bar", "stale_candle",
+                                        "climax_exhaustion", "confidence", "stale_data", "tape_veto",
+                                        "kill_switch"]
 
 
 def test_table_schema(temp_db):

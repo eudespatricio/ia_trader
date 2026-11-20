@@ -61,6 +61,10 @@ class PerformanceMetrics:
     payoff_ratio: float = 0.0
     avg_win: float = 0.0
     avg_loss: float = 0.0
+    rolling_window_size: int = 15
+    rolling_trades_count: int = 0
+    rolling_win_rate: float = 0.0
+    rolling_profit_factor: float = 0.0
     
     # Sequências e Risco Comportamental
     current_streak_type: str = "NONE"   # "WIN", "LOSS", "NONE"
@@ -294,6 +298,16 @@ class PerformanceTracker:
             avg_loss = (gross_loss / losing_trades) if losing_trades > 0 else 0.0
             payoff_ratio = (avg_win / avg_loss) if avg_loss > 0 else 0.0
 
+            r_pnls = pnls[-15:]
+            rolling_window_size = 15
+            rolling_trades_count = int(len(r_pnls))
+            r_wins = int(np.sum(r_pnls > 0)) if rolling_trades_count > 0 else 0
+            r_losses = int(np.sum(r_pnls < 0)) if rolling_trades_count > 0 else 0
+            rolling_win_rate = (r_wins / rolling_trades_count * 100.0) if rolling_trades_count > 0 else 0.0
+            r_gp = float(np.sum(r_pnls[r_pnls > 0])) if r_wins > 0 else 0.0
+            r_gl = float(abs(np.sum(r_pnls[r_pnls < 0]))) if r_losses > 0 else 0.0
+            rolling_profit_factor = (r_gp / r_gl) if r_gl > 0 else (99.0 if r_gp > 0 else 0.0)
+
             # Sequências (Streaks)
             current_streak_type = "NONE"
             current_streak_count = 0
@@ -414,6 +428,10 @@ class PerformanceTracker:
                 payoff_ratio=payoff_ratio,
                 avg_win=avg_win,
                 avg_loss=avg_loss,
+                rolling_window_size=rolling_window_size,
+                rolling_trades_count=rolling_trades_count,
+                rolling_win_rate=rolling_win_rate,
+                rolling_profit_factor=rolling_profit_factor,
                 current_streak_type=current_streak_type,
                 current_streak_count=current_streak_count,
                 max_consecutive_wins=max_consecutive_wins,

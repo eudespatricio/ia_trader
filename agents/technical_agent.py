@@ -16,7 +16,7 @@ if "sklearn.utils.parallel" not in _pw:
         if _pw
         else "ignore::UserWarning:sklearn.utils.parallel"
     )
-warnings.filterwarnings("ignore", category=UserWarning, module=r"^sklearn\.utils\.parallel$")
+warnings.filterwarnings("ignore", message=r".*sklearn\.utils\.parallel.*", category=UserWarning)
 
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
@@ -40,6 +40,60 @@ class _DefaultMLEnsemble:
             X_in = X
         probs = [m.predict_proba(X_in) for m in self.models]
         return np.mean(probs, axis=0)
+
+
+def _disable_estimator_parallelism(estimator: Any, _seen: Optional[set] = None) -> Any:
+    if _seen is None:
+        _seen = set()
+    if estimator is None:
+        return estimator
+    obj_id = id(estimator)
+    if obj_id in _seen:
+        return estimator
+    _seen.add(obj_id)
+
+    if hasattr(estimator, "n_jobs"):
+        try:
+            setattr(estimator, "n_jobs", 1)
+        except (AttributeError, TypeError):
+            pass
+
+    # Recurse into sub-estimators
+    for attr_name in ("estimator", "base_estimator"):
+        try:
+            sub_est = getattr(estimator, attr_name, None)
+        except Exception:
+            sub_est = None
+        if sub_est is not None:
+            _disable_estimator_parallelism(sub_est, _seen)
+
+    try:
+        estimators = getattr(estimator, "estimators_", None)
+    except Exception:
+        estimators = None
+    if isinstance(estimators, (list, tuple)):
+        for sub_est in estimators:
+            _disable_estimator_parallelism(sub_est, _seen)
+
+    try:
+        calibrated = getattr(estimator, "calibrated_classifiers_", None)
+    except Exception:
+        calibrated = None
+    if isinstance(calibrated, (list, tuple)):
+        for sub_est in calibrated:
+            _disable_estimator_parallelism(sub_est, _seen)
+
+    try:
+        steps = getattr(estimator, "steps", None)
+    except Exception:
+        steps = None
+    if isinstance(steps, (list, tuple)):
+        for name_step in steps:
+            if isinstance(name_step, (list, tuple)) and len(name_step) >= 2:
+                step_est = name_step[1]
+                _disable_estimator_parallelism(step_est, _seen)
+
+    return estimator
 
 
 class TechnicalAgent(BaseAgent):
@@ -68,6 +122,7 @@ class TechnicalAgent(BaseAgent):
                 if os.path.exists(p):
                     bundle = joblib.load(p)
                     if isinstance(bundle, dict) and "model" in bundle:
+                        _disable_estimator_parallelism(bundle["model"])
                         loaded_models.append(bundle["model"])
                         if not feat_names and bundle.get("feature_names"):
                             feat_names = list(bundle["feature_names"])
@@ -280,14 +335,15 @@ class TechnicalAgent(BaseAgent):
                     direction = "HOLD"
                     rationale = f"Sinal de venda neutralizado: preço muito próximo do suporte imediato ({dist_supp_val:.2f}% de distância)."
         elif direction == "HOLD":
+            vol_z = _clean(context.get("volume_zscore_20"))
             # Gatilho Estrutural Puro: Reversão em Liquidity Sweep mesmo sem sinal do modelo tradicional
-            if sweep_bull and (dist_supp_val is None or dist_supp_val <= 0.8):
+            if sweep_bull and (macro_bull is not False) and (dist_supp_val is None or dist_supp_val <= 0.8) and (vol_z is None or vol_z >= 0.8):
                 direction = "BUY"
-                confidence = 0.72
+                confidence = 0.72 if (vol_z is not None and vol_z >= 1.5) else 0.68
                 rationale = "Gatilho Estrutural: Liquidity Sweep comprador detectado com rejeição de mínima (SSL varrido)."
-            elif sweep_bear and (dist_res_val is None or dist_res_val <= 0.8):
+            elif sweep_bear and (macro_bull is not True) and (dist_res_val is None or dist_res_val <= 0.8) and (vol_z is None or vol_z >= 0.8):
                 direction = "SELL"
-                confidence = 0.72
+                confidence = 0.72 if (vol_z is not None and vol_z >= 1.5) else 0.68
                 rationale = "Gatilho Estrutural: Liquidity Sweep vendedor detectado com rejeição de máxima (BSL varrido)."
 
         return AgentSignal(
