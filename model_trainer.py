@@ -171,6 +171,7 @@ class PurgedTimeSeriesSplit:
     """
     Gerador de splits temporais com purge/embargo para evitar contaminação
     entre conjuntos de treino e teste causada pelo horizonte futuro dos rótulos.
+    Suporta split por índice (série única) ou por timestamp real (painel multi-ativo).
     """
 
     def __init__(self, n_splits: int = 4, horizon_embargo: int = 5, min_train_ratio: float = 0.4):
@@ -178,26 +179,92 @@ class PurgedTimeSeriesSplit:
         self.horizon_embargo = horizon_embargo
         self.min_train_ratio = min_train_ratio
 
-    def split(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> List[Tuple[np.ndarray, np.ndarray]]:
+    def resolve_embargo_ms(
+        self,
+        timestamps: Any,
+        embargo_ms: Optional[Union[int, float]] = None,
+    ) -> float:
+        """Resolve o gap temporal de embargo em ms a partir dos timestamps únicos."""
+        if embargo_ms is not None:
+            return float(embargo_ms)
+        ts = np.asarray(timestamps)
+        uniq_ts = np.unique(ts)
+        if len(uniq_ts) > 1:
+            diffs = np.diff(uniq_ts)
+            pos_diffs = diffs[diffs > 0]
+            median_positive_step_ms = float(np.median(pos_diffs)) if len(pos_diffs) > 0 else 1.0
+        else:
+            median_positive_step_ms = 1.0
+        return float(self.horizon_embargo) * median_positive_step_ms
+
+    def split(
+        self,
+        X: pd.DataFrame,
+        y: Optional[pd.Series] = None,
+        timestamps: Optional[Any] = None,
+        embargo_ms: Optional[Union[int, float]] = None,
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
         n_samples = len(X)
         indices = np.arange(n_samples)
 
-        min_train_samples = int(n_samples * self.min_train_ratio)
-        remaining = n_samples - min_train_samples
-        test_size = remaining // self.n_splits
+        if timestamps is None:
+            min_train_samples = int(n_samples * self.min_train_ratio)
+            remaining = n_samples - min_train_samples
+            test_size = remaining // self.n_splits
 
+            splits = []
+            for i in range(self.n_splits):
+                train_end = min_train_samples + (i * test_size)
+                # Aplica o embargo (gap temporal) para anular contaminação do rótulo
+                test_start = train_end + self.horizon_embargo
+                test_end = min_train_samples + ((i + 1) * test_size)
+
+                if test_start >= test_end or test_end > n_samples:
+                    continue
+
+                train_idx = indices[:train_end]
+                test_idx = indices[test_start:test_end]
+                splits.append((train_idx, test_idx))
+
+            return splits
+
+        ts = np.asarray(timestamps)
+        if len(ts) != n_samples:
+            raise ValueError(
+                f"Comprimento de timestamps ({len(ts)}) difere do número de linhas de X ({n_samples})."
+            )
+
+        uniq_ts = np.unique(ts)
+        n_uniq = len(uniq_ts)
+        min_train_uniq = int(n_uniq * self.min_train_ratio)
+        remaining_uniq = n_uniq - min_train_uniq
+        test_size_uniq = remaining_uniq // self.n_splits
+
+        if min_train_uniq <= 0 or test_size_uniq <= 0:
+            return []
+
+        eff_embargo_ms = self.resolve_embargo_ms(ts, embargo_ms=embargo_ms)
         splits = []
         for i in range(self.n_splits):
-            train_end = min_train_samples + (i * test_size)
-            # Aplica o embargo (gap temporal) para anular contaminação do rótulo
-            test_start = train_end + self.horizon_embargo
-            test_end = min_train_samples + ((i + 1) * test_size)
+            train_end_pos = min_train_uniq + (i * test_size_uniq)
+            test_end_pos = min_train_uniq + ((i + 1) * test_size_uniq)
 
-            if test_start >= test_end or test_end > n_samples:
+            if train_end_pos <= 0 or train_end_pos >= n_uniq or test_end_pos > n_uniq:
                 continue
 
-            train_idx = indices[:train_end]
-            test_idx = indices[test_start:test_end]
+            train_ts_end = uniq_ts[train_end_pos - 1]
+            test_ts_start = train_ts_end + eff_embargo_ms
+            test_ts_end = uniq_ts[test_end_pos - 1]
+
+            if test_ts_start > test_ts_end:
+                continue
+
+            train_idx = indices[ts <= train_ts_end]
+            test_idx = indices[(ts >= test_ts_start) & (ts > train_ts_end) & (ts <= test_ts_end)]
+
+            if len(train_idx) == 0 or len(test_idx) == 0:
+                continue
+
             splits.append((train_idx, test_idx))
 
         return splits
@@ -311,16 +378,25 @@ class ModelTrainer:
         X: pd.DataFrame,
         y: pd.Series,
         n_splits: int = 4,
+        timestamps: Optional[Any] = None,
+        embargo_ms: Optional[Union[int, float]] = None,
     ) -> Dict[str, Any]:
         """
         Validação Walk-Forward temporal estrita com embargo anti-contaminação.
         Calcula métricas agregadas out-of-sample honestas.
         """
         splitter = PurgedTimeSeriesSplit(n_splits=n_splits, horizon_embargo=self.horizon)
-        splits = splitter.split(X, y)
+        splits = splitter.split(X, y, timestamps=timestamps, embargo_ms=embargo_ms)
 
         if not splits:
             raise ValueError("Amostras insuficientes para gerar splits temporais com embargo.")
+
+        ts_arr = np.asarray(timestamps) if timestamps is not None else None
+        eff_embargo_ms = (
+            splitter.resolve_embargo_ms(ts_arr, embargo_ms=embargo_ms)
+            if ts_arr is not None
+            else None
+        )
 
         all_test_indices: List[int] = []
         all_y_true: List[int] = []
@@ -334,10 +410,17 @@ class ModelTrainer:
             assert len(set(train_idx).intersection(set(test_idx))) == 0, (
                 f"Vazamento detectado no Fold {fold+1}: interseção não-nula entre treino e teste!"
             )
-            assert min(test_idx) >= max(train_idx) + self.horizon, (
-                f"Vazamento detectado no Fold {fold+1}: gap ({min(test_idx) - max(train_idx)}) "
-                f"inferior ao horizonte de embargo ({self.horizon})!"
-            )
+            if ts_arr is not None and eff_embargo_ms is not None:
+                observed_gap_ms = float(np.min(ts_arr[test_idx]) - np.max(ts_arr[train_idx]))
+                assert observed_gap_ms >= eff_embargo_ms, (
+                    f"Vazamento temporal detectado no Fold {fold+1}: gap ({observed_gap_ms}) "
+                    f"inferior ao horizonte de embargo ({eff_embargo_ms} ms)!"
+                )
+            else:
+                assert min(test_idx) >= max(train_idx) + self.horizon, (
+                    f"Vazamento detectado no Fold {fold+1}: gap ({min(test_idx) - max(train_idx)}) "
+                    f"inferior ao horizonte de embargo ({self.horizon})!"
+                )
 
             X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
             X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
@@ -375,6 +458,13 @@ class ModelTrainer:
         f1_mac = float(f1_score(y_true_arr, y_pred_arr, average="macro", zero_division=0))
         f1_weighted = float(f1_score(y_true_arr, y_pred_arr, average="weighted", zero_division=0))
 
+        # Brier score multiclasse
+        y_onehot = np.zeros_like(y_proba_arr, dtype=np.float64)
+        for col_i, cls_val in enumerate(classes):
+            if col_i < y_onehot.shape[1]:
+                y_onehot[:, col_i] = (y_true_arr == cls_val).astype(np.float64)
+        brier_score = float(np.mean((y_proba_arr - y_onehot) ** 2))
+
         # Precision por classe: 0 (HOLD), 1 (BUY), 2 (SELL)
         precisions = precision_score(y_true_arr, y_pred_arr, average=None, zero_division=0)
         class_precisions = {f"class_{cls}_precision": float(prec) for cls, prec in zip(classes, precisions)}
@@ -408,11 +498,13 @@ class ModelTrainer:
             "global_accuracy": acc,
             "f1_macro": f1_mac,
             "f1_weighted": f1_weighted,
+            "brier_score": brier_score,
             "class_precisions": class_precisions,
             "emitted_signals_accuracy": emitted_accuracy,
             "emitted_signals_count": total_signals,
             "coverage_pct": coverage_pct,
             "confidence_threshold": self.confidence_threshold,
+            "embargo_ms": float(eff_embargo_ms) if eff_embargo_ms is not None else None,
             "fold_details": fold_metrics,
             "test_indices": all_test_indices,
             "y_true": y_true_arr,
@@ -433,13 +525,21 @@ class ModelTrainer:
         X: pd.DataFrame,
         y: pd.Series,
         save_name: Optional[str] = None,
+        timestamps: Optional[Any] = None,
+        embargo_ms: Optional[Union[int, float]] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Treina o estimador com todo o conjunto histórico disponível,
         avalia walk-forward para documentação e persiste o artefato com joblib.
         """
         # 1. Avaliação out-of-sample formal
-        eval_metrics = self.train_walk_forward(X, y)
+        eval_metrics = self.train_walk_forward(
+            X,
+            y,
+            timestamps=timestamps,
+            embargo_ms=embargo_ms,
+        )
 
         # 2. Treino final na base completa
         final_model = self._build_estimator(random_state=42)
@@ -449,7 +549,7 @@ class ModelTrainer:
         filename = save_name or f"{self.model_type}_model_v1.joblib"
         filepath = os.path.join(self.models_dir, filename)
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": final_model,
             "model_type": self.model_type,
             "features": list(X.columns),
@@ -463,6 +563,10 @@ class ModelTrainer:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "version": "1.0.0",
         }
+        if isinstance(extra_metadata, dict):
+            for k, v in extra_metadata.items():
+                if k != "model":
+                    payload[k] = v
 
         joblib.dump(payload, filepath, compress=3)
         logger.info(f"Modelo salvo com sucesso em: {filepath}")

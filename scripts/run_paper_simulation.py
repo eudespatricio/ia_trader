@@ -46,9 +46,10 @@ import pandas as pd
 from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from data.live_context_enricher import LiveContextEnricher
+from data.ml_features_v2 import enrich_v2_features_live, is_v2_feature_bundle
 from agents.golden_pot_agent import GoldenPotAgent
 from agents.tape_reading_agent import MICROSTRUCTURE_DB, TapeReadingAgent
-from agents.technical_agent import _disable_estimator_parallelism
+from agents.technical_agent import TechnicalAgent, _disable_estimator_parallelism
 from signal_generator import TradeSignal
 from chatgpt_assistant import ChatGPTAssistant
 from smart_trade import (PaperTradingEngine, NON_CLOSING_TRADE_ACTIONS, STRATEGY_PROFILES,
@@ -216,17 +217,43 @@ class PaperTradingDaemon:
         self.enforce_gp_btc_macro: bool = (not is_fake_loader) if enforce_gp_btc_macro is None else bool(enforce_gp_btc_macro)
         self.directional_maker_entry: bool = (not is_fake_loader) if directional_maker_entry is None else bool(directional_maker_entry)
         self._h1_dist_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
+        self._scalp_ml15_signature: Tuple[Tuple[str, int, int], ...] = self._current_scalp_ml15_signature()
         self._scalp_ml15_models: List[Dict[str, Any]] = self._load_scalp_ml15_models()
 
         # Pares fixos monitorados continuamente
         self.core_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
     @staticmethod
+    def _scalp_ml15_paths() -> List[str]:
+        return [
+            os.path.join(BASE_DIR, "models", fname)
+            for fname in ("lgbm_15m_v1.joblib", "rf_15m_v1.joblib")
+        ]
+
+    @classmethod
+    def _current_scalp_ml15_signature(cls) -> Tuple[Tuple[str, int, int], ...]:
+        sig: List[Tuple[str, int, int]] = []
+        for fpath in cls._scalp_ml15_paths():
+            try:
+                if os.path.exists(fpath):
+                    st = os.stat(fpath)
+                    sig.append((fpath, int(st.st_mtime_ns), int(st.st_size)))
+                else:
+                    sig.append(("missing", 0, 0))
+            except OSError:
+                sig.append(("missing", 0, 0))
+        return tuple(sig)
+
+    def invalidate_scalp_ml15_cache(self) -> None:
+        self._scalp_ml15_signature = self._current_scalp_ml15_signature()
+        self._scalp_ml15_models = self._load_scalp_ml15_models()
+
+    @staticmethod
     def _load_scalp_ml15_models() -> List[Dict[str, Any]]:
         """Carrega os modelos dedicados de 15m (lgbm_15m_v1.joblib e rf_15m_v1.joblib) se disponíveis."""
         bundles: List[Dict[str, Any]] = []
-        for fname in ("lgbm_15m_v1.joblib", "rf_15m_v1.joblib"):
-            fpath = os.path.join(BASE_DIR, "models", fname)
+        for fpath in PaperTradingDaemon._scalp_ml15_paths():
+            fname = os.path.basename(fpath)
             if not os.path.exists(fpath):
                 continue
             try:
@@ -240,10 +267,41 @@ class PaperTradingDaemon:
             logger.info(f"Ensemble 15m SCALP carregado: {len(bundles)} modelo(s) ativo(s).")
         return bundles
 
-    def _predict_scalp_ml15_probs(self, latest: pd.Series) -> Optional[Tuple[float, float]]:
-        """Retorna (p_buy, p_sell) médios do ensemble dedicado 15m; None se nenhum modelo estiver carregado."""
+    def _predict_scalp_ml15_probs(
+        self,
+        latest: Any,
+        df_feat: Optional[pd.DataFrame] = None,
+        sym: Optional[str] = None,
+        decision_ts_ms: Optional[int] = None,
+    ) -> Optional[Tuple[float, float]]:
+        """Retorna (p_buy, p_sell) médios do ensemble dedicado 15m; recarrega se .joblib mudar em disco."""
+        cur_sig = self._current_scalp_ml15_signature()
+        if cur_sig != self._scalp_ml15_signature:
+            self._scalp_ml15_signature = cur_sig
+            self._scalp_ml15_models = self._load_scalp_ml15_models()
         if not self._scalp_ml15_models:
             return None
+
+        feat_source: Any = latest
+        if (
+            self.enable_live_context_enrichment
+            and any(is_v2_feature_bundle(b) for b in self._scalp_ml15_models)
+        ):
+            if (df_feat is None or sym is None) and getattr(self, "_scalp_eval_ctx", None) is not None:
+                _ctx_df, _ctx_sym, _ctx_ts = self._scalp_eval_ctx
+                df_feat = _ctx_df if df_feat is None else df_feat
+                sym = _ctx_sym if sym is None else sym
+                decision_ts_ms = _ctx_ts if decision_ts_ms is None else decision_ts_ms
+            if sym and df_feat is not None and not df_feat.empty:
+                dec_ts = int(decision_ts_ms if decision_ts_ms is not None else int(latest["timestamp"]) + SCALP_BAR_MS)
+                micro_db = getattr(self.tape_agent, "db_path", MICROSTRUCTURE_DB)
+                v2_feats = enrich_v2_features_live(
+                    sym, df_feat, SCALP_TIMEFRAME, self.engine.db_path, dec_ts, micro_db_path=micro_db
+                )
+                base_dict = latest.to_dict() if hasattr(latest, "to_dict") else dict(latest)
+                base_dict.update(v2_feats)
+                feat_source = base_dict
+
         p_buys: List[float] = []
         p_sells: List[float] = []
         for bundle in self._scalp_ml15_models:
@@ -252,7 +310,7 @@ class PaperTradingDaemon:
                 fnames = list(bundle["feature_names"])
                 row = {}
                 for col in fnames:
-                    val = latest.get(col, 0.0)
+                    val = feat_source.get(col, 0.0)
                     try:
                         fval = float(val)
                     except (TypeError, ValueError):
@@ -683,11 +741,25 @@ class PaperTradingDaemon:
         self._fr(strategy, sym, bar_ts, str(getattr(self.engine, "last_open_reject", "other")))
 
     def _build_committee_context(
-        self, sym: str, latest: pd.Series, df_feat: Optional[pd.DataFrame], decision_ts_ms: int
+        self, sym: str, latest: pd.Series, df_feat: Optional[pd.DataFrame], decision_ts_ms: int,
+        timeframe: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Contexto causal para o comitê. Em produção, enriquece com macro/on-chain/microestrutura."""
+        """Contexto causal para o comitê. Em produção, enriquece com macro/on-chain/microestrutura e ML v2."""
         if self.enable_live_context_enrichment and self.context_enricher is not None:
-            return self.context_enricher.enrich(sym, latest, df_feat, decision_ts_ms)
+            ctx = self.context_enricher.enrich(sym, latest, df_feat, decision_ts_ms)
+            if df_feat is not None and not df_feat.empty:
+                try:
+                    default_mdl = TechnicalAgent._get_default_model()
+                    if is_v2_feature_bundle(default_mdl):
+                        tf = timeframe or str(ctx.get("timeframe") or "1h")
+                        micro_db = getattr(self.tape_agent, "db_path", MICROSTRUCTURE_DB)
+                        v2_feats = enrich_v2_features_live(
+                            sym, df_feat, tf, self.engine.db_path, decision_ts_ms, micro_db_path=micro_db
+                        )
+                        ctx.update(v2_feats)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"Falha no enriquecimento ML v2 em {sym}: {exc}")
+            return ctx
         return latest.to_dict()
 
     async def _committee_gate(
@@ -699,7 +771,8 @@ class PaperTradingDaemon:
         na mesma direção, sem veto e com confiança >= mínimo do perfil. Retorna o TradeSignal REAL ou None."""
         self._committee_reject = "other"  # funil: motivo da última recusa do comitê
         decision_ts = ts + int(bar_ms or 0)
-        context = self._build_committee_context(sym, latest, df_feat, decision_ts)
+        tf = "5m" if bar_ms == GP_BAR_MS else ("15m" if bar_ms == SCALP_BAR_MS else "1h")
+        context = self._build_committee_context(sym, latest, df_feat, decision_ts, timeframe=tf)
         committee = await self.engine.core.evaluate_market_async(
             context=context, symbol=sym, current_price=close, atr=atr, timestamp=ts, use_llm=True,
         )
@@ -1146,7 +1219,11 @@ class PaperTradingDaemon:
                     trig = self.scalp_squeeze_keltner_trigger(df_feat, h1_dist_sma200=h1_dist)
                     if trig is not None:
                         cand_dir, cand_why = trig
-                        probs = self._predict_scalp_ml15_probs(latest)
+                        self._scalp_eval_ctx = (df_feat, sym, ts + SCALP_BAR_MS)
+                        try:
+                            probs = self._predict_scalp_ml15_probs(latest)
+                        finally:
+                            self._scalp_eval_ctx = None
                         if probs is not None:
                             p_buy, p_sell = probs
                             p_dir = p_buy if cand_dir == "BUY" else p_sell
@@ -1281,7 +1358,7 @@ class PaperTradingDaemon:
                     self._fr(DTN, sym, ts, "cooldown")
                     continue
 
-                context = self._build_committee_context(sym, latest, df_feat, ts + SWING_BAR_MS)
+                context = self._build_committee_context(sym, latest, df_feat, ts + SWING_BAR_MS, timeframe="1h")
                 eval_res = self.engine.core.evaluate_multi_strategy(
                     symbol=sym,
                     current_price=close,

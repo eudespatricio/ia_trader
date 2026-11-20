@@ -572,6 +572,34 @@ class ModelEvolutionManager:
         from data.feature_engineering import FeatureEngineer
         from model_trainer import ModelTrainer
 
+        filename = f"{model_type}_model_v1.joblib"
+        filepath = os.path.join(self.model_dir, filename)
+        champion_acc = 0.0
+        champion_global = 0.0
+        if os.path.exists(filepath):
+            try:
+                champ_payload = ModelTrainer.load_model(filepath)
+                if isinstance(champ_payload, dict):
+                    fp = champ_payload.get("feature_pipeline")
+                    sv = champ_payload.get("schema_version")
+                    if fp == "ml_features_v2" or (sv is not None and str(sv).startswith("2.")):
+                        return {
+                            "status": "SKIPPED_V2_GUARD",
+                            "symbol": symbol,
+                            "timeframe": timeframe,
+                            "model_type": model_type,
+                            "rationale": (
+                                f"Retreinamento v1 bloqueado (SKIPPED_V2_GUARD): Champion atual ({filename}) "
+                                f"opera com schema v2 (feature_pipeline={fp!r}, schema_version={sv!r})."
+                            ),
+                        }
+                    champ_metrics = champ_payload.get("metrics", {})
+                    if isinstance(champ_metrics, dict):
+                        champion_acc = float(champ_metrics.get("emitted_signals_accuracy", 0.0))
+                        champion_global = float(champ_metrics.get("global_accuracy", 0.0))
+            except Exception as exc:
+                logger.warning(f"Aviso ao ler Champion atual ({filepath}): {exc}")
+
         with _db_connect(self.db_path, timeout=15.0) as conn:
             df = pd.read_sql(
                 "SELECT timestamp, open, high, low, close, volume, quote_volume "
@@ -625,19 +653,6 @@ class ModelEvolutionManager:
         challenger_global = float(wf_res.get("global_accuracy", 0.0))
         challenger_f1 = float(wf_res.get("f1_macro", 0.0))
 
-        filename = f"{model_type}_model_v1.joblib"
-        filepath = os.path.join(self.model_dir, filename)
-        champion_acc = 0.0
-        champion_global = 0.0
-        if os.path.exists(filepath):
-            try:
-                champ_payload = ModelTrainer.load_model(filepath)
-                champ_metrics = champ_payload.get("metrics", {}) if isinstance(champ_payload, dict) else {}
-                champion_acc = float(champ_metrics.get("emitted_signals_accuracy", 0.0))
-                champion_global = float(champ_metrics.get("global_accuracy", 0.0))
-            except Exception as exc:
-                logger.warning(f"Aviso ao ler Champion atual ({filepath}): {exc}")
-
         if force_promote:
             promoted = True
             rationale = f"PROMOÇÃO FORÇADA (Saneamento de Base Desduplicada): Challenger promovido (acc={challenger_acc:.4f}, global={challenger_global:.4f})."
@@ -654,6 +669,11 @@ class ModelEvolutionManager:
                 arch_path = os.path.join(self.model_dir, "archive", f"{model_type}_model_v1_{ts_tag}.joblib")
                 shutil.copy2(filepath, arch_path)
             trainer.train_full_model(X, y, save_name=filename)
+            try:
+                from agents.technical_agent import TechnicalAgent
+                TechnicalAgent.invalidate_default_model_cache()
+            except Exception as exc:
+                logger.debug(f"Aviso ao invalidar cache de modelo do TechnicalAgent: {exc}")
 
         return {
             "status": "PROMOTED" if promoted else "RETAINED",

@@ -6,7 +6,9 @@ treinados em indicadores técnicos (RSI, MACD, Bollinger, EMA, ATR).
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
 import warnings
 
 _pw = os.environ.get("PYTHONWARNINGS", "")
@@ -24,21 +26,129 @@ import pandas as pd
 
 from agents.base_agent import BaseAgent, AgentSignal
 
+logger = logging.getLogger("ia_trader.technical_agent")
+
 
 class _DefaultMLEnsemble:
-    """Ensemble leve em memória combinando LightGBM + Random Forest treinados em 50k velas."""
+    """Ensemble leve em memória combinando LightGBM + Random Forest (suporta múltiplos schemas v1/v2)."""
 
-    def __init__(self, models: List[Any], feature_names: List[str]):
-        self.models = models
-        self.feature_names = feature_names
+    def __init__(
+        self,
+        models: Optional[Any] = None,
+        feature_names: Optional[List[str]] = None,
+        *,
+        models_with_features: Optional[List[Tuple[Any, List[str]]]] = None,
+    ):
+        if models_with_features is not None:
+            pairs = [(m, list(fnames or [])) for m, fnames in models_with_features if m is not None]
+        elif (
+            models is not None
+            and feature_names is None
+            and isinstance(models, (list, tuple))
+            and len(models) > 0
+            and isinstance(models[0], (tuple, list))
+            and len(models[0]) == 2
+            and isinstance(models[0][1], (list, tuple))
+        ):
+            pairs = [(m, list(fnames or [])) for m, fnames in models if m is not None]
+        else:
+            raw_models = list(models or [])
+            shared_feats = list(feature_names or [])
+            pairs = []
+            for m in raw_models:
+                if m is None:
+                    continue
+                if not shared_feats and hasattr(m, "feature_names_in_"):
+                    m_feats = [str(x) for x in getattr(m, "feature_names_in_")]
+                else:
+                    m_feats = list(shared_feats)
+                pairs.append((m, m_feats))
+
+        self.models_with_features: List[Tuple[Any, List[str]]] = pairs
+        self.models: List[Any] = [m for m, _ in pairs]
+        union_feats: List[str] = []
+        seen_feats = set()
+        for _, fnames in pairs:
+            for f in fnames:
+                if f not in seen_feats:
+                    seen_feats.add(f)
+                    union_feats.append(f)
+        self.feature_names: List[str] = union_feats
         self.classes_ = np.array([0, 1, 2])
 
+    @staticmethod
+    def _safe_float(v: Any) -> float:
+        if v is None:
+            return 0.0
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return 0.0
+        return fv if np.isfinite(fv) else 0.0
+
     def predict_proba(self, X: Any) -> np.ndarray:
-        if isinstance(X, np.ndarray) and self.feature_names and X.shape[1] == len(self.feature_names):
-            X_in = pd.DataFrame(X, columns=self.feature_names)
+        X_df: Optional[pd.DataFrame] = None
+        arr: Optional[np.ndarray] = None
+
+        if isinstance(X, pd.DataFrame):
+            X_df = X
+        elif isinstance(X, dict):
+            all_keys = set(self.feature_names) | set(X.keys())
+            row = {k: self._safe_float(X.get(k, 0.0)) for k in all_keys}
+            X_df = pd.DataFrame([row], dtype=np.float64)
+        elif isinstance(X, pd.Series):
+            if any(isinstance(idx, str) for idx in X.index):
+                row = {str(k): self._safe_float(v) for k, v in X.items()}
+                X_df = pd.DataFrame([row], dtype=np.float64)
+            else:
+                arr = np.asarray(X.values, dtype=np.float64).reshape(1, -1)
         else:
-            X_in = X
-        probs = [m.predict_proba(X_in) for m in self.models]
+            arr = np.asarray(X, dtype=np.float64)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if X_df is None and arr is not None and self.feature_names and arr.shape[1] == len(self.feature_names):
+            X_df = pd.DataFrame(arr, columns=self.feature_names)
+
+        probs = []
+        for m, fnames in self.models_with_features:
+            if X_df is not None:
+                if fnames:
+                    X_sub = X_df.reindex(columns=fnames, fill_value=0.0)
+                    if X_sub.isna().any().any():
+                        X_sub = X_sub.fillna(0.0)
+                else:
+                    X_sub = X_df
+            elif arr is not None:
+                if fnames and arr.shape[1] == len(fnames):
+                    X_sub = pd.DataFrame(arr, columns=fnames)
+                elif fnames and arr.shape[1] > len(fnames):
+                    X_sub = pd.DataFrame(arr[:, : len(fnames)], columns=fnames)
+                elif fnames:
+                    pad = np.zeros((arr.shape[0], len(fnames)), dtype=np.float64)
+                    pad[:, : arr.shape[1]] = arr
+                    X_sub = pd.DataFrame(pad, columns=fnames)
+                else:
+                    X_sub = arr
+            else:
+                X_sub = X
+
+            p = np.asarray(m.predict_proba(X_sub), dtype=np.float64)
+            if p.ndim == 1:
+                p = p.reshape(1, -1)
+            m_classes = getattr(m, "classes_", None)
+            if m_classes is not None and p.shape[1] != len(self.classes_):
+                aligned = np.zeros((p.shape[0], len(self.classes_)), dtype=np.float64)
+                for col_i, cls_val in enumerate(m_classes):
+                    target_idx = np.where(self.classes_ == cls_val)[0]
+                    if len(target_idx) > 0 and col_i < p.shape[1]:
+                        aligned[:, target_idx[0]] = p[:, col_i]
+                p = aligned
+            probs.append(p)
+
+        if not probs:
+            return np.zeros((1, len(self.classes_)), dtype=np.float64)
         return np.mean(probs, axis=0)
 
 
@@ -103,34 +213,74 @@ class TechnicalAgent(BaseAgent):
 
     _cached_default_model: Optional[Any] = None
     _cached_load_attempted: bool = False
+    _cached_model_signature: Optional[Tuple[Tuple[str, int, int], ...]] = None
+    _cache_lock = threading.RLock()
+
+    @classmethod
+    def _get_model_dir_paths(cls) -> List[str]:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        return [
+            os.path.join(base_dir, "models", "lgbm_model_v1.joblib"),
+            os.path.join(base_dir, "models", "rf_model_v1.joblib"),
+        ]
+
+    @classmethod
+    def _current_model_signature(cls) -> Tuple[Tuple[str, int, int], ...]:
+        sig: List[Tuple[str, int, int]] = []
+        for p in cls._get_model_dir_paths():
+            try:
+                if os.path.exists(p):
+                    st = os.stat(p)
+                    sig.append((p, int(st.st_mtime_ns), int(st.st_size)))
+                else:
+                    sig.append(("missing", 0, 0))
+            except OSError:
+                sig.append(("missing", 0, 0))
+        return tuple(sig)
+
+    @classmethod
+    def invalidate_default_model_cache(cls) -> None:
+        with cls._cache_lock:
+            cls._cached_default_model = None
+            cls._cached_load_attempted = False
+            cls._cached_model_signature = None
 
     @classmethod
     def _get_default_model(cls) -> Optional[Any]:
-        if cls._cached_load_attempted:
+        with cls._cache_lock:
+            current_sig = cls._current_model_signature()
+            if (
+                cls._cached_load_attempted
+                and cls._cached_model_signature is not None
+                and cls._cached_model_signature == current_sig
+            ):
+                return cls._cached_default_model
+
+            cls._cached_load_attempted = True
+            cls._cached_model_signature = current_sig
+            try:
+                import joblib
+                paths = cls._get_model_dir_paths()
+                models_with_features: List[Tuple[Any, List[str]]] = []
+                for p in paths:
+                    if os.path.exists(p):
+                        bundle = joblib.load(p)
+                        if isinstance(bundle, dict) and "model" in bundle and bundle["model"] is not None:
+                            est = bundle["model"]
+                            _disable_estimator_parallelism(est)
+                            fnames = list(bundle.get("feature_names") or bundle.get("features") or [])
+                            if not fnames and hasattr(est, "feature_names_in_"):
+                                fnames = [str(x) for x in getattr(est, "feature_names_in_")]
+                            if fnames:
+                                models_with_features.append((est, fnames))
+                if models_with_features:
+                    cls._cached_default_model = _DefaultMLEnsemble(models_with_features=models_with_features)
+                else:
+                    cls._cached_default_model = None
+            except Exception as exc:
+                logger.warning(f"Falha ao carregar modelo ML padrao: {exc}")
+                cls._cached_default_model = None
             return cls._cached_default_model
-        cls._cached_load_attempted = True
-        try:
-            import joblib
-            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            paths = [
-                os.path.join(base_dir, "models", "lgbm_model_v1.joblib"),
-                os.path.join(base_dir, "models", "rf_model_v1.joblib"),
-            ]
-            loaded_models = []
-            feat_names: List[str] = []
-            for p in paths:
-                if os.path.exists(p):
-                    bundle = joblib.load(p)
-                    if isinstance(bundle, dict) and "model" in bundle:
-                        _disable_estimator_parallelism(bundle["model"])
-                        loaded_models.append(bundle["model"])
-                        if not feat_names and bundle.get("feature_names"):
-                            feat_names = list(bundle["feature_names"])
-            if loaded_models and feat_names:
-                cls._cached_default_model = _DefaultMLEnsemble(loaded_models, feat_names)
-        except Exception:
-            cls._cached_default_model = None
-        return cls._cached_default_model
 
     def __init__(
         self,
@@ -141,6 +291,7 @@ class TechnicalAgent(BaseAgent):
     ):
         super().__init__(name=name, weight=weight, is_backtestable=True)
         self.confidence_threshold = confidence_threshold
+        self._uses_default_model: bool = model is None
         self.model = model if model is not None else self._get_default_model()
 
     def evaluate(self, context: Dict[str, Any]) -> AgentSignal:
@@ -150,6 +301,9 @@ class TechnicalAgent(BaseAgent):
         1. Predição direta via `model.predict_proba(features)`
         2. Probabilidades pré-computadas out-of-sample via `proba_buy`, `proba_sell`
         """
+        if self._uses_default_model:
+            self.model = self._get_default_model()
+
         proba_buy = context.get("proba_buy")
         proba_sell = context.get("proba_sell")
         implicit_ml_buy: float = 0.0
@@ -158,34 +312,53 @@ class TechnicalAgent(BaseAgent):
         # Se features brutas forem passadas e houver modelo instanciado
         if proba_buy is None and self.model is not None and "features" in context:
             features = context["features"]
-            # Garante formato 2D
-            if hasattr(features, "values"):
+            if isinstance(self.model, _DefaultMLEnsemble) and isinstance(features, (pd.DataFrame, dict)):
+                probas = self.model.predict_proba(features)[0]
+            elif hasattr(features, "values"):
                 feat_arr = features.values.reshape(1, -1)
+                probas = self.model.predict_proba(feat_arr)[0]
             else:
                 feat_arr = np.asarray(features).reshape(1, -1)
-            probas = self.model.predict_proba(feat_arr)[0]
+                probas = self.model.predict_proba(feat_arr)[0]
             classes = getattr(self.model, "classes_", np.array([0, 1, 2]))
             buy_idx = np.where(classes == 1)[0]
             sell_idx = np.where(classes == 2)[0]
             proba_buy = float(probas[buy_idx[0]]) if len(buy_idx) > 0 else 0.0
             proba_sell = float(probas[sell_idx[0]]) if len(sell_idx) > 0 else 0.0
         elif proba_buy is None and proba_sell is None and self.model is not None:
-            feat_names = getattr(self.model, "feature_names", None)
-            if feat_names and all(k in context for k in feat_names):
-                try:
-                    row_vals = []
-                    for k in feat_names:
-                        v = float(context.get(k, 0.0) or 0.0)
-                        row_vals.append(v if np.isfinite(v) else 0.0)
-                    feat_arr = np.asarray(row_vals, dtype=np.float64).reshape(1, -1)
-                    probas = self.model.predict_proba(feat_arr)[0]
-                    classes = getattr(self.model, "classes_", np.array([0, 1, 2]))
-                    buy_idx = np.where(classes == 1)[0]
-                    sell_idx = np.where(classes == 2)[0]
-                    implicit_ml_buy = float(probas[buy_idx[0]]) if len(buy_idx) > 0 else 0.0
-                    implicit_ml_sell = float(probas[sell_idx[0]]) if len(sell_idx) > 0 else 0.0
-                except Exception:
-                    implicit_ml_buy, implicit_ml_sell = 0.0, 0.0
+            models_with_feats = getattr(self.model, "models_with_features", None)
+            if isinstance(models_with_feats, list) and models_with_feats:
+                has_matching_schema = any(
+                    bool(fnames) and all(k in context for k in fnames)
+                    for _, fnames in models_with_feats
+                )
+                if has_matching_schema:
+                    try:
+                        probas = self.model.predict_proba(context)[0]
+                        classes = getattr(self.model, "classes_", np.array([0, 1, 2]))
+                        buy_idx = np.where(classes == 1)[0]
+                        sell_idx = np.where(classes == 2)[0]
+                        implicit_ml_buy = float(probas[buy_idx[0]]) if len(buy_idx) > 0 else 0.0
+                        implicit_ml_sell = float(probas[sell_idx[0]]) if len(sell_idx) > 0 else 0.0
+                    except Exception:
+                        implicit_ml_buy, implicit_ml_sell = 0.0, 0.0
+            else:
+                feat_names = getattr(self.model, "feature_names", None)
+                if feat_names and all(k in context for k in feat_names):
+                    try:
+                        row_vals = []
+                        for k in feat_names:
+                            v = float(context.get(k, 0.0) or 0.0)
+                            row_vals.append(v if np.isfinite(v) else 0.0)
+                        feat_arr = np.asarray(row_vals, dtype=np.float64).reshape(1, -1)
+                        probas = self.model.predict_proba(feat_arr)[0]
+                        classes = getattr(self.model, "classes_", np.array([0, 1, 2]))
+                        buy_idx = np.where(classes == 1)[0]
+                        sell_idx = np.where(classes == 2)[0]
+                        implicit_ml_buy = float(probas[buy_idx[0]]) if len(buy_idx) > 0 else 0.0
+                        implicit_ml_sell = float(probas[sell_idx[0]]) if len(sell_idx) > 0 else 0.0
+                    except Exception:
+                        implicit_ml_buy, implicit_ml_sell = 0.0, 0.0
 
         def _clean(v: Any) -> Optional[float]:
             """None/NaN/inf -> None; caso contrário float."""
