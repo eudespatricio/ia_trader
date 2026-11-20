@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any, Union
@@ -41,6 +42,25 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] [model_trainer] %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+
+def _atomic_joblib_dump(payload: Any, filepath: str, compress: int = 3) -> None:
+    """Persist joblib artifact atomically via temporary file in destination dir + os.replace."""
+    target = os.path.abspath(filepath)
+    parent = os.path.dirname(target)
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=parent, prefix=".tmp_", suffix=".joblib")
+    os.close(fd)
+    try:
+        joblib.dump(payload, tmp_path, compress=compress)
+        os.replace(tmp_path, target)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
 
 
 # =====================================================================
@@ -568,7 +588,7 @@ class ModelTrainer:
                 if k != "model":
                     payload[k] = v
 
-        joblib.dump(payload, filepath, compress=3)
+        _atomic_joblib_dump(payload, filepath, compress=3)
         logger.info(f"Modelo salvo com sucesso em: {filepath}")
 
         return payload

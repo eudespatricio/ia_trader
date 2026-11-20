@@ -13,9 +13,9 @@ if ROOT not in sys.path:
 
 from agents.technical_agent import _disable_estimator_parallelism  # noqa: E402
 from data.feature_engineering import FeatureEngineer  # noqa: E402
-from data.ml_features_v2 import TIMEFRAME_MS, V2_FEATURE_COLUMNS, build_v2_features_batch, is_v2_feature_bundle  # noqa: E402
+from data.ml_features_v2 import TIMEFRAME_MS, V2_FEATURE_COLUMNS, _NEUTRAL_DEFAULTS, build_v2_features_batch, is_v2_feature_bundle  # noqa: E402
 from db_conn import connect as _db_connect  # noqa: E402
-from model_trainer import ModelTrainer, create_triple_barrier_labels  # noqa: E402
+from model_trainer import ModelTrainer, _atomic_joblib_dump, create_triple_barrier_labels  # noqa: E402
 from smart_trade import MAKER_SLIPPAGE_PCT, MARKET_SLIPPAGE_PCT  # noqa: E402
 from statistical_rigor import bootstrap_performance_metrics, calculate_annualized_sharpe, deflated_sharpe_ratio, get_prior_trials_count, log_trial, probability_of_backtest_overfitting  # noqa: E402
 
@@ -114,6 +114,13 @@ def _predict_proba_3(est: Any, X: pd.DataFrame) -> np.ndarray:
             out[:, int(cls_val)] = raw[:, col_i]
     return out
 
+def _sanitize_feature_frame(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
+    """Reindex feature columns and fill non-finite values with explicit domain neutral defaults."""
+    out = df.reindex(columns=feature_cols).replace([np.inf, -np.inf], np.nan)
+    fill_map = {c: _NEUTRAL_DEFAULTS.get(c, 0.0) for c in feature_cols}
+    return out.fillna(value=fill_map)
+
+
 def _build_pooled_labeled(
     feats_map: Dict[str, pd.DataFrame], symbols: Sequence[str], feature_cols: List[str],
     horizon: int, multiple_tp: float, multiple_sl: float, cutoff_ms: Optional[int] = None, embargo_ms: int = 0,
@@ -130,7 +137,7 @@ def _build_pooled_labeled(
             valid = valid & (sub["timestamp"].to_numpy(dtype=np.int64) < int(cutoff_ms - embargo_ms))
         if not np.any(valid):
             continue
-        x_parts.append(sub.loc[valid].reindex(columns=feature_cols, fill_value=0.0).replace([np.inf, -np.inf], np.nan).fillna(0.0))
+        x_parts.append(_sanitize_feature_frame(sub.loc[valid], feature_cols))
         y_parts.append(tgt.loc[valid].astype(int))
         ts_parts.append(sub.loc[valid, "timestamp"].to_numpy(dtype=np.int64))
     if not x_parts:
@@ -173,7 +180,7 @@ def simulate_oos_candidate(
         if n <= H + 1:
             per_symbol[sym] = _r_stats([])
             continue
-        X_oos = df_oos.reindex(columns=feature_cols, fill_value=0.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        X_oos = _sanitize_feature_frame(df_oos, feature_cols)
         proba = 0.5 * (_predict_proba_3(est_lgbm, X_oos) + _predict_proba_3(est_rf, X_oos))
         p_buy, p_sell, ts = proba[:, 1], proba[:, 2], df_oos["timestamp"].to_numpy(dtype=np.int64)
         highs, lows = pd.to_numeric(df_oos["high"], errors="coerce").to_numpy("float64"), pd.to_numeric(df_oos["low"], errors="coerce").to_numpy("float64")
@@ -366,7 +373,7 @@ def promote_suite_models(suite_name: str, suite_res: Dict[str, Any], v2_feats_ma
         extra_meta = {"schema_version": "2.0.0", "version": "2.0.0", "feature_pipeline": "ml_features_v2", "timeframe": suite_name, "symbols": list(MAJORS), "candidate_name": best_cand["name"], "pbo": suite_res["pbo"]["pbo"], "dsr": best_cand["dsr"], "oos_metrics": best_cand["oos"]}
         payload = trainer.train_full_model(X_full, y_full, save_name=save_name, timestamps=ts_full, embargo_ms=best_cand["embargo_ms"], extra_metadata=extra_meta)
         _disable_estimator_parallelism(payload["model"])
-        joblib.dump(payload, target_path, compress=3)
+        _atomic_joblib_dump(payload, target_path, compress=3)
         loaded = joblib.load(target_path)
         proba = _predict_proba_3(loaded["model"], X_full.iloc[: min(8, len(X_full))])
         if not is_v2_feature_bundle(loaded) or not np.all(np.isfinite(proba)):

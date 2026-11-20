@@ -177,6 +177,7 @@ def test_purged_time_series_split_and_trainer_metadata(tmp_path):
     trainer.train_full_model(X, y, save_name="m.joblib", extra_metadata={"schema_version": "2.0.0", "feature_pipeline": "ml_features_v2"})
     loaded = joblib.load(str(tmp_path / "m.joblib"))
     assert loaded["schema_version"] == "2.0.0" and loaded["feature_pipeline"] == "ml_features_v2"
+    assert not any(fn.startswith(".tmp_") for fn in os.listdir(tmp_path))
 
 
 def test_heterogeneous_ml_ensemble_and_technical_agent_reload(tmp_path, monkeypatch):
@@ -354,3 +355,6 @@ def test_eval_and_train_ml_v2_gates_and_dry_run(tmp_path):
         with open(rep_path) as f:
             data = json.load(f)
         assert data["suites"]["1h"]["decision"] in ("PASS_ALL", "PARTIAL_DSR_BLOCK", "FAIL_REFUTED")
+
+    sanitized = ev._sanitize_feature_frame(pd.DataFrame({"macro_vix_level": [np.nan], "rsi_14": [np.inf]}), ["macro_vix_level", "rsi_14", "vol_sma_ratio"])
+    assert sanitized["macro_vix_level"].iloc[0] == 18.0 and sanitized["rsi_14"].iloc[0] == 50.0 and sanitized["vol_sma_ratio"].iloc[0] == 1.0

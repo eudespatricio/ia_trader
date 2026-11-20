@@ -36,8 +36,8 @@ Todos os **4 itens P2 diferidos do Patch S5 (`v1.0.8`)** foram resolvidos e vali
 
 ## 3. Gaps P2 Residuais & Roadmap Wave P3 (Meta-Labeling)
 
-1. **`_DefaultMLEnsemble` (`agents/technical_agent.py`) & Promoção `.joblib` (`scripts/eval_and_train_ml_v2.py`):**
-   - `reindex(columns=fnames, fill_value=0.0)` assume `0.0` caso uma chave v2 opcional falte em modelo misto (ex.: `macro_vix_level` neutro é `18.0`); manter conjuntos `lgbm+rf` homogêneos na promoção e avaliar `tempfile + os.replace` atômico ao escrever `.joblib` em disco.
-   - `eval_and_train_ml_v2.py` ainda chama `.fillna(0.0)` após `build_v2_features_batch` (já sanitizado internamente com `_NEUTRAL_DEFAULTS`).
+1. **`_DefaultMLEnsemble` (`agents/technical_agent.py`) & Promoção `.joblib` (`model_trainer.py`, `scripts/eval_and_train_ml_v2.py`) [RESOLVED]:**
+   - Escrita atômica via `_atomic_joblib_dump` (`tempfile.mkstemp` + `os.replace`) aplicada em `ModelTrainer.train_full_model()` e `promote_suite_models()`.
+   - Sanitização em `eval_and_train_ml_v2.py` unificada em `_sanitize_feature_frame()` usando explicitamente `_NEUTRAL_DEFAULTS` (ex.: `macro_vix_level = 18.0` em vez de `0.0`); manter conjuntos `lgbm+rf` homogêneos na promoção.
 2. **Wave P3 — Pivotar ML para Meta-Labeling Condicionado (López de Prado):**
    - Classificador direcional autônomo barra-a-barra em `1h`/`15m` mostrou ser insuficiente após custos (`E[R] <= 0.002` / `DSR=0.0`). A próxima pesquisa ML deve treinar **Meta-Labeling binário (`P[win | sinal]`)** exclusivamente sobre eventos já filtrados por `SCALP Squeeze Keltner` ou pelo Comitê Multi-Agente, em vez de prever todas as barras do mercado.
