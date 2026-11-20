@@ -32,6 +32,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -179,10 +180,127 @@ def reset_database(db_path: str, ts: str, reset_id: str, keep_market_regime: boo
         settings_after = {k: v for k, v in con.execute("SELECT key, value FROM simulation_settings")}
     finally:
         con.close()
-    return {"tables_before": before, "tables_after": after, "pilot_start_utc": start_iso,
+    return {"mode": "hard", "tables_before": before, "tables_after": after, "pilot_start_utc": start_iso,
             "settings_before": settings_before, "settings_after": settings_after,
             "preserved_settings": {k: v for k, v in settings_after.items()
                                    if k not in ("pilot_start_utc", "pilot_reset_id")}}
+
+
+def soft_epoch_reset_database(
+    db_path: str, ts: str, reset_id: str, initial_capital: float = 10000.0
+) -> Dict[str, Any]:
+    """
+    Executa reset por epoch de rowid (soft-epoch) preservando todo o histórico em `paper_*`
+    para a aba Evolução & Patches, encerrando posições abertas prévias, avançando
+    `ledger_epoch_*`, inserindo âncora de $10k no `paper_portfolio` e limpando o Circuit Breaker.
+    """
+    preserved_targets = PILOT_TABLES + DERIVED_TABLES
+    con = sqlite3.connect(db_path, timeout=60.0, isolation_level=None)
+    try:
+        have = _tables(con)
+        targets = [t for t in preserved_targets if t in have]
+        before = {t: con.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in targets}
+        settings_before: Dict[str, Any] = {}
+        if "simulation_settings" in have:
+            settings_before = {k: v for k, v in con.execute("SELECT key, value FROM simulation_settings")}
+
+        start_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            max_trade_rowid = (
+                int(con.execute("SELECT COALESCE(MAX(rowid), 0) FROM paper_trades").fetchone()[0])
+                if "paper_trades" in have else 0
+            )
+            max_pos_rowid = (
+                int(con.execute("SELECT COALESCE(MAX(rowid), 0) FROM paper_positions").fetchone()[0])
+                if "paper_positions" in have else 0
+            )
+            closed_open_positions = 0
+            if "paper_positions" in have:
+                cur = con.execute(
+                    "UPDATE paper_positions SET status = 'CLOSED_BY_RESET' WHERE UPPER(status) = 'OPEN'"
+                )
+                closed_open_positions = int(cur.rowcount or 0)
+
+            con.execute("""CREATE TABLE IF NOT EXISTS simulation_settings (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+            con.execute("DELETE FROM simulation_settings WHERE key = 'reset_daily_quotas'")
+            epoch_updates = (
+                ("ledger_epoch_trade_rowid", str(max_trade_rowid)),
+                ("ledger_epoch_pos_rowid", str(max_pos_rowid)),
+                ("quota_epoch_trade_rowid", str(max_trade_rowid)),
+                ("MANUAL_RESET", "0"),
+                ("pilot_start_utc", start_iso),
+                ("pilot_reset_id", reset_id),
+            )
+            for k, v in epoch_updates:
+                con.execute(
+                    "INSERT OR REPLACE INTO simulation_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                    (k, v, start_iso),
+                )
+
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS paper_portfolio (
+                    timestamp INTEGER PRIMARY KEY,
+                    equity REAL NOT NULL,
+                    balance REAL NOT NULL,
+                    margin_used REAL NOT NULL,
+                    unrealized_pnl REAL NOT NULL,
+                    realized_pnl_cum REAL NOT NULL,
+                    total_fees_paid REAL NOT NULL,
+                    open_positions_count INTEGER NOT NULL
+                )
+            """)
+            max_port_ts = int(
+                con.execute("SELECT COALESCE(MAX(timestamp), 0) FROM paper_portfolio").fetchone()[0]
+            )
+            anchor_ts = max(int(time.time() * 1000), max_port_ts + 1000)
+            con.execute(
+                "INSERT INTO paper_portfolio (timestamp, equity, balance, margin_used, unrealized_pnl, "
+                "realized_pnl_cum, total_fees_paid, open_positions_count) VALUES (?, ?, ?, 0.0, 0.0, 0.0, 0.0, 0)",
+                (anchor_ts, float(initial_capital), float(initial_capital)),
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            con.execute("ROLLBACK")
+            raise
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        con.close()
+
+    from rollback_guard import RollbackGuard
+    RollbackGuard(db_path=db_path).reset_circuit_breaker(operator_note=f"Soft epoch reset {reset_id}")
+
+    con2 = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        have2 = _tables(con2)
+        after_keys = list(dict.fromkeys(targets + [t for t in preserved_targets if t in have2]))
+        after = {t: con2.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in after_keys}
+        settings_after = (
+            {k: v for k, v in con2.execute("SELECT key, value FROM simulation_settings")}
+            if "simulation_settings" in have2 else {}
+        )
+    finally:
+        con2.close()
+
+    epoch_meta_keys = {
+        "pilot_start_utc", "pilot_reset_id",
+        "ledger_epoch_trade_rowid", "ledger_epoch_pos_rowid",
+        "quota_epoch_trade_rowid", "MANUAL_RESET",
+    }
+    return {
+        "mode": "soft_epoch",
+        "epoch_trade_rowid": max_trade_rowid,
+        "epoch_pos_rowid": max_pos_rowid,
+        "closed_open_positions": closed_open_positions,
+        "anchor_timestamp_ms": anchor_ts,
+        "tables_before": before,
+        "tables_after": after,
+        "pilot_start_utc": start_iso,
+        "settings_before": settings_before,
+        "settings_after": settings_after,
+        "preserved_settings": {k: v for k, v in settings_after.items() if k not in epoch_meta_keys},
+    }
 
 
 def verify_engine(db_path: str) -> Dict[str, Any]:
@@ -203,7 +321,7 @@ def verify_engine(db_path: str) -> Dict[str, Any]:
 
 def run_reset(db_path: str = DB, backup_dir: str = BACKUP_DIR, flask_log: str = FLASK_LOG,
               pilot_report: str = PILOT_REPORT, force: bool = False, keep_market_regime: bool = False,
-              check_daemons: bool = True, verify: bool = True) -> Dict[str, Any]:
+              check_daemons: bool = True, verify: bool = True, soft_epoch: bool = False) -> Dict[str, Any]:
     if check_daemons and not force:
         procs = detect_daemons()
         if procs:
@@ -214,7 +332,14 @@ def run_reset(db_path: str = DB, backup_dir: str = BACKUP_DIR, flask_log: str = 
     reset_id = f"reset_{ts}_{uuid.uuid4().hex[:8]}"
     untouched_before = count_tables(db_path, UNTOUCHED_TABLES + PRESERVED_MEMORY_TABLES)
     backup = make_backup(db_path, backup_dir, ts)
-    part = reset_database(db_path, ts, reset_id, keep_market_regime)
+    if soft_epoch:
+        part = soft_epoch_reset_database(db_path, ts, reset_id)
+        removed_keys = [k for k in ("reset_daily_quotas",) if k in part["settings_before"]]
+        market_regime_cleared = False
+    else:
+        part = reset_database(db_path, ts, reset_id, keep_market_regime)
+        removed_keys = [k for k in SETTINGS_TO_REMOVE if k in part["settings_before"]]
+        market_regime_cleared = not keep_market_regime
     archived = archive_files({"log": flask_log, "json": pilot_report}, backup_dir, ts)
     untouched_after = count_tables(db_path, UNTOUCHED_TABLES + PRESERVED_MEMORY_TABLES)
     if untouched_before != untouched_after:
@@ -222,9 +347,9 @@ def run_reset(db_path: str = DB, backup_dir: str = BACKUP_DIR, flask_log: str = 
     report: Dict[str, Any] = {
         "reset_id": reset_id, "timestamp_utc": ts, "db_path": db_path, "backup": backup,
         "archived_files": archived, **part,
-        "market_regime_cleared": not keep_market_regime,
+        "market_regime_cleared": market_regime_cleared,
         "untouched_tables": {"before": untouched_before, "after": untouched_after},
-        "removed_settings": [k for k in SETTINGS_TO_REMOVE if k in part["settings_before"]],
+        "removed_settings": removed_keys,
         "settings_snapshot_pre_reset": part["settings_before"],
         "preserved_memory_tables": {
             "tables": PRESERVED_MEMORY_TABLES,
@@ -261,6 +386,8 @@ def main() -> int:
     ap.add_argument("--db", default=DB)
     ap.add_argument("--force", action="store_true", help="ignora a checagem de daemons (PERIGOSO)")
     ap.add_argument("--keep-market-regime", action="store_true")
+    ap.add_argument("--soft-epoch", action="store_true",
+                    help="preserva histórico em paper_* para Evolução & Patches e avança ledger_epoch_*")
     ap.add_argument("--dry-run", action="store_true", help="só mostra contagens e checa daemons")
     ap.add_argument("--yes", action="store_true", help="não pede confirmação")
     a = ap.parse_args()
@@ -273,7 +400,7 @@ def main() -> int:
         print("Cancelado.")
         return 1
     try:
-        r = run_reset(a.db, force=a.force, keep_market_regime=a.keep_market_regime)
+        r = run_reset(a.db, force=a.force, keep_market_regime=a.keep_market_regime, soft_epoch=a.soft_epoch)
     except ResetRefused as e:
         print(f"RECUSADO: {e}")
         return 3
