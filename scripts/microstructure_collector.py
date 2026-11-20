@@ -26,6 +26,10 @@ import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from db_conn import connect as _db_connect
+
 DB_PATH = os.path.join(ROOT, "datasets", "microstructure.db")
 CACHE_DB = os.path.join(ROOT, "datasets", "market_cache.db")
 BASE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
@@ -94,7 +98,7 @@ def get_active_golden_pot_symbols(top_n: int = 3) -> list:
     if not os.path.exists(CACHE_DB):
         return []
     try:
-        with sqlite3.connect(f"file:{CACHE_DB}?mode=ro", uri=True, timeout=5.0) as conn:
+        with _db_connect(f"file:{CACHE_DB}?mode=ro", uri=True, timeout=5.0) as conn:
             rows = conn.execute("""
                 SELECT symbol, count(*) as cnt 
                 FROM golden_pots 

@@ -382,3 +382,37 @@ def test_scalp_squeeze_keltner_and_ml15_all_majors_eligible(tmp_path):
     assert set(ev_btc) == {"ETHUSDT", "SOLUSDT", "BTCUSDT"}
     assert len(ml_btc) == 1
     assert len(tr_btc) == 1 and tr_btc[0].symbol == "BTCUSDT"
+
+
+def test_sqlite_fd_no_leak_trackers(tmp_path):
+    """Garante que conexões SQLite via db_conn fecham os descritores de arquivo após o bloco with."""
+    import gc
+    from auth_module import AuthManager
+    from learning_tracker import LearningTracker
+    from performance_tracker import PerformanceTracker
+
+    db = tmp_path / "leak_check.db"
+    lt = LearningTracker(db_path=str(db))
+    pt = PerformanceTracker(db_path=str(db))
+    pt_ro = PerformanceTracker(db_path=str(db), read_only=True)
+    auth = AuthManager(db_path=str(db))
+
+    gc.collect()
+    fd_before = len(os.listdir("/proc/self/fd"))
+
+    for _ in range(40):
+        with lt._get_connection():
+            pass
+        lt.get_calibrated_weights_for_regime("BEAR_TREND")
+        lt.get_agent_calibration_for_regime("BEAR_TREND")
+        with pt._get_connection():
+            pass
+        with pt_ro._get_connection():
+            pass
+        with auth._get_connection():
+            pass
+
+    gc.collect()
+    fd_after = len(os.listdir("/proc/self/fd"))
+    assert fd_after - fd_before <= 2
+

@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
+from db_conn import connect as _db_connect
+
 logger = logging.getLogger("ia_trader.auth_module")
 if not logger.handlers:
     handler = logging.StreamHandler(sys.stdout)
@@ -72,7 +74,7 @@ class AuthManager:
 
     def _get_connection(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=15.0)
+        conn = _db_connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")

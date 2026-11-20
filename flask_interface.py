@@ -7,6 +7,8 @@ Leitura otimizada via SQLite (WAL mode) e gerenciamento seguro de configuraçõe
 from __future__ import annotations
 
 import os
+import hmac
+import secrets
 import sys
 import re
 import time
@@ -37,19 +39,73 @@ load_dotenv(ENV_FILE_PATH, override=True)
 TEMPLATE_DIR = os.path.join(getattr(sys, "_MEIPASS", BASE_DIR), "templates")
 app = Flask(__name__, template_folder=TEMPLATE_DIR)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
-CORS(app)
+# CORS restrito a origens loopback (dashboard local); sem '*' para evitar CSRF/leitura cross-site.
+LOOPBACK_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+CORS(app, origins=[LOOPBACK_ORIGIN_RE])
 
-app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "super-secret-key-ia-trader-2026")
+# Sem segredo hardcoded: se JWT_SECRET_KEY não estiver definido, usa segredo efêmero
+# (tokens deixam de valer a cada restart — aceitável, preferível a um segredo público).
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY") or secrets.token_hex(32)
 jwt = JWTManager(app)
 
 # Caminho do banco SQLite de cache de mercado
 DB_PATH = os.getenv("MARKET_CACHE_DB", os.path.join(BASE_DIR, "datasets", "market_cache.db"))
 
-# Usuários em memória para autenticação administrativa
-users = {
-    "admin": "admin123",
-    "trader": "trader2026"
-}
+def load_login_users() -> Dict[str, str]:
+    """Credenciais de /login vindas só do ambiente (nunca hardcoded).
+
+    IA_TRADER_USERS_JSON='{"user":"pass"}' e/ou IA_TRADER_ADMIN_PASSWORD (usuário 'admin').
+    Lido a cada request para refletir mudanças no .env sem restart.
+    """
+    found: Dict[str, str] = {}
+    raw = os.getenv("IA_TRADER_USERS_JSON")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                found.update({str(k): str(v) for k, v in parsed.items() if v})
+            else:
+                logger.error("IA_TRADER_USERS_JSON deve ser um objeto JSON {user: senha}")
+        except ValueError as e:
+            logger.error("IA_TRADER_USERS_JSON inválido: %s", e)
+    admin_pw = os.getenv("IA_TRADER_ADMIN_PASSWORD")
+    if admin_pw:
+        found["admin"] = admin_pw
+    return found
+
+
+def verify_login(username: Any, password: Any) -> Optional[bool]:
+    """None = nenhuma credencial configurada (503); True/False = resultado (tempo constante)."""
+    configured = load_login_users()
+    if not configured:
+        return None
+    u, p = str(username or ""), str(password or "")
+    ok = False
+    for name, pw in configured.items():  # percorre todos: sem early-exit por usuário
+        name_ok = hmac.compare_digest(name.encode(), u.encode())
+        pw_ok = hmac.compare_digest(pw.encode(), p.encode())
+        ok = ok or (name_ok and pw_ok)
+    return ok
+
+
+_LOOPBACK_ADDRS = ("127.0.0.1", "::1")
+_PROXY_HEADERS = ("X-Forwarded-For", "X-Real-IP", "Forwarded", "CF-Connecting-IP", "True-Client-IP")
+
+
+def _config_access_allowed() -> bool:
+    """/api/config só para loopback direto (sem header de proxy) ou JWT válido."""
+    if request.remote_addr in _LOOPBACK_ADDRS and not any(request.headers.get(h) for h in _PROXY_HEADERS):
+        return True
+    try:
+        from flask_jwt_extended import verify_jwt_in_request
+        verify_jwt_in_request()
+        return True
+    except Exception:
+        return False
+
+
+def _config_forbidden():
+    return jsonify({"status": "error", "msg": "Acesso a /api/config restrito a localhost ou JWT válido"}), 403
 
 
 # ============================================================================
@@ -1378,6 +1434,8 @@ def get_config():
     Retorna as configurações operacionais e status das chaves de API mascaradas.
     Nunca expõe chaves completas na resposta JSON por segurança.
     """
+    if not _config_access_allowed():
+        return _config_forbidden()
     env_vars = read_env_dict()
 
     keys_status = {
@@ -1414,6 +1472,8 @@ def update_config():
     Atualiza de forma segura as variáveis no arquivo .env e recarrega em memória.
     Ignora valores vazios ou valores mascarados que começam com '•'.
     """
+    if not _config_access_allowed():
+        return _config_forbidden()
     data = request.get_json(silent=True) or {}
     to_update: Dict[str, str] = {}
 
@@ -1450,7 +1510,7 @@ def update_config():
             if not v:
                 continue
             # Se for senha mascarada mantida pelo usuário, não sobrescreve
-            if v.startswith("•") or v.startswith("...."):
+            if v.startswith("•") or v.startswith("....") or v == "***REDACTED***":
                 continue
             to_update[k] = v
 
@@ -2565,7 +2625,10 @@ def login():
     data = request.get_json(silent=True) or {}
     username = data.get("username")
     password = data.get("password")
-    if username not in users or users[username] != password:
+    result = verify_login(username, password)
+    if result is None:
+        return jsonify({"msg": "Login não configurado (defina IA_TRADER_ADMIN_PASSWORD ou IA_TRADER_USERS_JSON)"}), 503
+    if not result:
         return jsonify({"msg": "Credenciais inválidas"}), 401
 
     access_token = create_access_token(identity=username)
@@ -2589,7 +2652,8 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
-    host = os.getenv("HOST", "0.0.0.0")
+    # Padrão loopback; para expor na rede defina IA_TRADER_HOST/FLASK_HOST explicitamente.
+    host = os.getenv("IA_TRADER_HOST") or os.getenv("FLASK_HOST") or os.getenv("HOST") or "127.0.0.1"
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() in ("true", "1")
     print(f"🚀 Iniciando IA Trader Dashboard em http://{host}:{port}")
     print(f"🔒 Modo READ-ONLY: Ativo. Banco de dados: {DB_PATH}")

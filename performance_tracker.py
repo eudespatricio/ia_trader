@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from db_conn import connect as _db_connect
+
 import numpy as np
 import pandas as pd
 
@@ -100,14 +102,14 @@ class PerformanceTracker:
 
     def _get_connection(self) -> sqlite3.Connection:
         if self.read_only and os.path.exists(self.db_path):
-            conn = sqlite3.connect(f"file:{os.path.abspath(self.db_path)}?mode=ro", uri=True, timeout=15.0)
+            conn = _db_connect(f"file:{os.path.abspath(self.db_path)}?mode=ro", uri=True, timeout=15.0)
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("PRAGMA query_only = ON;")
             except Exception:
                 pass
             return conn
-        conn = sqlite3.connect(self.db_path, timeout=15.0)
+        conn = _db_connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
@@ -907,7 +909,7 @@ class PerformanceTracker:
             return empty_payload
 
         try:
-            conn = sqlite3.connect(f"file:{os.path.abspath(self.db_path)}?mode=ro", uri=True, timeout=10.0)
+            conn = _db_connect(f"file:{os.path.abspath(self.db_path)}?mode=ro", uri=True, timeout=10.0)
             conn.row_factory = sqlite3.Row
         except Exception as e:
             logger.warning(f"Erro ao abrir banco em modo leitura para evolução: {e}")

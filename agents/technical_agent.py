@@ -7,6 +7,17 @@ treinados em indicadores técnicos (RSI, MACD, Bollinger, EMA, ATR).
 from __future__ import annotations
 
 import os
+import warnings
+
+_pw = os.environ.get("PYTHONWARNINGS", "")
+if "sklearn.utils.parallel" not in _pw:
+    os.environ["PYTHONWARNINGS"] = (
+        f"{_pw},ignore::UserWarning:sklearn.utils.parallel"
+        if _pw
+        else "ignore::UserWarning:sklearn.utils.parallel"
+    )
+warnings.filterwarnings("ignore", category=UserWarning, module=r"^sklearn\.utils\.parallel$")
+
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd

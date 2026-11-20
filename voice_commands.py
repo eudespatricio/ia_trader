@@ -17,9 +17,13 @@ Objetivo:
 from __future__ import annotations
 
 import logging
+import os
 import re
+import sqlite3
 import sys
 from typing import Any, Dict, List, Optional, Tuple
+
+from db_conn import connect as _db_connect
 
 logger = logging.getLogger("ia_trader.voice_commands")
 if not logger.handlers:
@@ -131,21 +135,18 @@ class VoiceCommandDispatcher:
             return {"status": "ERROR", "response": f"Erro ao retomar operações: {e}"}
 
     def _handle_recent_trades(self) -> Dict[str, Any]:
-        import sqlite3
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            table_check = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='paper_trades'").fetchone()
-            if not table_check:
-                conn.close()
-                return {
-                    "status": "SUCCESS",
-                    "command_type": "RECENT_TRADES",
-                    "response": "Ainda não há operações registradas no histórico recente.",
-                    "data": []
-                }
-            rows = conn.execute("SELECT symbol, action, pnl FROM paper_trades ORDER BY timestamp DESC LIMIT 3").fetchall()
-            conn.close()
+            with _db_connect(self.db_path, timeout=5.0) as conn:
+                conn.row_factory = sqlite3.Row
+                table_check = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='paper_trades'").fetchone()
+                if not table_check:
+                    return {
+                        "status": "SUCCESS",
+                        "command_type": "RECENT_TRADES",
+                        "response": "Ainda não há operações registradas no histórico recente.",
+                        "data": []
+                    }
+                rows = conn.execute("SELECT symbol, action, pnl FROM paper_trades ORDER BY timestamp DESC LIMIT 3").fetchall()
 
             if not rows:
                 return {
@@ -180,7 +181,7 @@ class VoiceCommandDispatcher:
             df_btc = pd.DataFrame()
             if os.path.exists(self.db_path):
                 uri = f"file:{os.path.abspath(self.db_path)}?mode=ro"
-                with sqlite3.connect(uri, uri=True, timeout=5.0) as con:
+                with _db_connect(uri, uri=True, timeout=5.0) as con:
                     for sql in (
                         "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' AND timeframe='1h' AND exchange='binance' ORDER BY timestamp DESC LIMIT 250",
                         "SELECT timestamp, open, high, low, close, volume FROM candles WHERE symbol='BTCUSDT' AND timeframe='1h' ORDER BY timestamp DESC LIMIT 250",

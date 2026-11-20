@@ -20,6 +20,16 @@ import os
 import signal
 import sys
 import time
+import warnings
+
+_pw = os.environ.get("PYTHONWARNINGS", "")
+if "sklearn.utils.parallel" not in _pw:
+    os.environ["PYTHONWARNINGS"] = (
+        f"{_pw},ignore::UserWarning:sklearn.utils.parallel"
+        if _pw
+        else "ignore::UserWarning:sklearn.utils.parallel"
+    )
+warnings.filterwarnings("ignore", category=UserWarning, module=r"^sklearn\.utils\.parallel$")
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple

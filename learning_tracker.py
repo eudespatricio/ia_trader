@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
+from db_conn import connect as _db_connect
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -79,7 +81,7 @@ class LearningTracker:
 
     def _get_connection(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=15.0)
+        conn = _db_connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
@@ -570,7 +572,7 @@ class ModelEvolutionManager:
         from data.feature_engineering import FeatureEngineer
         from model_trainer import ModelTrainer
 
-        with sqlite3.connect(self.db_path, timeout=15.0) as conn:
+        with _db_connect(self.db_path, timeout=15.0) as conn:
             df = pd.read_sql(
                 "SELECT timestamp, open, high, low, close, volume, quote_volume "
                 "FROM candles WHERE symbol = ? AND timeframe = ? AND (exchange = 'binance' OR exchange IS NULL) "
