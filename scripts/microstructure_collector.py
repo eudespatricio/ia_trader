@@ -24,11 +24,13 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from typing import Dict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from db_conn import connect as _db_connect
+from scripts.binance_ws_collector import BinanceFuturesWSCollector
 
 DB_PATH = os.path.join(ROOT, "datasets", "microstructure.db")
 CACHE_DB = os.path.join(ROOT, "datasets", "market_cache.db")
@@ -39,6 +41,15 @@ BINANCE = "https://fapi.binance.com/futures/data"
 BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
 PT = "USDT-FUTURES"
 BINANCE_ONLY_SYMBOLS = set()
+_BITGET_BACKOFF_UNTIL: Dict[str, float] = {}
+
+
+def _bitget_in_backoff(sym: str) -> bool:
+    return time.time() < _BITGET_BACKOFF_UNTIL.get(sym, 0.0)
+
+
+def _set_bitget_backoff(sym: str, ttl_s: float = 300.0) -> None:
+    _BITGET_BACKOFF_UNTIL[sym] = time.time() + ttl_s
 EXCLUDED_GP_BASES = frozenset({
     "SKHYNIX", "SKHY", "SAMSUNG", "KORU", "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
     "TSLA", "NVDA", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NFLX", "AMD", "INTC",
@@ -77,6 +88,10 @@ CREATE TABLE IF NOT EXISTS tick_agg (
 CREATE TABLE IF NOT EXISTS derivs (
   ts_ms INTEGER, symbol TEXT, funding_rate REAL, open_interest REAL, mark_price REAL, index_price REAL,
   last_price REAL, quote_volume_24h REAL, PRIMARY KEY (ts_ms, symbol));
+CREATE TABLE IF NOT EXISTS liquidations (
+  ts_ms INTEGER, symbol TEXT, side TEXT, price REAL, qty REAL, notional_usd REAL,
+  PRIMARY KEY (ts_ms, symbol, side, price)
+);
 CREATE TABLE IF NOT EXISTS binance_series (
   ts_ms INTEGER, symbol TEXT, kind TEXT, v1 REAL, v2 REAL, v3 REAL, PRIMARY KEY (ts_ms, symbol, kind));
 CREATE TABLE IF NOT EXISTS active_symbols (
@@ -183,7 +198,7 @@ def book_snapshot_binance(sym):
 
 
 def book_snapshot(sym):
-    if sym in BINANCE_ONLY_SYMBOLS:
+    if sym in BINANCE_ONLY_SYMBOLS or _bitget_in_backoff(sym):
         return book_snapshot_binance(sym)
     try:
         fine = get_json(BITGET + "/merge-depth", {"symbol": sym, "productType": PT, "precision": "scale1", "limit": "max"}, retries=1)["data"]
@@ -203,77 +218,118 @@ def book_snapshot(sym):
                 f_b[2], f_a[2], f_b[5], f_a[5], f_b[10], f_a[10],
                 c_b[25], c_a[25], c_b[50], c_a[50], c_b[100], c_a[100])
     except Exception:
-        BINANCE_ONLY_SYMBOLS.add(sym)
+        _set_bitget_backoff(sym)
         return book_snapshot_binance(sym)
 
 
 class TickAggregator:
     def __init__(self):
-        self.last_id = {s: 0 for s in BASE_SYMBOLS}
+        self._lock = threading.Lock()
+        self.last_id = {}
         self.buckets = {}   # (sym, minute_ms) -> dict
 
+    def ingest_ws_trade(self, sym: str, ts_ms: int, price: float, qty: float, is_buyer_maker: bool) -> None:
+        m = ts_ms - ts_ms % 60000
+        with self._lock:
+            b = self.buckets.setdefault((sym, m), dict(bq=0.0, sq=0.0, bn=0.0, sn=0.0, n=0, sat=0))
+            if is_buyer_maker:
+                b["sq"] += qty
+                b["sn"] += price * qty
+            else:
+                b["bq"] += qty
+                b["bn"] += price * qty
+            b["n"] += 1
+
     def _poll_binance(self, sym):
-        rows = get_json(BINANCE_FAPI + "/aggTrades", {"symbol": sym, "limit": 200}, retries=1)
-        last_seen = self.last_id.setdefault(sym, 0)
+        rows = get_json(BINANCE_FAPI + "/aggTrades", {"symbol": sym, "limit": 1000}, retries=1)
+        if not rows:
+            return 0
+        with self._lock:
+            last_seen = self.last_id.get(("binance", sym), 0)
         new = [r for r in rows if int(r["a"]) > last_seen]
         if not new:
             return 0
+        all_new = new
+        max_id = max(int(r["a"]) for r in new)
         saturated = (len(new) == len(rows) and last_seen != 0)
-        for r in sorted(new, key=lambda r: int(r["a"])):
-            ts = int(r["T"])
-            m = ts - ts % 60000
-            b = self.buckets.setdefault((sym, m), dict(bq=0.0, sq=0.0, bn=0.0, sn=0.0, n=0, sat=0))
-            p, q = float(r["p"]), float(r["q"])
-            # m=True no aggTrades da Binance significa que o comprador é o maker -> agressão de VENDA (sell)
-            if not r.get("m", False):
-                b["bq"] += q; b["bn"] += p * q
-            else:
-                b["sq"] += q; b["sn"] += p * q
-            b["n"] += 1
-        if saturated:
-            last_ts = int(max(new, key=lambda r: int(r["a"]))["T"])
-            self.buckets[(sym, last_ts - last_ts % 60000)]["sat"] = 1
-        self.last_id[sym] = max(int(r["a"]) for r in new)
-        return len(new)
+        pages = 1
+        while saturated and pages < 3:
+            next_rows = get_json(
+                BINANCE_FAPI + "/aggTrades",
+                {"symbol": sym, "limit": 1000, "fromId": max_id + 1},
+                retries=1,
+            )
+            if not next_rows:
+                break
+            next_new = [r for r in next_rows if int(r["a"]) > max_id]
+            if not next_new:
+                break
+            all_new.extend(next_new)
+            max_id = max(int(r["a"]) for r in next_new)
+            saturated = len(next_new) == len(next_rows)
+            pages += 1
+        first_new_id = min(int(r["a"]) for r in all_new)
+        gap_suspected = (last_seen != 0 and first_new_id > last_seen + 1)
+        still_saturated = saturated or gap_suspected
+        with self._lock:
+            for r in sorted(all_new, key=lambda r: int(r["a"])):
+                ts = int(r["T"])
+                m = ts - ts % 60000
+                b = self.buckets.setdefault((sym, m), dict(bq=0.0, sq=0.0, bn=0.0, sn=0.0, n=0, sat=0))
+                p, q = float(r["p"]), float(r["q"])
+                # m=True no aggTrades da Binance significa que o comprador é o maker -> agressão de VENDA (sell)
+                if not r.get("m", False):
+                    b["bq"] += q; b["bn"] += p * q
+                else:
+                    b["sq"] += q; b["sn"] += p * q
+                b["n"] += 1
+            if still_saturated:
+                last_ts = int(max(all_new, key=lambda r: int(r["a"]))["T"])
+                self.buckets[(sym, last_ts - last_ts % 60000)]["sat"] = 1
+            self.last_id[("binance", sym)] = max(int(r["a"]) for r in all_new)
+        return len(all_new)
 
     def poll(self, sym):
-        if sym in BINANCE_ONLY_SYMBOLS:
+        if sym in BINANCE_ONLY_SYMBOLS or _bitget_in_backoff(sym):
             return self._poll_binance(sym)
         try:
             rows = get_json(BITGET + "/fills", {"symbol": sym, "productType": PT, "limit": "100"}, retries=1)["data"]
         except Exception:
-            BINANCE_ONLY_SYMBOLS.add(sym)
+            _set_bitget_backoff(sym)
             return self._poll_binance(sym)
-        last_seen = self.last_id.setdefault(sym, 0)
+        with self._lock:
+            last_seen = self.last_id.setdefault(("bitget", sym), 0)
         new = [r for r in rows if int(r["tradeId"]) > last_seen]
         if not new:
             return 0
         saturated = (len(new) == len(rows) and last_seen != 0)
-        for r in sorted(new, key=lambda r: int(r["tradeId"])):
-            ts = int(r["ts"])
-            m = ts - ts % 60000
-            b = self.buckets.setdefault((sym, m), dict(bq=0.0, sq=0.0, bn=0.0, sn=0.0, n=0, sat=0))
-            p, q = float(r["price"]), float(r["size"])
-            if r["side"] == "buy":
-                b["bq"] += q; b["bn"] += p * q
-            else:
-                b["sq"] += q; b["sn"] += p * q
-            b["n"] += 1
-        if saturated:
-            last_ts = int(max(new, key=lambda r: int(r["tradeId"]))["ts"])
-            self.buckets[(sym, last_ts - last_ts % 60000)]["sat"] = 1
-        self.last_id[sym] = max(int(r["tradeId"]) for r in new)
+        with self._lock:
+            for r in sorted(new, key=lambda r: int(r["tradeId"])):
+                ts = int(r["ts"])
+                m = ts - ts % 60000
+                b = self.buckets.setdefault((sym, m), dict(bq=0.0, sq=0.0, bn=0.0, sn=0.0, n=0, sat=0))
+                p, q = float(r["price"]), float(r["size"])
+                if r["side"] == "buy":
+                    b["bq"] += q; b["bn"] += p * q
+                else:
+                    b["sq"] += q; b["sn"] += p * q
+                b["n"] += 1
+            if saturated:
+                last_ts = int(max(new, key=lambda r: int(r["tradeId"]))["ts"])
+                self.buckets[(sym, last_ts - last_ts % 60000)]["sat"] = 1
+            self.last_id[("bitget", sym)] = max(int(r["tradeId"]) for r in new)
         return len(new)
 
     def flush(self, conn, force=False):
         now_min = int(time.time() * 1000) // 60000 * 60000
-        out = []
-        for (sym, m), b in list(self.buckets.items()):
-            if force or m < now_min:
-                tot_q = b["bq"] + b["sq"]
-                vwap = (b["bn"] + b["sn"]) / tot_q if tot_q > 0 else None
-                out.append((m, sym, b["bq"], b["sq"], b["bn"], b["sn"], b["n"], vwap, b["sat"]))
-                del self.buckets[(sym, m)]
+        with self._lock:
+            out = []
+            for (sym, m), b in list(self.buckets.items()):
+                if force or m < now_min:
+                    tot_q = b["bq"] + b["sq"]
+                    vwap = (b["bn"] + b["sn"]) / tot_q if tot_q > 0 else None
+                    out.append((m, sym, b["bq"], b["sq"], b["bn"], b["sn"], b["n"], vwap, b["sat"]))
+                    del self.buckets[(sym, m)]
         if out:
             conn.executemany("INSERT OR REPLACE INTO tick_agg VALUES (?,?,?,?,?,?,?,?,?)", out)
             conn.commit()
@@ -297,7 +353,7 @@ def deriv_snapshot_binance(sym):
 
 
 def deriv_snapshot(sym):
-    if sym in BINANCE_ONLY_SYMBOLS:
+    if sym in BINANCE_ONLY_SYMBOLS or _bitget_in_backoff(sym):
         return deriv_snapshot_binance(sym)
     try:
         d = get_json(BITGET + "/ticker", {"symbol": sym, "productType": PT}, retries=1)["data"][0]
@@ -305,7 +361,7 @@ def deriv_snapshot(sym):
         return (int(d["ts"]), sym, float(d["fundingRate"]), float(oi), float(d["markPrice"]), float(d["indexPrice"]),
                 float(d["lastPr"]), float(d["quoteVolume"]))
     except Exception:
-        BINANCE_ONLY_SYMBOLS.add(sym)
+        _set_bitget_backoff(sym)
         return deriv_snapshot_binance(sym)
 
 
@@ -369,16 +425,44 @@ def binance_backfill_and_update():
 
 
 def status():
-    conn = connect()
-    now = time.time() * 1000
-    print("microstructure.db:", DB_PATH, f"({os.path.getsize(DB_PATH) / 1e6:.1f} MB)")
-    for t, col in (("book_features", "ts_ms"), ("tick_agg", "minute_ms"), ("derivs", "ts_ms"), ("binance_series", "ts_ms")):
-        n, mn, mx = conn.execute(f"SELECT COUNT(*), MIN({col}), MAX({col}) FROM {t}").fetchone()
-        age = f"{(now - mx) / 1000:.0f}s atrás" if mx else "-"
-        span = f"{(mx - mn) / 86400000:.2f} dias" if mn else "-"
-        print(f"  {t:15s} linhas={n:9d}  cobertura={span:>11s}  último={age}")
-    for r in conn.execute("SELECT kind, symbol, COUNT(*) FROM binance_series GROUP BY kind, symbol ORDER BY kind, symbol"):
-        print("   binance", r)
+    if not os.path.exists(DB_PATH):
+        print("microstructure.db não encontrado:", DB_PATH)
+        return
+    conn = _db_connect(f"file:{os.path.abspath(DB_PATH)}?mode=ro", uri=True, timeout=5.0)
+    try:
+        now = time.time() * 1000
+        print("microstructure.db:", DB_PATH, f"({os.path.getsize(DB_PATH) / 1e6:.1f} MB)")
+        tables_cols = (
+            ("book_features", "ts_ms"),
+            ("tick_agg", "minute_ms"),
+            ("derivs", "ts_ms"),
+            ("binance_series", "ts_ms"),
+            ("liquidations", "ts_ms"),
+        )
+        for t, col in tables_cols:
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
+            if not exists:
+                print(f"  {t:15s} linhas=        0  cobertura=          -  último=tabela ausente")
+                continue
+            n, mn, mx = conn.execute(f"SELECT COUNT(*), MIN({col}), MAX({col}) FROM {t}").fetchone()
+            age = f"{(now - mx) / 1000:.0f}s atrás" if mx else "-"
+            span = f"{(mx - mn) / 86400000:.2f} dias" if mn else "-"
+            print(f"  {t:15s} linhas={n:9d}  cobertura={span:>11s}  último={age}")
+        for r in conn.execute("SELECT kind, symbol, COUNT(*) FROM binance_series GROUP BY kind, symbol ORDER BY kind, symbol"):
+            print("   binance", r)
+        print("Saturação tick_agg 24h (saturados / minutos):")
+        for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            total, sat = conn.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN saturated=1 THEN 1 ELSE 0 END) FROM tick_agg "
+                "WHERE symbol=? AND minute_ms >= ?",
+                (sym, now - 24 * 3600 * 1000),
+            ).fetchone()
+            total = total or 0
+            sat = sat or 0
+            pct = f"{100.0 * sat / total:.1f}%" if total else "-"
+            print(f"  {sym:10s} minutos={total:5d}  saturados={sat:5d}  ({pct})")
+    finally:
+        conn.close()
 
 
 def main():
@@ -390,6 +474,8 @@ def main():
     agg = TickAggregator()
     threading.Thread(target=binance_backfill_and_update, daemon=True, name="binance").start()
     active_symbols = list(BASE_SYMBOLS)
+    ws_collector = BinanceFuturesWSCollector(symbols=active_symbols, on_trade=agg.ingest_ws_trade, stop_event=STOP)
+    ws_collector.start()
     log.info("Coletor iniciado: %s | book=%ss fills=%ss deriv=%ss", active_symbols, BOOK_EVERY, FILLS_EVERY, DERIV_EVERY)
     due = {"book": 0.0, "fills": 0.0, "deriv": 0.0, "report": time.time() + 60, "symbols": 0.0}
     counts = dict(book=0, fills=0, deriv=0, errors=0)
@@ -402,6 +488,7 @@ def main():
             if set(current_syms) != set(active_symbols):
                 log.info("Expansão dinâmica de cobertura: %s -> %s", active_symbols, current_syms)
                 active_symbols = current_syms
+                ws_collector.update_symbols(active_symbols)
             try:
                 conn.executemany(
                     "INSERT OR REPLACE INTO active_symbols VALUES (?,?)",
@@ -426,10 +513,18 @@ def main():
             due["fills"] = now + FILLS_EVERY
             for s in list(active_symbols):
                 try:
-                    counts["fills"] += agg.poll(s)
+                    if ws_collector.is_symbol_live(s, max_age_s=20.0):
+                        # WebSocket está alimentando tick_agg em tempo real (sat=0, sem REST).
+                        pass
+                    else:
+                        counts["fills"] += agg.poll(s)
                 except Exception as e:   # noqa: BLE001
                     counts["errors"] += 1; log.warning("fills %s: %s", s, e)
             agg.flush(conn)
+            liq_rows = ws_collector.drain_liquidations()
+            if liq_rows:
+                conn.executemany("INSERT OR IGNORE INTO liquidations VALUES (?,?,?,?,?,?)", liq_rows)
+                conn.commit()
         if now >= due["deriv"]:
             due["deriv"] = now + DERIV_EVERY
             rows = []
@@ -445,6 +540,7 @@ def main():
             due["report"] = now + 300
             log.info("heartbeat: %s (símbolos ativos=%s)", counts, active_symbols)
         STOP.wait(1.0)
+    ws_collector.stop()
     agg.flush(conn, force=True)
     conn.close()
     log.info("Coletor encerrado.")

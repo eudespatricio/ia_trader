@@ -283,6 +283,7 @@ class PaperTradingEngine:
         max_margin_utilization_pct: Optional[float] = None,
         restore: bool = True,
         slippage_market: Optional[float] = None,
+        directional_maker_entry: bool = False,
     ):
         # TRAVA DE SEGURANÇA DA REGRA DE OURO
         if not simulation_mode:
@@ -297,6 +298,7 @@ class PaperTradingEngine:
         self.slippage_perp = slippage_perp
         # Slippage único (long == short) das ordens a mercado direcionais/scalp/GP = BacktestEngine (P-slip).
         self.slippage_market = MARKET_SLIPPAGE_PCT if slippage_market is None else float(slippage_market)
+        self.directional_maker_entry = bool(directional_maker_entry)
         self.default_funding_rate_8h = FUNDING_FALLBACK_RATE_8H
 
         self.db_path = db_path or os.path.join(
@@ -1176,6 +1178,7 @@ class PaperTradingEngine:
         sl_atr_mult: Optional[float] = None,
         trail_atr_mult: Optional[float] = None,
         risk_scale_mult: float = 1.0,
+        maker_entry: Optional[bool] = None,
     ) -> Optional[PaperPosition]:
         """Abre posição LONG/SHORT de qualquer estratégia com a Smart Trade Exit Ladder comum.
 
@@ -1262,7 +1265,23 @@ class PaperTradingEngine:
             timestamp = self.entry_timestamp_for(decision_ts, strategy_type)
 
             side = "LONG" if signal.direction == "BUY" else "SHORT"
-            if meta["maker_entry"]:
+            want_maker = bool(maker_entry) if maker_entry is not None else (self.directional_maker_entry if strategy_type == "DIRECTIONAL" else bool(meta["maker_entry"]))
+            raw_spread_bps = sig_metrics.get("spread_bps", sig_metrics.get("micro_spread_bps"))
+            use_maker = False
+            exec_mode = None
+            if want_maker:
+                max_maker_spread_bps = 15.0 if strategy_type == "GOLDEN_POT" else 5.0
+                try:
+                    spread_bps = float(raw_spread_bps) if raw_spread_bps is not None else None
+                except (TypeError, ValueError):
+                    spread_bps = None
+                if spread_bps is not None and spread_bps > max_maker_spread_bps:
+                    use_maker = False
+                    exec_mode = "TAKER_FALLBACK_WIDE_SPREAD"
+                else:
+                    use_maker = True
+                    exec_mode = "MAKER_POST_ONLY"
+            if use_maker:
                 slip, fee_rate = MAKER_SLIPPAGE_PCT, self.maker_fee   # limit order: slippage mínimo + taxa maker
             else:
                 slip, fee_rate = self.slippage_market, self.taker_fee   # mercado: slippage simétrico long/short
@@ -1381,15 +1400,16 @@ class PaperTradingEngine:
                 funding_cursor_ms=self._ts_ms(timestamp), last_bar_close=current_price,
             )
 
+            exec_tag = f" [{exec_mode}]" if exec_mode else ""
             if strategy_type == "SCALP":
                 action = f"OPEN_SCALP_{side}"
-                rationale = f"Scalp Diário ({self.daily_scalps_count + 1}/{self.max_daily_scalps}) | {signal.rationale}"
+                rationale = f"Scalp Diário ({self.daily_scalps_count + 1}/{self.max_daily_scalps}){exec_tag} | {signal.rationale}"
             elif strategy_type == "GOLDEN_POT":
                 action = f"OPEN_GOLDEN_POT_{side}"
-                rationale = f"Golden Pot ({self.daily_golden_pots_count + 1}/{self.max_daily_golden_pots}) | {signal.rationale}"
+                rationale = f"Golden Pot ({self.daily_golden_pots_count + 1}/{self.max_daily_golden_pots}){exec_tag} | {signal.rationale}"
             else:
                 action = f"OPEN_{side}"
-                rationale = signal.rationale
+                rationale = f"{signal.rationale or ''}{exec_tag}"
             trade = PaperTrade(
                 trade_id=str(uuid.uuid4())[:8], position_id=pos_id, symbol=symbol, action=action,
                 price=exec_price, quantity=qty, fee=fee, pnl=0.0, timestamp=timestamp, rationale=rationale,
@@ -1451,6 +1471,7 @@ class PaperTradingEngine:
         current_price: float,
         timestamp: int,
         leverage: float = 1.0,
+        maker_entry: Optional[bool] = None,
         **ladder_overrides: Optional[float],
     ) -> Optional[PaperPosition]:
         """Abre posição DIRECTIONAL (day trade 1h) a partir de um sinal do comitê, com a ladder comum.
@@ -1459,7 +1480,7 @@ class PaperTradingEngine:
         reduzida se o SL ficar além do preço de liquidação. margem = lote; notional = margem x lev.
         Entrada taker (+slippage); TP1/TP2/TP3 maker; SL/BE/trailing taker.
         """
-        return self._open_ladder_position(signal, current_price, timestamp, "DIRECTIONAL", leverage, **ladder_overrides)
+        return self._open_ladder_position(signal, current_price, timestamp, "DIRECTIONAL", leverage, maker_entry=maker_entry, **ladder_overrides)
 
     def execute_scalp_signal(
         self,

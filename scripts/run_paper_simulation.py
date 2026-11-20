@@ -131,8 +131,8 @@ SWING_MAX_LEVERAGE = 3.0              # teto de alavancagem 3x no modo S1 para d
 MAX_SAME_DIR_MAJORS = 2               # trava de correlação direcional nos majors (BTC/ETH/SOL)
 GP_BTC_MACRO_MAX_COUNTER_DIST = 0.015 # bloqueia GP contra tendência macro do BTC (> ±1.5% SMA200 1h)
 GP_UNAVAILABLE_TAPE_RISK_MULT = 0.50  # sizing defensivo 0.50x no GP quando altcoin está sem cobertura L2
-SCALP_SQUEEZE_VOL_Z_MIN = 1.0         # volume_zscore_20 mínimo no rompimento de Squeeze BB/Keltner 15m
-SCALP_SQUEEZE_NATR_BPS_MIN = 35.0     # ATR normalizado mínimo (bps) no Squeeze 15m
+SCALP_SQUEEZE_VOL_Z_MIN = 0.8         # volume_zscore_20 mínimo no rompimento de Squeeze BB/Keltner 15m
+SCALP_SQUEEZE_NATR_BPS_MIN = 20.0     # ATR normalizado mínimo (bps) no Squeeze 15m
 SCALP_ML15_MIN_PROB = 0.45            # probabilidade mínima do ensemble dedicado 15m (LGBM+RF)
 # Filtro faca-caindo (legado do GP v2 de fade; mantido como utilitário, NÃO aplicado no gatilho de momentum v3)
 GP_KNIFE_RSI_LOW = 20.0             # RSI abaixo => "faca caindo" (LONG) se close < sma_200
@@ -170,6 +170,7 @@ class PaperTradingDaemon:
         require_strict_tape_majors: Optional[bool] = None,
         use_scalp_squeeze_ml15: Optional[bool] = None,
         enforce_gp_btc_macro: Optional[bool] = None,
+        directional_maker_entry: Optional[bool] = None,
     ):
         self.poll_interval = poll_interval_seconds
         self.engine = engine or PaperTradingEngine()
@@ -213,6 +214,7 @@ class PaperTradingDaemon:
         self.require_strict_tape_majors: bool = (not is_fake_loader) if require_strict_tape_majors is None else bool(require_strict_tape_majors)
         self.use_scalp_squeeze_ml15: bool = (not is_fake_loader) if use_scalp_squeeze_ml15 is None else bool(use_scalp_squeeze_ml15)
         self.enforce_gp_btc_macro: bool = (not is_fake_loader) if enforce_gp_btc_macro is None else bool(enforce_gp_btc_macro)
+        self.directional_maker_entry: bool = (not is_fake_loader) if directional_maker_entry is None else bool(directional_maker_entry)
         self._h1_dist_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
         self._scalp_ml15_models: List[Dict[str, Any]] = self._load_scalp_ml15_models()
 
@@ -1329,7 +1331,13 @@ class PaperTradingDaemon:
                             self._fr(DTN, sym, ts, "gate_blocked")
                             continue
                         self._fi(DTN, sym, ts, "gate_passed")
-                        pos = self.engine.execute_directional_signal(sig, current_price=close, timestamp=ts, leverage=lev)
+                        lt = self.last_tape or {}
+                        tape_feats = (lt.get("features") or {}) if (lt.get("symbol") == sym and lt.get("strategy_type") == "DIRECTIONAL") else {}
+                        if "spread_bps" in tape_feats and tape_feats["spread_bps"] is not None:
+                            sig_metrics = dict(sig.metrics or {})
+                            sig_metrics["spread_bps"] = tape_feats["spread_bps"]
+                            sig = replace(sig, metrics=sig_metrics)
+                        pos = self.engine.execute_directional_signal(sig, current_price=close, timestamp=ts, leverage=lev, maker_entry=self.directional_maker_entry)
                         if not pos:
                             self._fr_open(DTN, sym, ts)
                         if pos:

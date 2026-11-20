@@ -193,6 +193,68 @@ class TapeReadingAgent:
         except Exception:
             return self._unavailable(sym, fallback_reason, now_ms)
 
+    def _fetch_binance_series_taker(self, con: sqlite3.Connection, sym: str, now_ms: int) -> Optional[Tuple[float, float]]:
+        """Retorna (taker_imb, age_s) para kind='taker' dos últimos 5m, ou None se indisponível/estragado."""
+        try:
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='binance_series'"
+            ).fetchone()
+            if not exists:
+                return None
+            rows = con.execute(
+                "SELECT ts_ms, v1, v2, v3 FROM binance_series "
+                "WHERE symbol=? AND kind='taker' AND ts_ms<=? ORDER BY ts_ms DESC LIMIT 2",
+                (sym, now_ms),
+            ).fetchall()
+            if not rows:
+                return None
+            newest_ts = int(rows[0][0])
+            age_s = (now_ms - newest_ts) / 1000.0
+            if age_s > 720.0:
+                return None
+            win_start = newest_ts - 300_000
+            buy = 0.0
+            sell = 0.0
+            for row in rows:
+                ts = int(row[0])
+                if ts < win_start:
+                    continue
+                buy += float(row[2] or 0.0)
+                sell += float(row[3] or 0.0)
+            if buy + sell <= 0.0:
+                return None
+            taker = (buy - sell) / (buy + sell)
+            return (taker, age_s)
+        except Exception as e:
+            logger.debug(f"Falha ao ler binance_series taker para {sym}: {e}")
+            return None
+
+    def _fetch_liq_telemetry(self, con: sqlite3.Connection, sym: str, now_ms: int) -> Dict[str, float]:
+        """Soma notional usd de liquidações dos últimos 5m por lado agressor (long/short)."""
+        out: Dict[str, float] = {}
+        try:
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='liquidations'"
+            ).fetchone()
+            if not exists:
+                return out
+            row = con.execute(
+                "SELECT "
+                "SUM(CASE WHEN side='SELL' THEN notional_usd ELSE 0 END), "
+                "SUM(CASE WHEN side='BUY' THEN notional_usd ELSE 0 END) "
+                "FROM liquidations "
+                "WHERE symbol=? AND ts_ms<=? AND ts_ms>?",
+                (sym, now_ms, now_ms - 300_000),
+            ).fetchone()
+            if row:
+                if row[0] is not None:
+                    out["liq_long_5m_usd"] = float(row[0])
+                if row[1] is not None:
+                    out["liq_short_5m_usd"] = float(row[1])
+        except Exception as e:
+            logger.debug(f"Falha ao ler liquidations para {sym}: {e}")
+        return out
+
     def evaluate(
         self,
         symbol: str,
@@ -215,110 +277,181 @@ class TapeReadingAgent:
                 if is_live_call:
                     return self._evaluate_live_binance_fallback(sym, now_ms, "symbol_not_covered")
                 return self._unavailable(sym, "symbol_not_covered", now_ms)
+
         try:
             con = self._connect_ro()
         except Exception as e:  # noqa: BLE001
             return self._unavailable(sym, f"db_unavailable:{type(e).__name__}", now_ms)
+
         try:
-            books = con.execute(
-                "SELECT ts_ms, spread_bps, microprice_dev_bps, bid_n10, ask_n10 FROM book_features "
-                "WHERE symbol=? AND ts_ms<=? ORDER BY ts_ms DESC LIMIT ?", (sym, now_ms, BOOK_SNAPSHOTS)).fetchall()
+            # --- Schema-aware book_features ---
+            book_cols = [row[1] for row in con.execute("PRAGMA table_info(book_features)").fetchall()]
+            has_book_fine = all(c in book_cols for c in ("bid_n5", "ask_n5", "bid_n2", "ask_n2"))
+            if has_book_fine:
+                books = con.execute(
+                    "SELECT ts_ms, spread_bps, microprice_dev_bps, bid_n10, ask_n10, "
+                    "bid_n5, ask_n5, bid_n2, ask_n2 "
+                    "FROM book_features WHERE symbol=? AND ts_ms<=? ORDER BY ts_ms DESC LIMIT ?",
+                    (sym, now_ms, BOOK_SNAPSHOTS)).fetchall()
+            else:
+                books = con.execute(
+                    "SELECT ts_ms, spread_bps, microprice_dev_bps, bid_n10, ask_n10 "
+                    "FROM book_features WHERE symbol=? AND ts_ms<=? ORDER BY ts_ms DESC LIMIT ?",
+                    (sym, now_ms, BOOK_SNAPSHOTS)).fetchall()
+
+            # --- Schema-aware tick_agg ---
             win_start = now_ms - TAKER_WINDOW_MIN * 60_000
-            ticks = con.execute(
-                "SELECT minute_ms, buy_notional, sell_notional, n_trades FROM tick_agg "
-                "WHERE symbol=? AND minute_ms<=? AND minute_ms>? ORDER BY minute_ms DESC",
-                (sym, now_ms, win_start)).fetchall()
+            tick_cols = [row[1] for row in con.execute("PRAGMA table_info(tick_agg)").fetchall()]
+            if "saturated" in tick_cols:
+                ticks = con.execute(
+                    "SELECT minute_ms, buy_notional, sell_notional, n_trades, "
+                    "COALESCE(saturated, 0) AS saturated "
+                    "FROM tick_agg WHERE symbol=? AND minute_ms<=? AND minute_ms>? "
+                    "ORDER BY minute_ms DESC",
+                    (sym, now_ms, win_start)).fetchall()
+            else:
+                ticks = con.execute(
+                    "SELECT minute_ms, buy_notional, sell_notional, n_trades, 0 AS saturated "
+                    "FROM tick_agg WHERE symbol=? AND minute_ms<=? AND minute_ms>? "
+                    "ORDER BY minute_ms DESC",
+                    (sym, now_ms, win_start)).fetchall()
+
+            liq_feats = self._fetch_liq_telemetry(con, sym, now_ms)
+
+            # --- Processamento ---
+            if not books:
+                if is_live_call:
+                    return self._evaluate_live_binance_fallback(sym, now_ms, "no_book_data")
+                return self._unavailable(sym, "no_book_data", now_ms, liq_feats)
+
+            book_age = (now_ms - int(books[0][0])) / 1000.0
+            feats: Dict[str, Any] = {"book_age_s": round(book_age, 1)}
+            feats.update(liq_feats)
+            if book_age > BOOK_MAX_AGE_S:
+                return self._unavailable(sym, "book_stale", now_ms, feats)
+
+            sat_ratio = (sum(1 for r in ticks if int(r[4] or 0)) / len(ticks)) if ticks else 0.0
+            tick_age = (now_ms - int(ticks[0][0])) / 1000.0 if ticks else None
+            if tick_age is not None:
+                feats["tick_age_s"] = round(tick_age, 1)
+
+            n_min = len(ticks)
+            n_trades = sum(int(r[3] or 0) for r in ticks)
+            buy = sum(float(r[1] or 0.0) for r in ticks)
+            sell = sum(float(r[2] or 0.0) for r in ticks)
+            buy_plus_sell = buy + sell
+            feats.update({"tick_minutes": n_min, "n_trades_5m": n_trades})
+
+            tick_missing_or_bad = (
+                (not ticks)
+                or (tick_age is not None and tick_age > TICK_MAX_AGE_S)
+                or (n_min < TAKER_MIN_MINUTES)
+                or (n_trades < TAKER_MIN_TRADES)
+                or (buy_plus_sell <= 0.0)
+                or (sat_ratio > 0.50)
+            )
+
+            if tick_missing_or_bad:
+                binance_taker = self._fetch_binance_series_taker(con, sym, now_ms)
+                if binance_taker is not None:
+                    taker_bs, bs_age = binance_taker
+                    feats["taker_source"] = "binance_series_5m"
+                    feats["taker_age_s"] = round(bs_age, 1)
+                    feats["tick_saturated_ratio"] = round(sat_ratio, 2)
+                    taker = taker_bs
+                else:
+                    if not ticks:
+                        if is_live_call:
+                            return self._evaluate_live_binance_fallback(sym, now_ms, "no_tick_data")
+                        return self._unavailable(sym, "no_tick_data", now_ms, feats)
+                    if tick_age is not None and tick_age > TICK_MAX_AGE_S:
+                        return self._unavailable(sym, "tick_stale", now_ms, feats)
+                    if n_min < TAKER_MIN_MINUTES or n_trades < TAKER_MIN_TRADES:
+                        return self._unavailable(sym, "tick_insufficient", now_ms, feats)
+                    if buy_plus_sell <= 0.0:
+                        return self._unavailable(sym, "tick_zero_volume", now_ms, feats)
+                    # sat_ratio > 0.50: trata como insuficiência de qualidade
+                    return self._unavailable(sym, "tick_insufficient", now_ms, feats)
+            else:
+                taker = (buy - sell) / buy_plus_sell
+                feats["taker_source"] = "tick_agg"
+                feats["tick_saturated_ratio"] = round(sat_ratio, 2)
+
+            # Processamento de book imbalance com fallback de colunas
+            imbs: List[float] = []
+            for r in books:
+                if has_book_fine:
+                    b, a = r[3], r[4]  # bid_n10/ask_n10
+                    if b is None or a is None or (float(b) + float(a)) <= 0.0:
+                        b, a = r[5], r[6]  # fallback bid_n5/ask_n5
+                    if b is None or a is None or (float(b) + float(a)) <= 0.0:
+                        b, a = r[7], r[8]  # fallback bid_n2/ask_n2
+                    if b is None or a is None or (float(b) + float(a)) <= 0.0:
+                        continue
+                    imbs.append((float(b) - float(a)) / (float(b) + float(a)))
+                else:
+                    b, a = r[3], r[4]
+                    if b is None or a is None or (float(b) + float(a)) <= 0.0:
+                        continue
+                    imbs.append((float(b) - float(a)) / (float(b) + float(a)))
+
+            devs = [float(r[2]) for r in books if r[2] is not None]
+            spread = books[0][1]
+            if not imbs or not devs or spread is None:
+                return self._unavailable(sym, "book_incomplete", now_ms, feats)
+            book_imb = sum(imbs) / len(imbs)
+            mdev = sum(devs) / len(devs)
+            spread = float(spread)
+
+            # P0: Normalização de microprice por spread (evita saturação em 1 bp)
+            mdev_norm = max(-1.0, min(1.0, mdev / max(spread, 1.0)))
+            flow_score = 0.60 * taker + 0.30 * book_imb + 0.10 * mdev_norm
+            feats.update({
+                "taker_imb_5m": taker,
+                "book_imb_10": book_imb,
+                "microprice_dev": mdev,
+                "spread_bps": spread,
+                "flow_score": round(flow_score, 4),
+            })
+
+            is_bullish_absorption = (taker <= -ABSORPTION_TAKER_THRESHOLD and book_imb >= ABSORPTION_BOOK_THRESHOLD)
+            is_bearish_absorption = (taker >= ABSORPTION_TAKER_THRESHOLD and book_imb <= -ABSORPTION_BOOK_THRESHOLD)
+
+            if spread > SPREAD_MAX_BPS:
+                vote, reason = "HOLD", "spread_wide"
+            elif is_bullish_absorption:
+                vote, reason = "BUY", "absorption_buy_confirmed"
+            elif is_bearish_absorption:
+                vote, reason = "SELL", "absorption_sell_confirmed"
+            elif self.use_continuous_flow:
+                if flow_score >= FLOW_SCORE_MIN:
+                    vote, reason = "BUY", "flow_buy_confirmed"
+                elif flow_score <= -FLOW_SCORE_MIN:
+                    vote, reason = "SELL", "flow_sell_confirmed"
+                else:
+                    vote, reason = "HOLD", "no_flow_confluence"
+            else:
+                if taker >= TAKER_IMB_MIN and book_imb >= BOOK_IMB_MIN and mdev >= MICROPRICE_DEV_MIN_BPS:
+                    vote, reason = "BUY", "flow_buy_confirmed"
+                elif taker <= -TAKER_IMB_MIN and book_imb <= -BOOK_IMB_MIN and mdev <= -MICROPRICE_DEV_MIN_BPS:
+                    vote, reason = "SELL", "flow_sell_confirmed"
+                else:
+                    vote, reason = "HOLD", "no_flow_confluence"
+
+            conf = 0.0
+            if vote != "HOLD":
+                if "absorption" in reason:
+                    conf = float(min(1.0, 0.5 * (abs(taker) / 0.50) + 0.5 * (abs(book_imb) / 0.30)))
+                elif self.use_continuous_flow:
+                    conf = float(min(1.0, abs(flow_score) / (2.0 * FLOW_SCORE_MIN)))
+                else:
+                    conf = float(min(1.0, 0.5 * min(1.0, abs(taker) / (2 * TAKER_IMB_MIN))
+                                     + 0.5 * min(1.0, abs(book_imb) / (2 * BOOK_IMB_MIN))))
+            return self._finish({
+                "agent_name": self.name, "symbol": sym, "vote": vote, "status": "OK", "confidence": conf,
+                "features": feats, "reason": reason, "timestamp": now_ms,
+            })
         except Exception as e:  # noqa: BLE001
             return self._unavailable(sym, f"db_error:{type(e).__name__}", now_ms)
         finally:
             con.close()
-
-        if not books:
-            if is_live_call:
-                return self._evaluate_live_binance_fallback(sym, now_ms, "no_book_data")
-            return self._unavailable(sym, "no_book_data", now_ms)
-        if not ticks:
-            if is_live_call:
-                return self._evaluate_live_binance_fallback(sym, now_ms, "no_tick_data")
-            return self._unavailable(sym, "no_tick_data", now_ms)
-        book_age = (now_ms - int(books[0][0])) / 1000.0
-        tick_age = (now_ms - int(ticks[0][0])) / 1000.0
-        feats: Dict[str, Any] = {"book_age_s": round(book_age, 1), "tick_age_s": round(tick_age, 1)}
-        if book_age > BOOK_MAX_AGE_S:
-            return self._unavailable(sym, "book_stale", now_ms, feats)
-        if tick_age > TICK_MAX_AGE_S:
-            return self._unavailable(sym, "tick_stale", now_ms, feats)
-
-        n_min = len(ticks)
-        n_trades = sum(int(r[3] or 0) for r in ticks)
-        feats.update({"tick_minutes": n_min, "n_trades_5m": n_trades})
-        if n_min < TAKER_MIN_MINUTES or n_trades < TAKER_MIN_TRADES:
-            return self._unavailable(sym, "tick_insufficient", now_ms, feats)
-        buy = sum(float(r[1] or 0.0) for r in ticks)
-        sell = sum(float(r[2] or 0.0) for r in ticks)
-        if buy + sell <= 0.0:
-            return self._unavailable(sym, "tick_zero_volume", now_ms, feats)
-        taker = (buy - sell) / (buy + sell)
-
-        imbs: List[float] = []
-        for r in books:
-            b, a = r[3], r[4]
-            if b is None or a is None or (float(b) + float(a)) <= 0.0:
-                continue
-            imbs.append((float(b) - float(a)) / (float(b) + float(a)))
-        devs = [float(r[2]) for r in books if r[2] is not None]
-        spread = books[0][1]
-        if not imbs or not devs or spread is None:
-            return self._unavailable(sym, "book_incomplete", now_ms, feats)
-        book_imb = sum(imbs) / len(imbs)
-        mdev = sum(devs) / len(devs)
-        spread = float(spread)
-
-        # P0: Normalização de microprice por spread (evita saturação em 1 bp)
-        mdev_norm = max(-1.0, min(1.0, mdev / max(spread, 1.0)))
-        flow_score = 0.60 * taker + 0.30 * book_imb + 0.10 * mdev_norm
-        feats.update({
-            "taker_imb_5m": taker,
-            "book_imb_10": book_imb,
-            "microprice_dev": mdev,
-            "spread_bps": spread,
-            "flow_score": round(flow_score, 4),
-        })
-
-        is_bullish_absorption = (taker <= -ABSORPTION_TAKER_THRESHOLD and book_imb >= ABSORPTION_BOOK_THRESHOLD)
-        is_bearish_absorption = (taker >= ABSORPTION_TAKER_THRESHOLD and book_imb <= -ABSORPTION_BOOK_THRESHOLD)
-
-        if spread > SPREAD_MAX_BPS:
-            vote, reason = "HOLD", "spread_wide"
-        elif is_bullish_absorption:
-            vote, reason = "BUY", "absorption_buy_confirmed"
-        elif is_bearish_absorption:
-            vote, reason = "SELL", "absorption_sell_confirmed"
-        elif self.use_continuous_flow:
-            if flow_score >= FLOW_SCORE_MIN:
-                vote, reason = "BUY", "flow_buy_confirmed"
-            elif flow_score <= -FLOW_SCORE_MIN:
-                vote, reason = "SELL", "flow_sell_confirmed"
-            else:
-                vote, reason = "HOLD", "no_flow_confluence"
-        else:
-            if taker >= TAKER_IMB_MIN and book_imb >= BOOK_IMB_MIN and mdev >= MICROPRICE_DEV_MIN_BPS:
-                vote, reason = "BUY", "flow_buy_confirmed"
-            elif taker <= -TAKER_IMB_MIN and book_imb <= -BOOK_IMB_MIN and mdev <= -MICROPRICE_DEV_MIN_BPS:
-                vote, reason = "SELL", "flow_sell_confirmed"
-            else:
-                vote, reason = "HOLD", "no_flow_confluence"
-
-        conf = 0.0
-        if vote != "HOLD":
-            if "absorption" in reason:
-                conf = float(min(1.0, 0.5 * (abs(taker) / 0.50) + 0.5 * (abs(book_imb) / 0.30)))
-            elif self.use_continuous_flow:
-                conf = float(min(1.0, abs(flow_score) / (2.0 * FLOW_SCORE_MIN)))
-            else:
-                conf = float(min(1.0, 0.5 * min(1.0, abs(taker) / (2 * TAKER_IMB_MIN))
-                                 + 0.5 * min(1.0, abs(book_imb) / (2 * BOOK_IMB_MIN))))
-        return self._finish({
-            "agent_name": self.name, "symbol": sym, "vote": vote, "status": "OK", "confidence": conf,
-            "features": feats, "reason": reason, "timestamp": now_ms,
-        })
