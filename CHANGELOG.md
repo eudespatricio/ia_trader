@@ -4,6 +4,27 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.8] - 2026-11-20 - Patch S5: Blindagem P0, Comitê 6-Agentes Causal, Microestrutura WS e Maker-First
+
+### Added
+- **Wave P1-A (`data/live_context_enricher.py`):** Novo `LiveContextEnricher` injetando contexto causal em tempo real nos 3 loops (`GP`, `SCALP`, `DIRECTIONAL`): `volume_sma` (fallback `vol_sma_20`), `atr_median`/`atr_sma`, regime por símbolo (`MarketRegimeClassifier(db_path="")`), série diária macro estrita `D-1` (`timestamp_ms < day_start_ms` + guard de staleness para `DXY`, `VIX`, `SP500`, `FEAR_AND_GREED`, `STABLECOINS_CIRCULATING_USD`, `DEFI_TVL`), calendário de eventos macro ±30m UTC (`US_CPI_RELEASE` 13:30 UTC, `FOMC_DECISION` 19:00 UTC -> `is_cpi_fomc_window`), `funding_zscore` (30 amostras em `funding_rates`/`derivs`), fallback de profundidade de book (`n10->n5->n2`), buckets fechados anti-lookahead (`minute_ms + 60000 <= ts_ms` em `tick_agg` e `ts_ms + 300000 <= ts_ms` em `binance_series`) e refresh periódico de cache externo a cada 6h (com backoff de 5m em falha total).
+- **Wave P1-B (`scripts/binance_ws_collector.py` & `scripts/microstructure_collector.py`):** Novo `BinanceFuturesWSCollector` (`websockets 16.1.1`) em streaming de `@aggTrade` (`ingest_ws_trade` com `sat=0`) e `!forceOrder@arr` persistindo na nova tabela `liquidations`; isolamento de IDs em `TickAggregator.last_id` por `(source, sym)`; paginação em `_poll_binance` (`limit=1000`, até 3 páginas); substituição de bloqueio permanente de Bitget por TTL de 300s (`_BITGET_BACKOFF_UNTIL`); e flag `--status` estritamente read-only (`?mode=ro`) reportando liquidações e saturação 24h.
+- **Wave P1-B (`scripts/backtest_scalp_15m_calibration.py`):** Harness local de calibração OOS para SCALP 15m com split Purged IS->OOS sem vazamento e embargo de 10 barras.
+- **QA & Documentação (`tests/test_patch_s5_p0.py`, `tests/test_patch_s5_p1a.py`, `tests/test_patch_s5_p1b.py`, `docs/gaps.md`):** Suítes independentes cross-model cobrindo P0, P1-A (incluindo `test_microstructure_taker_closed_bucket_anti_lookahead`) e P1-B, mais registro de gaps P2/Wave P2 em `docs/gaps.md`.
+
+### Changed
+- **Wave P0 (`agents/technical_agent.py`, `scripts/run_paper_simulation.py`):** Correção do filtro de warning `sklearn.utils.parallel`, desativação segura contra ciclos de paralelismo RF (`_disable_estimator_parallelism()` com `n_jobs=1`), gate de `SWEEP_OVERRIDE` exigindo alinhamento `macro_bull` e `vol_z >= 0.8` (`conf=0.72` se `vol_z >= 1.5`, senão `0.68`, quando `vol_z` não for `None`), `RotatingFileHandler` opcional no daemon e deduplicação do curto-circuito do Circuit Breaker (`_breaker_short_circuit()` / `_is_breaker_blocking()`) antes de I/O ou ML em `GP`, `SCALP` e `DIRECTIONAL`.
+- **Wave P0 (`performance_tracker.py`, `rollback_guard.py`):** Janela móvel de 15 trades (`rolling_window_size=15`, `rolling_trades_count`, `rolling_win_rate`, `rolling_profit_factor`) com ativação de `DefensiveRiskPolicy` (`DEGRADATION_ROLLBACK_ACTIVATED`) e auto-recuperação (`rolling_wr >= 50.0` e `rolling_pf >= 1.25` -> `DEGRADATION_ROLLBACK_RECOVERED`).
+- **Wave P0 (`smart_trade.py`, `tests/test_signal_funnel.py`):** Expansão de `FUNNEL_REJECT_REASONS` com `"stale_bar"`, `"stale_candle"`, `"climax_exhaustion"`, `"confidence"`, `"stale_data"`, `"tape_veto"` e `"kill_switch"`.
+- **Wave P1-A (`agents/orderflow_agent.py`, `consensus_judge.py`, `scripts/run_paper_simulation.py`):** `OrderFlowAgent` ganhou Prioridade 0.5 de microestrutura real (`micro_taker_imb_5m` e `micro_book_imb_10`), suprime o eco da Prioridade 5 quando há tape real e endurece a Prioridade 5 (`|close_position| >= 0.55` ou `vol_ratio >= 1.2 and |close_position| >= 0.25`); `ConsensusJudge._apply_confidence_calibration()` generalizado além de `SIDEWAYS_RANGE` para todos os regimes explícitos (`(ece > 0.20 and acc < 0.50)` ou `acc < 0.40`, guardando `total_samples < 5`).
+- **Wave P1-B (`agents/tape_reading_agent.py`, `smart_trade.py`, `scripts/run_paper_simulation.py`):** `TapeReadingAgent` com schema-aware `tick_agg`, fallback de profundidade (`n10->n5->n2`), fallback para `binance_series` (`kind='taker'`) sob saturação/ausência de `tick_agg`, telemetria de liquidações 5m e `try/finally: con.close()` em `refresh_covered_symbols_from_db()`; `PaperTradingEngine` ganhou `directional_maker_entry: bool = False` opt-in (`[MAKER_POST_ONLY]` / `[TAKER_FALLBACK_WIDE_SPREAD]` com threshold `> 15.0` bps em GP e `> 5.0` bps nos demais), mantendo paridade default Taker em testes e `SCALP` preservado em `SCALP_SQUEEZE_NATR_BPS_MIN = 35.0` / `SCALP_SQUEEZE_VOL_Z_MIN = 1.0` após gate OOS (`PF 1.24 < 1.25`).
+
+### Fixed
+- **Wave P0 (`flask_interface.py`):** Garantia de fechamento de sessão async (`dl.close()`) em `try ... finally` nos endpoints `/api/chart/...` e `/api/refresh-symbol/...` antes de `loop.close()`.
+- **Review Cross-Model Round 1 -> Round 2 (`APPROVE`):** Eliminação de lookahead em buckets abertos de `tick_agg`/`binance_series` no `LiveContextEnricher`, reconstrução sem vazamento (Purged IS->OOS) do calibrador SCALP 15m e fechamento determinístico de conexão SQLite em `TapeReadingAgent`.
+
+---
+
 ## [1.0.7] - 2026-11-15 - Patch S4.2: Blindagem Multi-Estratégia, Reabilitação Universal do Scalp 15m e Paridade
 
 ### Adicionado
