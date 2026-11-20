@@ -29,6 +29,20 @@
 
 ## 📜 Histórico Detalhado de Entregas e Iterações
 
+### [Wave P2 - v1.0.9: Desduplicação Binance+Bitget, Pipeline ML v2 Causal, Hot-Reload & Hardening P2-D] - 2026-11-20
+- **Frente DB (Auditoria & Desduplicação Canônica — `scripts/audit_and_dedup_candles.py`):**
+  - Removidas `4.512` barras redundantes da Bitget (`192` sobreposições exatas em `ETHUSDT:4h` + `4.320` candles `1d` com offset UTC+8 sobre datas já presentes na Binance) com backup prévio em `datasets/backups/pre_dedup_20261120T145807Z.db` e `PRAGMA integrity_check = ok` (`--check` pós-limpeza = `0` removíveis; `0` duplicatas em `funding_rates`, `macro_daily_history` e `microstructure.db`), preservando todas as 21 costuras não sobrepostas.
+- **Frente ML v2, Paridade & Lifecycle (`data/ml_features_v2.py`, `model_trainer.py`, `agents/technical_agent.py`, `learning_tracker.py`, `scripts/run_paper_simulation.py`):**
+  - Pipeline `v2` de `49` features estacionárias finitas (zero features mortas, guarda de volume em troca de exchange na costura `15m`, `funding_zscore_30d` calculado na série nativa 8h, macro/on-chain `D+1` longo sem `DEFI_TVL`, MTF `4h`/`1d` de barras fechadas `1h`, cross-asset BTC e sazonalidade cíclica) com cache thread-safe e paridade live `<= 1e-9` (`1.76 ms` quente).
+  - Embargo cronológico real por `timestamp`/`embargo_ms` no `PurgedTimeSeriesSplit`, ensemble multi-schema com hot-reload automático via `(st_mtime_ns, st_size)` no `TechnicalAgent` e `PaperTradingDaemon`, e guarda `SKIPPED_V2_GUARD` no retreinamento diário.
+- **Frente Benchmark Antes × Depois (`scripts/eval_and_train_ml_v2.py`, `datasets/reports/p2_ml_v2_benchmark.json`, `TRIAL_0166..TRIAL_0173`):**
+  - `1h` OOS (`2025-11-20..2026-11-20`): `BEFORE_V1_1H` (`ZImp 11/10`, `N=15`, `PF=0.557`, `E[R]=-0.300`) vs `AFTER_V2_1H_H5` (`ZImp 0/0`, `N=9`, `PF=2.435`, `E[R]=+0.354`) / `AFTER_V2_1H_H18` (`ZImp 0/0`, `N=38`, `PF=1.002`, `E[R]=+0.002`), `PBO=0.266`, `DSR=0.000` -> `FAIL_REFUTED`.
+  - `15m` OOS (`2026-07-07..2026-11-20`): `BEFORE_V1_15M` (`ZImp 10/10`, `N=714`, `PF=0.302`) vs `AFTER_V2_15M_H30` (`ZImp 1/0`, `N=1776`, `PF=0.528`, `E[R]=-0.424`), `PBO=0.563` -> `FAIL_REFUTED` (ablação 66d de microestrutura: `dPF=-0.0683`).
+  - Gate de promoção preservou os artefatos `v1` `.joblib` em produção e manteve `SCALP` em `35.0 / 1.0 / 0.45` (calibração realista em `backtest_scalp_15m_calibration.py`: `PF=1.22 < 1.25`), direcionando próxima pesquisa ML para **Meta-Labeling** sobre gatilhos já filtrados.
+- **Frente P2-D & WebSocket ao Vivo:**
+  - Correção do endpoint WebSocket Futures (`/market/stream`), fila assíncrona desacoplada para `on_trade` e logger `collector.ws`: saturação imediata zerada após restart em `ia-trader-supervisor.service` (`BTCUSDT 4.345 trades/min sat=0` vs `500–700 sat=1`, `ETHUSDT 3.844 sat=0`, `SOLUSDT 331 sat=0`, `liquidations` coletando ao vivo).
+  - Fechados todos os 4 gaps P2 de `docs/gaps.md`; revisão cross-model (`claude-sonnet-5-5-medium`) emitiu `VERDICT: APPROVE (0 P0/P1)`.
+
 ### [Sprint S5 - v1.0.8: Patch S5 (Waves P0 + P1-A + P1-B)] - 2026-11-20
 - **Escopo Entregue (Commits `0a1bd9b`, `2048a51`, `850c3ae`, `58a2ec1` sobre baseline `b5d108e`):**
   1. **Wave P0 (`0a1bd9b`):** Eliminação de warnings `sklearn.utils.parallel` (`_disable_estimator_parallelism` com `n_jobs=1`), gate de `SWEEP_OVERRIDE` por alinhamento `macro_bull` e `vol_z >= 0.8`, curto-circuito unificado do Circuit Breaker (`_breaker_short_circuit()`), fechamento async de `DataLoader` no Flask (`try ... finally`), expansão de `FUNNEL_REJECT_REASONS` e janela móvel de 15 trades no `RollbackGuard` com auto-recuperação (`rolling_wr >= 50.0` & `rolling_pf >= 1.25`).

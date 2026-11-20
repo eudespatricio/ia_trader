@@ -4,6 +4,31 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.9] - 2026-11-20 - Wave P2: Desduplicação DB, Pipeline ML v2 Causal, Hot-Reload, Benchmark Honesto & Hardening P2-D
+
+### Added
+- **Auditoria & Desduplicação Canônica Binance + Bitget (`scripts/audit_and_dedup_candles.py`):** Novo utilitário CLI read-only (`--check`) e limpeza transacional (`--apply` com backup online prévio em `datasets/backups/pre_dedup_20261120T145807Z.db` e `PRAGMA integrity_check`). Removidas `4.512` barras redundantes da Bitget (`192` overlaps exatos em `ETHUSDT:4h` e `4.320` candles `1d` com offset UTC+8 sobre datas cobertas pela Binance), zerando duplicatas sem apagar as 21 costuras históricas não sobrepostas (`15m`/`4h`).
+- **Pipeline Causal ML v2 & Paridade Serving (`data/ml_features_v2.py` & `scripts/run_paper_simulation.py`):** Novo pipeline unificado de `49` features estacionárias e finitas (`V2_FEATURE_COLUMNS`), eliminando as 10+ features mortas e duplicatas de `v1`, protegendo costuras multi-exchange (`bitget -> binance`) por segmento contínuo no volume/VWAP, calculando `funding_zscore_30d`/`funding_7d_ma_bps` na série nativa 8h antes do `merge_asof`, aplicando shift `D+1` estrito em macro/on-chain longo (sem `DEFI_TVL` de 60d), reamostrando MTF `4h`/`1d` exclusivamente de velas fechadas `1h` da Binance, cross-asset BTC e sazonalidade cíclica (`1.76ms` cacheado ao vivo, paridade batch-live `<= 1e-9`).
+- **Benchmark Zero-Leakage Before × After & Promotion Gate (`scripts/eval_and_train_ml_v2.py`):** Suíte pré-registrada em `1h` (`2020-01..2026-11`, holdout 1 ano `>= 2025-11-20`) e `15m` (`2025-10..2026-11`, holdout `>= 2026-07-07`) com CSCV `PBO`, `DSR` sobre `173` trials e ablação informativa 66d de microestrutura (`datasets/reports/p2_ml_v2_benchmark.json`, `TRIAL_0166..TRIAL_0173`).
+- **QA Independente (`tests/test_wave_p2_ml_and_hardening.py`):** Suíte dedicada cobrindo desduplicação, perturbação anti-lookahead, guarda de costura, paridade batch-live, split multi-ativo por timestamp, hot-reload `mtime_ns/size`, guarda v2 e endurecimento P2-D.
+
+### Changed
+- **Validação Temporal Multi-Ativo & Proteção de Schema (`model_trainer.py`, `agents/technical_agent.py`, `learning_tracker.py`, `scripts/run_paper_simulation.py`):**
+  - `PurgedTimeSeriesSplit` e `ModelTrainer.train_walk_forward()` passaram a suportar `timestamps` + `embargo_ms` cronológicos reais para datasets pooled multi-ativo (mantendo compatibilidade retroativa para `timestamps=None`).
+  - `_DefaultMLEnsemble` refatorado para selecionar features por sub-modelo (`v1`/`v2`), com auto hot-reload por `(path, st_mtime_ns, st_size)`, `invalidate_default_model_cache()`, `invalidate_scalp_ml15_cache()` e `SKIPPED_V2_GUARD` em `ModelEvolutionManager.run_retraining_cycle()`.
+  - `PaperTradingDaemon` mantém chamada compatível de 1 argumento em `_predict_scalp_ml15_probs(latest)` e propaga contexto causal para `_build_committee_context(..., timeframe=...)`.
+- **Fechamento dos 4 Itens P2-D (`scripts/binance_ws_collector.py`, `data/live_context_enricher.py`, `agents/tape_reading_agent.py`, `scripts/backtest_scalp_15m_calibration.py`):**
+  - WebSocket Binance Futures atualizado para `wss://fstream.binance.com/market/stream`, logger `collector.ws` (visível em `logs/collector.log`), fila assíncrona `asyncio.Queue` desacoplando `on_trade` de `ws.recv()` e limpeza consistente de estado do loop.
+  - `LiveContextEnricher` filtra barra UTC do dia corrente no Yahoo, contabiliza erros SQL inesperados (`ctx["enrich_errors"]`) e infere período dinâmico em `binance_series`.
+  - `TapeReadingAgent` infere cadência real em `binance_series` e loga erros inesperados de `active_symbols` em `warning`.
+  - `backtest_scalp_15m_calibration.py` ganhou `maker_fill_mode="realistic"` (toque na barra seguinte) e aviso explícito `[INFORMATIONAL ONLY]` pós-`created_at`.
+
+### Results (Sem Oráculo Comprado)
+- **Benchmark ML `v1` × `v2` (`Decision=FAIL_REFUTED` — Modelos `v1` preservados):** Feature engineering `v2` zerou features mortas (`11/10 -> 0/0` em 1h) e elevou `PF`/`E[R]` em todas as comparações diretas (`1h H5: PF 0.557 -> 2.435` com `N=9`; `1h H18: PF 1.002` com `N=38`; `15m: PF 0.302 -> 0.528`), porém sem atingir o gate rigoroso (`PBO < 0.20` e `DSR >= 0.95` sobre 173 trials); artefatos `v1` e thresholds `SCALP` (`35.0 / 1.0 / 0.45`, realista `PF=1.22 < 1.25`) foram mantidos.
+- **WebSocket Coletor ao Vivo Pós-Restart:** Saturação em `BTCUSDT` caiu de `95%` (`500–700` trades/min via REST) para `0` na primeira janela completa pós-restart (`4.345` trades/min em `BTCUSDT`, `3.844` em `ETHUSDT`, `331` em `SOLUSDT`, e tabela `liquidations` ativa com 7 eventos iniciais).
+
+---
+
 ## [1.0.8] - 2026-11-20 - Patch S5: Blindagem P0, Comitê 6-Agentes Causal, Microestrutura WS e Maker-First
 
 ### Added
