@@ -1032,6 +1032,7 @@
                             <button data-strategy="SCALP" class="funnel-strat-btn px-2 py-1 rounded text-[11px] font-semibold text-slate-400 hover:text-white">Scalp</button>
                             <button data-strategy="GOLDEN_POT" class="funnel-strat-btn px-2 py-1 rounded text-[11px] font-semibold text-slate-400 hover:text-white">Golden Pot</button>
                             <button data-strategy="DAY_TRADE" class="funnel-strat-btn px-2 py-1 rounded text-[11px] font-semibold text-slate-400 hover:text-white">Day Trade</button>
+                            <button data-strategy="SWING_4H" class="funnel-strat-btn px-2 py-1 rounded text-[11px] font-semibold text-slate-400 hover:text-white">Swing 4h</button>
                         </div>
                     </div>
                 </div>
@@ -1310,7 +1311,7 @@
                     <div class="glass-panel p-4 rounded-xl border border-dark-600/80 space-y-2">
                         <div>
                             <h3 class="text-xs font-bold text-white uppercase tracking-wider">PnL por Estratégia (<span id="evoStratSubtitle">Por Semana</span>)</h3>
-                            <p class="text-[11px] text-slate-400">Contribuição líquida de SCALP, GOLDEN_POT e DIRECTIONAL em cada ciclo.</p>
+                            <p class="text-[11px] text-slate-400">Contribuição líquida de SCALP, GOLDEN_POT, DIRECTIONAL e SWING_4H em cada ciclo.</p>
                         </div>
                         <div id="evolutionStrategyChart" class="w-full" style="height: 300px;"></div>
                     </div>
@@ -2644,6 +2645,7 @@
                 { key: "SCALP", name: "SCALP", color: "#22d3ee" },
                 { key: "GOLDEN_POT", name: "GOLDEN_POT", color: "#f59e0b" },
                 { key: "DIRECTIONAL", name: "DIRECTIONAL", color: "#818cf8" },
+                { key: "SWING_4H", name: "SWING_4H", color: "#a855f7" },
                 { key: "CARRY", name: "CARRY", color: "#34d399" },
             ];
             const labels = rows.map(r => r.label);
@@ -4221,6 +4223,7 @@
             if (["3m", "5m", "15m", "1h", "4h"].includes(tf)) return tf;
             const st = String(pos.strategy_type || "").toUpperCase();
             if (st === "GOLDEN_POT") return "5m";
+            if (st === "SWING_4H") return "4h";
             return (st === "SWING" || st === "CARRY" || st === "DIRECTIONAL") ? "1h" : "15m";
         }
 
