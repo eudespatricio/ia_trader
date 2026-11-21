@@ -1916,9 +1916,11 @@ def _side_sign(side: Any) -> float:
 
 LEDGER_ACTION_LABELS = {
     "OPEN": "Abertura", "OPEN_LONG": "Abertura LONG", "OPEN_SHORT": "Abertura SHORT",
+    "OPEN_SWING_4H_LONG": "Abertura Swing 4h LONG", "OPEN_SWING_4H_SHORT": "Abertura Swing 4h SHORT",
     "TP1_PARTIAL": "TP1 parcial", "TP2_PARTIAL": "TP2 parcial (trailing ativado)",
     "TAKE_PROFIT_3": "TP3 (runner encerrado)", "TAKE_PROFIT": "Take profit",
     "TRAILING_STOP": "Trailing stop", "BREAKEVEN_STOP": "Stop no breakeven",
+    "CHANNEL_EXIT_10": "Saída canal Donchian10",
     "STOP_LOSS": "Stop loss", "LIQUIDATION": "Liquidação",
 }
 
@@ -2175,7 +2177,7 @@ _FUNNEL_SUCCESS_FALLBACK = ["evaluated", "candidate", "committee_agree", "confid
 _FUNNEL_REJECT_FALLBACK = ["no_data", "no_trigger", "committee_disagree", "low_confidence", "veto",
                            "cooldown", "bar_limit", "quota", "margin", "breaker", "gate_blocked",
                            "excluded_symbol", "other"]
-FUNNEL_STRATEGIES = ("SCALP", "GOLDEN_POT", "DAY_TRADE")
+FUNNEL_STRATEGIES = ("SCALP", "GOLDEN_POT", "DAY_TRADE", "SWING_4H")
 FUNNEL_HOURS_ALLOWED = (1, 6, 24, 72, 168)
 
 

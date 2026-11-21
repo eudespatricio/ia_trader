@@ -81,9 +81,11 @@ DIRECTIONAL_BAR_MS = 60 * 60 * 1000
 INTRADAY_BAR_MS = 15 * 60 * 1000
 SCALP_BAR_MS = 15 * 60 * 1000  # S2: Migrado de 3m para 15m (reduz atrito de taxas de 0.79R para 0.16R)
 GOLDEN_POT_BAR_MS = 5 * 60 * 1000
+SWING_4H_BAR_MS = 4 * 60 * 60 * 1000
 DIRECTIONAL_MAX_HOLDING_BARS = 48
 SCALP_MAX_HOLDING_BARS = 30
 GOLDEN_POT_MAX_HOLDING_BARS = 36
+SWING_4H_MAX_HOLDING_BARS = 120
 # SLIPPAGE de ordens a MERCADO (entrada taker, SL/BE/TRAILING/TIMEOUT/MANUAL): único valor, simétrico long/short,
 # igual ao BacktestEngine (0.02% por fill). Ordens limite (maker) mantêm 0.01%. (slippage_spot/perp ficam só no carry.)
 MARKET_SLIPPAGE_PCT = 0.0002
@@ -142,6 +144,12 @@ STRATEGY_PROFILES: Dict[str, StrategyProfile] = {
     # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails) - R:R: TP1 1.5x (1.0R BE), TP2 2.5x (1.67R), TP3 6.0x (4.0R)
     "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.5, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
                                   bar_ms=GOLDEN_POT_BAR_MS, max_holding_bars=GOLDEN_POT_MAX_HOLDING_BARS),
+    # swing trend-following 4h (Donchian40 / ExitCh10): sem parciais (TP1/2/3 = 0), trailing puro 3.5xATR, timeout 120 barras (20d)
+    "SWING_4H": StrategyProfile(
+        sl_atr_mult=2.5, tp1_atr_mult=0.0, tp2_atr_mult=0.0, tp3_atr_mult=0.0, trail_atr_mult=3.5,
+        min_committee_confidence=0.60, bar_ms=SWING_4H_BAR_MS, max_holding_bars=SWING_4H_MAX_HOLDING_BARS,
+        tp1_fraction=0.0, tp2_fraction=0.0,
+    ),
 }
 
 logger = logging.getLogger("ia_trader.smart_trade")
@@ -637,6 +645,8 @@ class PaperTradingEngine:
                     d_trail = pos.trailing_atr_mult * pos.entry_atr
                     pos.trail_ref_extreme = (pos.trailing_stop_price + d_trail if pos.side == "LONG"
                                              else pos.trailing_stop_price - d_trail)
+                elif pos.trailing_active and pos.trailing_stop_price <= 0 and pos.entry_price > 0:
+                    pos.trail_ref_extreme = pos.entry_price
                 if pos.status == "OPEN":
                     open_pos[pos.position_id] = pos
                 else:
@@ -1163,6 +1173,7 @@ class PaperTradingEngine:
         "DIRECTIONAL": {"label": "Ordem Direcional", "cap": 0.5, "maker_entry": False, "atr_fallback_pct": 0.01, "risk_scale": 1.0},
         "SCALP": {"label": "Scalp", "cap": 0.25, "maker_entry": True, "atr_fallback_pct": 0.005, "risk_scale": 0.50},
         "GOLDEN_POT": {"label": "Golden Pot", "cap": 0.12, "maker_entry": True, "atr_fallback_pct": 0.008, "risk_scale": 0.30},
+        "SWING_4H": {"label": "Swing 4h", "cap": 0.25, "maker_entry": False, "atr_fallback_pct": 0.02, "risk_scale": 1.0, "max_leverage": 2.0},
     }
 
     def _open_ladder_position(
@@ -1207,6 +1218,7 @@ class PaperTradingEngine:
                 "DIRECTIONAL": self.can_execute_directional,
                 "SCALP": self.can_execute_scalp,
                 "GOLDEN_POT": self.can_execute_golden_pot,
+                "SWING_4H": self.can_execute_directional,
             }.get(strategy_type)
             if can_fn is not None:
                 allowed, cb_reason = can_fn(timestamp)
@@ -1289,19 +1301,29 @@ class PaperTradingEngine:
 
             atr = signal.atr if signal.atr and signal.atr > 0 else current_price * meta["atr_fallback_pct"]
             use_custom_ladder = (tp1_atr_mult is not None or tp2_atr_mult is not None)
+            f_tp1 = EXIT_TP1_FRACTION if use_custom_ladder else prof.tp1_fraction
+            f_tp2 = EXIT_TP2_FRACTION if use_custom_ladder else prof.tp2_fraction
             m_tp1 = prof.tp1_atr_mult if tp1_atr_mult is None else tp1_atr_mult
             m_tp2 = prof.tp2_atr_mult if tp2_atr_mult is None else tp2_atr_mult
             m_tp3 = prof.tp3_atr_mult if tp3_atr_mult is None else tp3_atr_mult
             m_trail = (0.8 if (use_custom_ladder and prof.trail_atr_mult <= 0.0) else prof.trail_atr_mult) if trail_atr_mult is None else trail_atr_mult
+            pure_trailing = (f_tp1 <= 0.0 and f_tp2 <= 0.0 and m_trail > 0.0 and atr > 0.0)
             sgn = 1.0 if side == "LONG" else -1.0
             sl_price = exec_price - sgn * (prof.sl_atr_mult if sl_atr_mult is None else sl_atr_mult) * atr
             if strategy_type == "DIRECTIONAL" and sl_atr_mult is None:
                 sig_sl = float(signal.stop_loss or 0.0)
                 if sig_sl > 0 and ((side == "LONG" and sig_sl < exec_price) or (side == "SHORT" and sig_sl > exec_price)):
                     sl_price = sig_sl
-            tp1_p = exec_price + sgn * m_tp1 * atr
-            tp2_p = exec_price + sgn * m_tp2 * atr
-            tp3_p = exec_price + sgn * m_tp3 * atr
+            if pure_trailing:
+                tp1_p = tp2_p = tp3_p = 0.0
+                initial_trailing_active = True
+                trail_ref_extreme = exec_price
+            else:
+                tp1_p = exec_price + sgn * m_tp1 * atr
+                tp2_p = exec_price + sgn * m_tp2 * atr
+                tp3_p = exec_price + sgn * m_tp3 * atr
+                initial_trailing_active = False
+                trail_ref_extreme = 0.0
 
             sl_dist_pct = abs(exec_price - sl_price) / exec_price if exec_price > 0 else 0.01
 
@@ -1313,13 +1335,15 @@ class PaperTradingEngine:
             regime_ok = True
             if "regime_alignment" in sig_metrics:
                 regime_ok = bool(sig_metrics["regime_alignment"])
+            strategy_max_lev = min(MAX_LEVERAGE, float(meta.get("max_leverage", MAX_LEVERAGE)))
             calc_lev = decide_leverage(
                 confidence=signal.confidence,
                 atr_pct=atr_pct,
                 regime_alignment=regime_ok,
-                timeframe="15m" if strategy_type == "SCALP" else "1h",
+                timeframe="15m" if strategy_type == "SCALP" else ("4h" if strategy_type == "SWING_4H" else "1h"),
+                max_leverage=strategy_max_lev,
             )
-            lev_req = min(clamp_leverage(leverage, MAX_LEVERAGE), calc_lev)
+            lev_req = min(clamp_leverage(leverage, strategy_max_lev), calc_lev)
             risk_scale = float(meta.get("risk_scale", 1.0)) * float(risk_scale_mult)
 
             if self.rollback_guard and getattr(getattr(self.rollback_guard, "status", None), "is_rollback_active", False):
@@ -1386,9 +1410,6 @@ class PaperTradingEngine:
                     self.last_open_reject = "duplicate_order"
                     return None
 
-            f_tp1 = EXIT_TP1_FRACTION if use_custom_ladder else prof.tp1_fraction
-            f_tp2 = EXIT_TP2_FRACTION if use_custom_ladder else prof.tp2_fraction
-
             pos = PaperPosition(
                 position_id=pos_id, symbol=symbol, side=side, entry_price=exec_price, current_price=exec_price,
                 quantity=qty, notional=notional, stop_loss=sl_price, take_profit=tp3_p,
@@ -1396,7 +1417,8 @@ class PaperTradingEngine:
                 strategy_type=strategy_type, status="OPEN",
                 tp1_price=tp1_p, tp1_hit=False, tp2_price=tp2_p, initial_quantity=qty, leverage=lev,
                 tp3_price=tp3_p, tp2_hit=False, tp1_fraction=f_tp1, tp2_fraction=f_tp2,
-                trailing_active=False, trailing_stop_price=0.0, trailing_atr_mult=m_trail, entry_atr=atr,
+                trailing_active=initial_trailing_active, trailing_stop_price=0.0, trailing_atr_mult=m_trail, entry_atr=atr,
+                trail_ref_extreme=trail_ref_extreme,
                 funding_cursor_ms=self._ts_ms(timestamp), last_bar_close=current_price,
             )
 
@@ -1407,6 +1429,9 @@ class PaperTradingEngine:
             elif strategy_type == "GOLDEN_POT":
                 action = f"OPEN_GOLDEN_POT_{side}"
                 rationale = f"Golden Pot ({self.daily_golden_pots_count + 1}/{self.max_daily_golden_pots}){exec_tag} | {signal.rationale}"
+            elif strategy_type == "SWING_4H":
+                action = f"OPEN_SWING_4H_{side}"
+                rationale = f"Swing 4h{exec_tag} | {signal.rationale or ''}"
             else:
                 action = f"OPEN_{side}"
                 rationale = f"{signal.rationale or ''}{exec_tag}"
@@ -1525,6 +1550,18 @@ class PaperTradingEngine:
             tp1_atr_mult=tp1_atr_mult, tp2_atr_mult=tp2_atr_mult, tp3_atr_mult=tp3_atr_mult,
             sl_atr_mult=sl_atr_mult, trail_atr_mult=trail_atr_mult,
             risk_scale_mult=risk_scale_mult,
+        )
+
+    def execute_swing_4h_signal(
+        self,
+        signal: TradeSignal,
+        current_price: float,
+        timestamp: int,
+        leverage: float = 1.0,
+    ) -> Optional[PaperPosition]:
+        """Swing 4h (Donchian40/ExitCh10 + trailing puro 3.5x ATR) — entrada taker, sem parciais."""
+        return self._open_ladder_position(
+            signal, current_price, timestamp, "SWING_4H", leverage, maker_entry=False,
         )
 
     def execute_carry_allocation(
@@ -1761,10 +1798,10 @@ class PaperTradingEngine:
 
     @staticmethod
     def _uses_ladder(pos: PaperPosition) -> bool:
-        """Posições SCALP/GOLDEN_POT/DIRECTIONAL LONG/SHORT usam a ladder. Direcional pré-E7 (sem tp1) segue legado."""
+        """Posições SCALP/GOLDEN_POT/SWING_4H/DIRECTIONAL LONG/SHORT usam a ladder. Direcional pré-E7 (sem tp1) segue legado."""
         if pos.side not in ("LONG", "SHORT"):
             return False
-        if pos.strategy_type in ("SCALP", "GOLDEN_POT"):
+        if pos.strategy_type in ("SCALP", "GOLDEN_POT", "SWING_4H"):
             return True
         return pos.strategy_type == "DIRECTIONAL" and pos.tp1_price > 0.0
 
@@ -1816,10 +1853,10 @@ class PaperTradingEngine:
 
     def _close_ladder_on_stop(self, pos: PaperPosition, high: float, low: float, timestamp: int,
                               triggered: List[PaperTrade], open_price: Optional[float] = None) -> None:
-        if not pos.tp1_hit:
-            reason = "STOP_LOSS"
-        elif pos.trailing_active and pos.trailing_stop_price > 0.0 and pos.stop_loss == pos.trailing_stop_price:
+        if pos.trailing_active and pos.trailing_stop_price > 0.0 and pos.stop_loss == pos.trailing_stop_price:
             reason = "TRAILING_STOP"
+        elif not pos.tp1_hit:
+            reason = "STOP_LOSS"
         else:
             reason = "BREAKEVEN_STOP"
         # um stop não pode preencher fora do range da barra (gap): LONG vende <= high, SHORT compra >= low.
@@ -1873,7 +1910,7 @@ class PaperTradingEngine:
             self._close_ladder_on_stop(pos, high, low, timestamp, triggered, open_price=eff_open)
             return
 
-        label = {"GOLDEN_POT": "Golden Pot", "SCALP": "Scalp"}.get(pos.strategy_type, "Direcional")
+        label = {"GOLDEN_POT": "Golden Pot", "SCALP": "Scalp", "SWING_4H": "Swing 4h"}.get(pos.strategy_type, "Direcional")
         if pos.tp1_fraction <= 0.0 and pos.tp2_fraction <= 0.0:
             if reached(pos.tp3_price):
                 t = self.close_position(pos.position_id, pos.tp3_price, timestamp, reason="TAKE_PROFIT_3")

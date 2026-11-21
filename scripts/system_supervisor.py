@@ -87,6 +87,8 @@ class ServiceManager:
             out_target = subprocess.DEVNULL
             if self.log_file:
                 os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+                if os.path.exists(self.log_file) and os.path.getsize(self.log_file) > 50 * 1024 * 1024:
+                    os.replace(self.log_file, f"{self.log_file}.1")
                 log_fh = open(self.log_file, "ab")
                 out_target = log_fh
             self.process = subprocess.Popen(

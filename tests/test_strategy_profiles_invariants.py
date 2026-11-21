@@ -18,7 +18,7 @@ import scripts.online_ml_search as online_ml_search
 
 def test_strategy_profiles_exact_live_invariants():
     """Garante que STRATEGY_PROFILES mantém os parâmetros vivos especificados no E10 (I9)."""
-    assert set(STRATEGY_PROFILES.keys()) == {"SCALP", "DIRECTIONAL", "GOLDEN_POT"}
+    assert set(STRATEGY_PROFILES.keys()) == {"SCALP", "DIRECTIONAL", "GOLDEN_POT", "SWING_4H"}
 
     scalp = STRATEGY_PROFILES["SCALP"]
     assert scalp.sl_atr_mult == pytest.approx(1.4)
@@ -48,6 +48,18 @@ def test_strategy_profiles_exact_live_invariants():
     assert gp.trail_atr_mult == pytest.approx(1.5)
     assert gp.bar_ms == 300_000
     assert gp.max_holding_bars == 36
+
+    swing_4h = STRATEGY_PROFILES["SWING_4H"]
+    assert swing_4h.sl_atr_mult == pytest.approx(2.5)
+    assert swing_4h.tp1_atr_mult == pytest.approx(0.0)
+    assert swing_4h.tp2_atr_mult == pytest.approx(0.0)
+    assert swing_4h.tp3_atr_mult == pytest.approx(0.0)
+    assert swing_4h.trail_atr_mult == pytest.approx(3.5)
+    assert swing_4h.min_committee_confidence == pytest.approx(0.60)
+    assert swing_4h.bar_ms == 14_400_000
+    assert swing_4h.max_holding_bars == 120
+    assert swing_4h.tp1_fraction == pytest.approx(0.0)
+    assert swing_4h.tp2_fraction == pytest.approx(0.0)
 
 
 def test_prior_trials_derived_from_trial_log():

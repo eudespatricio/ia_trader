@@ -17,6 +17,11 @@ from smart_trade import (
 def test_strict_mathematical_asymmetry_profiles():
     """Valida assimetria matemática: TP1 < TP2 < TP3 e R:R mínimo por tipo de saída."""
     for name, prof in STRATEGY_PROFILES.items():
+        if prof.tp1_fraction == 0.0 and prof.tp2_fraction == 0.0 and prof.tp3_atr_mult == 0.0 and prof.trail_atr_mult > 0.0:
+            # Trailing puro (SWING_4H): sem parciais/alvos fixos e trail >= stop loss inicial
+            assert prof.tp1_atr_mult == 0.0 and prof.tp2_atr_mult == 0.0
+            assert prof.trail_atr_mult >= prof.sl_atr_mult
+            continue
         assert prof.tp1_atr_mult < prof.tp2_atr_mult < prof.tp3_atr_mult
         rr_tp2 = prof.tp2_atr_mult / prof.sl_atr_mult
         rr_tp3 = prof.tp3_atr_mult / prof.sl_atr_mult

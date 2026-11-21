@@ -332,12 +332,15 @@ def test_sl_before_liquidation_reduces_leverage_all_strategies(temp_db, kind):
 
 
 def test_profiles_single_source_and_ordering():
-    assert set(STRATEGY_PROFILES) == {"SCALP", "DIRECTIONAL", "GOLDEN_POT"}
+    assert set(STRATEGY_PROFILES) == {"SCALP", "DIRECTIONAL", "GOLDEN_POT", "SWING_4H"}
     sc, dt, gp = (STRATEGY_PROFILES[k] for k in ("SCALP", "DIRECTIONAL", "GOLDEN_POT"))
+    sw4 = STRATEGY_PROFILES["SWING_4H"]
     assert sc.tp3_atr_mult < dt.tp3_atr_mult < gp.tp3_atr_mult           # alvos curtos < médios < maiores
-    assert sc.trail_atr_mult < dt.trail_atr_mult < gp.trail_atr_mult
+    assert sc.trail_atr_mult < dt.trail_atr_mult < gp.trail_atr_mult < sw4.trail_atr_mult
     for p in (sc, dt, gp):
         assert p.tp1_atr_mult < p.tp2_atr_mult < p.tp3_atr_mult and p.min_committee_confidence == 0.70
+    assert sw4.sl_atr_mult == 2.5 and sw4.trail_atr_mult == 3.5
+    assert sw4.tp1_atr_mult == sw4.tp2_atr_mult == sw4.tp3_atr_mult == 0.0
     assert rps.GP_TP3_ATR_MULT == gp.tp3_atr_mult and rps.SCALP_MIN_COMMITTEE_CONFIDENCE == 0.70
 
 

@@ -47,6 +47,15 @@ from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from data.live_context_enricher import LiveContextEnricher
 from data.ml_features_v2 import enrich_v2_features_live, is_v2_feature_bundle
+from data.swing_4h_strategy import (
+    SWING_4H_BAR_MS,
+    SWING_4H_COOLDOWN_BARS,
+    SWING_4H_SL_ATR_MULT,
+    compute_swing_4h_indicators,
+    evaluate_swing_4h_entry,
+    resample_1h_to_closed_4h,
+    should_exit_swing_4h_channel,
+)
 from agents.golden_pot_agent import GoldenPotAgent
 from agents.tape_reading_agent import MICROSTRUCTURE_DB, TapeReadingAgent
 from agents.technical_agent import TechnicalAgent, _disable_estimator_parallelism
@@ -128,6 +137,11 @@ SCALP_MIN_WARMUP_CANDLES = 200
 SWING_MIN_COMMITTEE_CONFIDENCE = STRATEGY_PROFILES["DIRECTIONAL"].min_committee_confidence   # 0.70 (perfil)
 SWING_STREAK_STOP_COOLDOWN_BARS = 2   # cooldown estendido (2h) após 2 STOP_LOSS consecutivos no símbolo
 SWING_MAX_LEVERAGE = 3.0              # teto de alavancagem 3x no modo S1 para day trade
+# --- SWING_4H (4h Trend-Following Donchian40 / ExitCh10) ---
+SWING_4H_CANDLE_LIMIT = 1000
+SWING_4H_MIN_CLOSED_4H = 205
+SWING_4H_STALE_BAR_MAX_AGE_MS = 900_000
+SWING_4H_MAX_LEVERAGE = 2.0
 # --- PATCH S4.2 (v1.0.7): Blindagem Multi-Estratégia & SCALP Squeeze+ML15m Universal ---
 MAX_SAME_DIR_MAJORS = 2               # trava de correlação direcional nos majors (BTC/ETH/SOL)
 GP_BTC_MACRO_MAX_COUNTER_DIST = 0.015 # bloqueia GP contra tendência macro do BTC (> ±1.5% SMA200 1h)
@@ -207,6 +221,7 @@ class PaperTradingDaemon:
         self._funding_refresh_done: Dict[str, int] = {}    # liquidação de funding já consultada (evita rede repetida)
         self.stale_bar_max_age_ms: int = 0 if type(self.loader).__name__ == "FakeLoader" else GP_STALE_BAR_MAX_AGE_MS
         self._swing_entered_bars: Set[Tuple[str, int]] = set()
+        self._swing_4h_entered_bars: Set[Tuple[str, int]] = set()
         self._last_breaker_log_ts: Dict[str, float] = {}
         is_fake_loader = (type(self.loader).__name__ == "FakeLoader")
         self.enable_live_context_enrichment: bool = not is_fake_loader
@@ -566,6 +581,14 @@ class PaperTradingDaemon:
         return any(
             t.symbol == symbol and t.action in ("OPEN_LONG", "OPEN_SHORT")
             and int(PaperTradingEngine._ts_ms(t.timestamp)) // SWING_BAR_MS - 1 == bar_id
+            for t in self.engine.trade_history
+        )
+
+    def _swing_4h_entered_bar(self, symbol: str, bar_id: int) -> bool:
+        """True se o símbolo já realizou entrada SWING_4H nesta vela de 4h (lê ledger persistido)."""
+        return any(
+            t.symbol == symbol and t.action.startswith("OPEN_SWING_4H_")
+            and int(PaperTradingEngine._ts_ms(t.timestamp)) // SWING_4H_BAR_MS - 1 == bar_id
             for t in self.engine.trade_history
         )
 
@@ -1015,7 +1038,7 @@ class PaperTradingDaemon:
                 candle_close_ts = ts + GP_BAR_MS
                 bar_age_ms = now_ts - candle_close_ts
                 if self.stale_bar_max_age_ms > 0 and bar_age_ms > self.stale_bar_max_age_ms:
-                    logger.info(f"[{sym}] GP ignorado: vela 5m fechada há {bar_age_ms/1000:.1f}s (> {self.stale_bar_max_age_ms/1000}s, stale candle).")
+                    logger.debug(f"[{sym}] GP ignorado: vela 5m fechada há {bar_age_ms/1000:.1f}s (> {self.stale_bar_max_age_ms/1000}s, stale candle).")
                     self._fr(GPN, sym, ts, "stale_candle")
                     continue
 
@@ -1190,7 +1213,7 @@ class PaperTradingDaemon:
                 bar_age_ms = now_ts - candle_close_ts
                 scalp_stale_limit = 0 if type(self.loader).__name__ == "FakeLoader" else SCALP_STALE_BAR_MAX_AGE_MS
                 if scalp_stale_limit > 0 and bar_age_ms > scalp_stale_limit:
-                    logger.info(f"[{sym}] Scalp ignorado: vela 15m fechada há {bar_age_ms/1000:.1f}s (> {scalp_stale_limit/1000}s, stale candle).")
+                    logger.debug(f"[{sym}] Scalp ignorado: vela 15m fechada há {bar_age_ms/1000:.1f}s (> {scalp_stale_limit/1000}s, stale candle).")
                     self._fr(SCN, sym, ts, "stale_bar")
                     continue
                 self._fi(SCN, sym, ts, "evaluated")
@@ -1431,6 +1454,178 @@ class PaperTradingDaemon:
                 self._fr(DTN, sym, bar_ref, "other")
                 logger.debug(f"Aviso ao avaliar swing para {sym}: {e}")
 
+    async def evaluate_swing_4h_opportunities(self) -> None:
+        """Avalia saídas Ch10 e entradas Swing 4h Donchian40/ExitCh10 em paralelo aos demais motores."""
+        S4N = "SWING_4H"
+        now_ts = int(time.time() * 1000)
+        nom = self._nominal_bar(now_ts, SWING_4H_BAR_MS)
+
+        async def _fetch_4h(sym: str) -> pd.DataFrame:
+            df_1h = await self.loader.get_candles(sym, "1h", limit=SWING_4H_CANDLE_LIMIT, exchange="binance")
+            if df_1h is None or len(df_1h) < SWING_4H_MIN_CLOSED_4H * 4:
+                df_bg = await self.loader.get_candles(sym, "1h", limit=SWING_4H_CANDLE_LIMIT, exchange="bitget")
+                if df_bg is not None and not df_bg.empty and (df_1h is None or len(df_bg) > len(df_1h)):
+                    df_1h = df_bg
+            df_4h = resample_1h_to_closed_4h(df_1h, now_ms=now_ts)
+            if df_4h.empty:
+                return df_4h
+            return compute_swing_4h_indicators(df_4h)
+
+        fetched_4h: Dict[str, pd.DataFrame] = {}
+
+        # 1. Saída Ch10 avaliada primeiro (nunca bloqueada por breaker/cota/margem)
+        for pos in list(self.engine.positions.values()):
+            if pos.status != "OPEN" or pos.strategy_type != "SWING_4H":
+                continue
+            sym = pos.symbol
+            try:
+                df_4h = await _fetch_4h(sym)
+                fetched_4h[sym] = df_4h
+                if len(df_4h) >= 12:
+                    latest = df_4h.iloc[-1]
+                    bar_close_ts = int(latest["timestamp"]) + SWING_4H_BAR_MS
+                    if bar_close_ts > pos.entry_timestamp:
+                        exit_hit, exit_why = should_exit_swing_4h_channel(df_4h, pos.side)
+                        if exit_hit:
+                            close_px = float(latest["close"])
+                            t = self.engine.close_position(
+                                pos.position_id, close_px, bar_close_ts, reason="CHANNEL_EXIT_10"
+                            )
+                            if t:
+                                self._last_tick_bar_ts[sym] = max(self._last_tick_bar_ts.get(sym, 0), bar_close_ts - 1)
+                                logger.info(
+                                    f"[{sym}] SWING_4H CHANNEL_EXIT_10 ({pos.side}) @ ${close_px:,.2f} | "
+                                    f"PnL: ${t.pnl:+.2f} | {exit_why}"
+                                )
+            except Exception as e:
+                logger.warning(f"Aviso ao avaliar saída Ch10 SWING_4H para {sym}: {e}")
+
+        # 2. Curto-circuito de breaker (somente para novas entradas)
+        if self._breaker_short_circuit("SWING_4H", S4N, self.core_symbols, nom):
+            return
+
+        for sym in self.core_symbols:
+            bar_ref = nom
+            try:
+                if any(p.symbol == sym and p.status == "OPEN" for p in self.engine.positions.values()):
+                    self._fr(S4N, sym, nom, "margin")
+                    continue
+                open_count = len([p for p in self.engine.positions.values() if p.status == "OPEN"])
+                if self.engine.max_concurrent_positions is not None and open_count >= self.engine.max_concurrent_positions:
+                    self._fr(S4N, sym, nom, "margin")
+                    break
+                can_exec, _cb_reason = self.engine.can_execute_directional(now_ts)
+                if not can_exec:
+                    self._fr(S4N, sym, nom, "breaker" if "Circuit Breaker" in _cb_reason else "quota")
+                    break
+
+                df_4h = fetched_4h.get(sym)
+                if df_4h is None:
+                    df_4h = await _fetch_4h(sym)
+                if df_4h is None or len(df_4h) < SWING_4H_MIN_CLOSED_4H:
+                    logger.debug(
+                        f"[{sym}] SWING_4H ignorado: {0 if df_4h is None else len(df_4h)} velas 4h (< {SWING_4H_MIN_CLOSED_4H})."
+                    )
+                    self._fr(S4N, sym, nom, "no_data")
+                    continue
+
+                latest = df_4h.iloc[-1]
+                ts = int(latest["timestamp"])
+                bar_ref = ts
+                bar_id = ts // SWING_4H_BAR_MS
+                bar_close_ts = ts + SWING_4H_BAR_MS
+                bar_age_ms = now_ts - bar_close_ts
+                swing_4h_stale_limit = 0 if type(self.loader).__name__ == "FakeLoader" else SWING_4H_STALE_BAR_MAX_AGE_MS
+                if swing_4h_stale_limit > 0 and bar_age_ms > swing_4h_stale_limit:
+                    logger.debug(
+                        f"[{sym}] SWING_4H ignorado: vela 4h fechada há {bar_age_ms/1000:.1f}s "
+                        f"(> {swing_4h_stale_limit/1000}s, stale bar)."
+                    )
+                    self._fr(S4N, sym, ts, "stale_bar")
+                    continue
+
+                self._fi(S4N, sym, ts, "evaluated")
+                if (sym, bar_id) in self._swing_4h_entered_bars or self._swing_4h_entered_bar(sym, bar_id):
+                    self._fr(S4N, sym, ts, "bar_limit")
+                    continue
+                if self.engine.is_in_cooldown(sym, bar_id, SWING_4H_COOLDOWN_BARS, SWING_4H_BAR_MS):
+                    self._fr(S4N, sym, ts, "cooldown")
+                    continue
+
+                trig = evaluate_swing_4h_entry(df_4h)
+                if trig is None:
+                    self._fr(S4N, sym, ts, "no_trigger")
+                    continue
+
+                direction, why, metrics = trig
+                close = float(metrics["close"])
+                atr = float(metrics["atr_14"])
+                sgn = 1.0 if direction == "BUY" else -1.0
+                self._fi(S4N, sym, ts, "candidate")
+
+                conf = 0.75
+                cons_score = sgn * 0.75
+                lev = min(
+                    SWING_4H_MAX_LEVERAGE,
+                    decide_leverage(
+                        conf,
+                        atr_pct=atr / close if close > 0 else 0.0,
+                        regime_alignment=True,
+                        timeframe="4h",
+                        max_leverage=SWING_4H_MAX_LEVERAGE,
+                    ),
+                )
+                sl_price = close - sgn * SWING_4H_SL_ATR_MULT * atr
+                sl_dist = abs(close - sl_price)
+                sl_dist_pct = (sl_dist / close) if close > 0 else 0.02
+                tmp_sig = TradeSignal(
+                    signal_id=f"swing4h_{sym}_{bar_id}",
+                    timestamp=ts,
+                    symbol=sym,
+                    direction=direction,
+                    entry_price=close,
+                    stop_loss=sl_price,
+                    take_profit=0.0,
+                    atr=atr,
+                    confidence=conf,
+                    consensus_score=cons_score,
+                    position_size=self.engine.paper_lot_usd,
+                    risk_dollars=0.0,
+                    rationale=why,
+                    metrics={"regime_alignment": True},
+                )
+                if hasattr(self.engine, "_lot_margin"):
+                    est_margin, _ = self.engine._lot_margin(
+                        tmp_sig, lev, 0.25, sl_distance_pct=sl_dist_pct, risk_scale=1.0, current_price=close
+                    )
+                    notional = est_margin * lev
+                else:
+                    notional = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95) * lev
+                sig = replace(
+                    tmp_sig,
+                    position_size=notional,
+                    risk_dollars=(notional / close) * sl_dist if close > 0 else 0.0,
+                )
+                self._fi(S4N, sym, ts, "confidence_ok")
+                self._fi(S4N, sym, ts, "risk_ok")
+                self._fi(S4N, sym, ts, "gate_passed")
+                pos = self.engine.execute_swing_4h_signal(
+                    sig, current_price=close, timestamp=ts, leverage=lev
+                )
+                if not pos:
+                    self._fr_open(S4N, sym, ts)
+                else:
+                    self._swing_4h_entered_bars.add((sym, bar_id))
+                    self._last_tick_bar_ts[sym] = max(self._last_tick_bar_ts.get(sym, 0), pos.entry_timestamp - 1)
+                    self._fi(S4N, sym, ts, "executed")
+                    logger.info(
+                        f"[{sym}] SWING_4H DISPARADO: {direction} @ ${close:,.2f} | "
+                        f"lev {pos.leverage:g}x | SL ${pos.stop_loss:,.2f} | {why}"
+                    )
+            except Exception as e:
+                self._fr(S4N, sym, bar_ref, "other")
+                logger.warning(f"Aviso ao avaliar SWING_4H para {sym}: {e}")
+
     async def run_loop(self, max_cycles: int = 0) -> None:
         """Loop principal do daemon em tempo real."""
         self.is_running = True
@@ -1464,8 +1659,9 @@ class PaperTradingDaemon:
                 # 3. Avalia novas oportunidades de Scalper Cirúrgico em pares Core (Cota padrão: 2 a 5/dia)
                 await self.evaluate_scalp_opportunities()
 
-                # 4. Avalia novas oportunidades de Swing Trade
+                # 4. Avalia novas oportunidades de Swing Trade (1h Comitê + 4h Donchian40/ExitCh10)
                 await self.evaluate_swing_opportunities()
+                await self.evaluate_swing_4h_opportunities()
 
                 # 5. Registra métricas e snapshot no banco
                 m = self.engine.get_summary_metrics()

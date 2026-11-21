@@ -41,7 +41,7 @@ class RiskPolicy:
     min_confidence: float = 0.60
     max_leverage: float = 5.0
     lot_multiplier: float = 1.0
-    allowed_strategies: List[str] = field(default_factory=lambda: ["DIRECTIONAL", "SCALP", "GOLDEN_POT", "CARRY"])
+    allowed_strategies: List[str] = field(default_factory=lambda: ["DIRECTIONAL", "SCALP", "GOLDEN_POT", "CARRY", "SWING_4H"])
     require_tape_gate: bool = False
     is_rollback_active: bool = False
     policy_version: int = 1
@@ -57,7 +57,7 @@ class DefensiveRiskPolicy(RiskPolicy):
     min_confidence: float = 0.65
     max_leverage: float = 2.0
     lot_multiplier: float = 0.50
-    allowed_strategies: List[str] = field(default_factory=lambda: ["DIRECTIONAL"])
+    allowed_strategies: List[str] = field(default_factory=lambda: ["DIRECTIONAL", "SWING_4H"])
     require_tape_gate: bool = True
     is_rollback_active: bool = True
     policy_version: int = 2
