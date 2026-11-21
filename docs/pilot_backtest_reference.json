@@ -1,0 +1,46 @@
+{
+  "strategy": "SWING_4H",
+  "source_window": "OOS",
+  "expectancy_net_pct": 0.1844,
+  "sharpe_net": 0.4688,
+  "trades_per_day": 0.2705,
+  "max_dd_pct": 11.76,
+  "windows": {
+    "IS": {
+      "trades_count": 524,
+      "days": 2150.0,
+      "trades_per_day": 0.2437,
+      "win_rate_pct": 40.65,
+      "profit_factor": 1.396,
+      "expectancy_net_pct": 0.6781,
+      "sharpe_net": 0.9736,
+      "max_dd_pct": 15.58,
+      "net_pnl_usd": 12709.02,
+      "net_pnl_pct": 127.09
+    },
+    "OOS": {
+      "trades_count": 99,
+      "days": 366.0,
+      "trades_per_day": 0.2705,
+      "win_rate_pct": 37.37,
+      "profit_factor": 1.178,
+      "expectancy_net_pct": 0.1844,
+      "sharpe_net": 0.4688,
+      "max_dd_pct": 11.76,
+      "net_pnl_usd": 757.03,
+      "net_pnl_pct": 7.57
+    },
+    "FULL": {
+      "trades_count": 624,
+      "days": 2516.0,
+      "trades_per_day": 0.248,
+      "win_rate_pct": 40.22,
+      "profit_factor": 1.363,
+      "expectancy_net_pct": 0.6263,
+      "sharpe_net": 0.8993,
+      "max_dd_pct": 15.58,
+      "net_pnl_usd": 14907.65,
+      "net_pnl_pct": 149.08
+    }
+  }
+}

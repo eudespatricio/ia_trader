@@ -1,6 +1,22 @@
-# Gaps, Auditoria P2 & Roadmap — Wave P2 (`v1.0.9`)
+# Gaps, Auditoria & Roadmap — Wave P3 (`v1.0.10`)
 
-Todos os **4 itens P2 diferidos do Patch S5 (`v1.0.8`)** foram resolvidos e validados na **Wave P2 (`v1.0.9`)**, junto com auditoria/desduplicação completa Binance + Bitget, pipeline causal v2 (`data/ml_features_v2.py`), hot-reload multi-schema e benchmark empírico Before-vs-After ("Sem Oráculo Comprado").
+Todos os **4 itens P2 diferidos do Patch S5 (`v1.0.8`)** foram resolvidos na **Wave P2 (`v1.0.9`)**, e na **Wave P3 (`v1.0.10`)** foi entregue o motor paralelo **`SWING_4H` (Donchian40 / ExitCh10)** junto com **Option B (Higiene & Rotação de Logs)**.
+
+---
+
+## 0. Entregas Wave P3 (`v1.0.10`, 2026-11-21)
+
+1. **`SWING_4H` Paralelo (`data/swing_4h_strategy.py`, `smart_trade.py`, `scripts/run_paper_simulation.py`, `rollback_guard.py`, `flask_interface.py`, `scripts/pilot_report.py`):**
+   - Motor trend-following 4h independente do comitê (`Donchian40/ExitCh10`, `|dist_sma_200| <= 20%`, `SL 2.5xATR`, trailing puro `3.5xATR`, timeout `120` barras, `max_leverage=2.0`).
+   - Referência offline (`scripts/eval_swing_4h_reference.py`, `docs/pilot_backtest_reference.json`, `TRIAL_0174..0175`, custos estresse + funding 8h real):
+     - **IS (`< 2025-11-20`):** `524` trades, `PF 1.396`, `exp +0.6781%`, `Sharpe 0.9736`, `MaxDD 15.58%`, `+$12,709.02`.
+     - **OOS (`>= 2025-11-20`):** `99` trades, `PF 1.178`, `exp +0.1844%`, `Sharpe 0.4688`, `MaxDD 11.76%`, `+$757.03` (âncora em `pilot_backtest_reference.json`).
+     - **FULL (`2020-2026`):** `624` trades, `PF 1.363`, `exp +0.6263%`, `Sharpe 0.8993`, `MaxDD 15.58%`, `+$14,907.65`.
+   - Pré-registro formal adicionado em `docs/HIPOTESES_PRE_REGISTRADAS.md` (`Experimento E_SWING_4H`).
+2. **Option B — Higiene & Rotação de Logs (`scripts/run_paper_simulation.py`, `scripts/system_supervisor.py`):**
+   - `stale candle` em `GP` e `SCALP` rebaixado de `INFO` para `DEBUG`; rotação simples (`> 50 MiB -> .1`) adicionada em `ServiceManager.start()`.
+3. **Pendência pós-Wave P3 (Meta-Labeling ML):**
+   - Pesquisa de **Meta-Labeling binário (`P[win | sinal]`)** sobre gatilhos já filtrados (`SCALP Squeeze Keltner` / Comitê) segue aberta como próxima frente de pesquisa ML.
 
 ---
 

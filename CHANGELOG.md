@@ -4,6 +4,21 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.10] - 2026-11-21 - Wave P3: Motor Paralelo `SWING_4H` (Donchian40/ExitCh10) & Higiene de Logs (Option B)
+
+### Added
+- **Estratégia `SWING_4H` Compartilhada (`data/swing_4h_strategy.py`):** Módulo puro (`<= 220` LOC) com reamostragem causal `1h -> 4h` (`resample_1h_to_closed_4h`, exigindo `4` velas/bucket e `ts + 4h <= now_ms`), Wilder `ATR(14)`, `SMA(200)`, canais Donchian `shift(1)` (`40` entrada / `10` saída), filtro de regime/exaustão `0 <= |dist_sma_200| <= 20%` (`evaluate_swing_4h_entry`) e gatilho de saída oposta (`should_exit_swing_4h_channel`).
+- **Suporte Nativo `SWING_4H` no Engine, Guard, Dashboard & Relatório (`smart_trade.py`, `rollback_guard.py`, `flask_interface.py`, `scripts/pilot_report.py`):**
+  - Perfil `STRATEGY_PROFILES["SWING_4H"]` (`SL 2.5xATR`, `TP1/2/3 = 0.0`, `trail 3.5xATR`, `bar_ms = 14_400_000`, `max_holding_bars = 120`, `tp1_fraction = tp2_fraction = 0.0`), modo trailing puro em `_open_ladder_position`, correção de prioridade em `_close_ladder_on_stop` (`TRAILING_STOP` antes de `not tp1_hit`), reconstrução de `trail_ref_extreme` em `restore_state` e `execute_swing_4h_signal()`.
+  - Inclusão de `SWING_4H` em `RiskPolicy` / `DefensiveRiskPolicy`, `FUNNEL_STRATEGIES`, `LEDGER_ACTION_LABELS` (`OPEN_SWING_4H_*`, `CHANNEL_EXIT_10`) e `PREREG_ALLOW`.
+- **Loop Paralelo `SWING_4H` no Daemon (`scripts/run_paper_simulation.py`):** Novo `evaluate_swing_4h_opportunities()` avaliando saídas `CHANNEL_EXIT_10` primeiro (imunes a breaker/cota/margem) e entradas Donchian40 (`max_leverage=2.0`, cooldown `2` barras `4h`, dedupe por `(sym, bar_id)` e funil `SWING_4H`).
+- **Harness de Referência & Pré-Registro (`scripts/eval_swing_4h_reference.py`, `docs/pilot_backtest_reference.json`, `docs/HIPOTESES_PRE_REGISTRADAS.md`):** Simulação multi-ativo (`BTC/ETH/SOL`) com custos estresse + funding 8h real (`TRIAL_0174` FULL `+0.6263%/trade`, `PF 1.363`, `Sharpe 0.8993`; `TRIAL_0175` OOS `+0.1844%/trade`, `PF 1.178`, `Sharpe 0.4688`, `MaxDD 11.76%`).
+
+### Changed
+- **Option B — Higiene & Rotação de Logs (`scripts/run_paper_simulation.py`, `scripts/system_supervisor.py`):** Rebaixados logs repetitivos de `stale candle` em `GP` e `SCALP` de `INFO` para `DEBUG`; adicionada rotação simples limitada (`> 50 MiB -> .1` via `os.replace`) em `ServiceManager.start()`.
+
+---
+
 ## [1.0.9] - 2026-11-20 - Wave P2: Desduplicação DB, Pipeline ML v2 Causal, Hot-Reload, Benchmark Honesto & Hardening P2-D
 
 ### Added

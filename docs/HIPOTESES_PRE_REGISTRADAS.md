@@ -515,6 +515,37 @@ Auditoria cirúrgica executada em `2026-11-13` (preservando daemons live e `2` p
    - **Frente 3 (`GOLDEN_POT` 5m):** Gate macro via `BTCUSDT 1h dist_sma_200` (`±1,5%`) bloqueando contra-tendência + política L2 híbrida `M4` (`1.00x` quando `status == "OK"` e `0.50x` defensivo em `UNAVAILABLE`), mantendo todas as altcoins ativas para telemetria.
    - **Frente 4 (Governança, Continuidade & Rollback):** Registro formal da hipótese `E10.11`, certificação da suíte de testes unitários/regressão, commit pontual de rollback e hot-restart do supervisor preservando posições abertas.
 
+---
+
+# Experimento E_SWING_4H — Motor Paralelo `SWING_4H` Donchian40 / ExitCh10 (Wave P3, `v1.0.10`, 2026-11-21)
+
+**Status:** Pré-registrado em 2026-11-21 antes do início da coleta limpa em papel (`strategy_type="SWING_4H"`). Implementado como motor paralelo independente de `SCALP`, `GOLDEN_POT` e `DIRECTIONAL`, sem uso do comitê ML/LLM.
+
+## 1. Hipótese & Arquitetura Congelada (`data/swing_4h_strategy.py`, `smart_trade.py`, `scripts/run_paper_simulation.py`)
+- **Universo & Dados:** `BTCUSDT`, `ETHUSDT`, `SOLUSDT`; barras `4h` (`14.400.000 ms`) reamostradas estritamente a partir de velas `1h` fechadas (`cnt == 4` e `timestamp + 14_400_000 <= now_ms`), mantendo prioridade `binance` (fallback `bitget` apenas se vazio ou menor). Warmup mínimo: `205` barras `4h` fechadas.
+- **Indicadores:** Wilder `ATR(14)` (`ewm(alpha=1/14, adjust=False)`), `SMA(200)`, canais Donchian causais com `shift(1)`: entrada `h40`/`l40` (40 barras), saída `h10`/`l10` (10 barras), `dist_sma_200 = (close - sma_200) / sma_200`.
+- **Gatilho de Entrada:**
+  - `BUY`: `close > h40` **e** `0.0 <= dist_sma_200 <= 0.20` (`|dist_sma_200| <= 20%`, filtro anti-exaustão).
+  - `SELL`: `close < l40` **e** `-0.20 <= dist_sma_200 <= 0.0`.
+- **Execução, Sizing & Alavancagem:** Entrada taker a mercado (`0.06%` taxa + `0.02%` slippage) no `open(t+1)` (`entry_timestamp = ts(t) + 14_400_000`). Lote = `1%` de risco da banca (`risk_per_trade_pct`, cap `0.25` do saldo), alavancagem decidida por `decide_leverage(..., timeframe="4h", max_leverage=2.0)` (teto duro `2.0x`), 1 posição aberta por símbolo, cooldown `2` barras `4h` após fechamento, 1 entrada por barra `(symbol, bar_id)`.
+- **Saídas (Trailing Puro + Canal 10 + Timeout):**
+  - Sem parciais (`tp1_fraction = 0.0`, `tp2_fraction = 0.0`, `tp1/tp2/tp3 = 0.0`).
+  - Stop inicial `2.5 × ATR(14)`; `trailing_active = True` desde a abertura com `trailing_atr_mult = 3.5` (atualizado apenas em barras `4h` fechadas; nunca afrouxa).
+  - Saída por canal oposto (`CHANNEL_EXIT_10`, taker): `close < l10` para `LONG` ou `close > h10` para `SHORT` avaliada em barras `4h` fechadas após `entry_timestamp` (nunca bloqueada por circuit breaker/cota/margem).
+  - Timeout máximo: `120` barras `4h` (`20` dias, `HORIZON_TIMEOUT`).
+  - Funding real 8h (`funding_rates`, fallback `0.01%/8h`).
+
+## 2. Referência Offline & Trials Registrados (`scripts/eval_swing_4h_reference.py`, `docs/pilot_backtest_reference.json`)
+- **Custos de referência:** modelo estresse (`0.06%` taker + `0.02%` slippage por lado) + funding 8h histórico real (`market_cache.db` read-only).
+- **IS (`2020-01-01 .. < 2025-11-20`):** `524` trades (`0.2437/dia`), `WR 40.65%`, `PF 1.396`, expectância líquida `+0.6781%/trade`, `Sharpe 0.9736`, `MaxDD 15.58%`, `PnL +$12,709.02`.
+- **OOS (`>= 2025-11-20 .. 2026-11-21`, `TRIAL_0175`):** `99` trades (`0.2705/dia`), `WR 37.37%`, `PF 1.178`, expectância líquida `+0.1844%/trade`, `Sharpe 0.4688`, `MaxDD 11.76%`, `PnL +$757.03` (âncora conservadora em `docs/pilot_backtest_reference.json`).
+- **FULL (`2020-01-01 .. 2026-11-21`, `TRIAL_0174`):** `624` trades (`0.2480/dia`), `WR 40.22%`, `PF 1.363`, expectância líquida `+0.6263%/trade`, `Sharpe 0.8993`, `MaxDD 15.58%`, `PnL +$14,907.65`.
+
+## 3. Portas de Refutação & Aceite (`pilot_report.py`)
+- Herda todos os critérios A1–A14 e R1–R7 de `docs/CRITERIOS_APROVACAO_PILOTO.md` (N >= 100 em >= 56 dias limpos, `MaxDD estresse >= 20%` refuta, `IC95 sup < 0` com N >= 30 refuta, `expectância bruta <= 0` com N >= 30 refuta).
+- Proibido ajustar `Donchian 40/10`, `|dist_sma_200| <= 0.20`, `SL=2.5xATR`, `Trail=3.5xATR` ou `max_leverage=2.0` durante a janela de observação sem novo pré-registro.
+
+
 
 
 

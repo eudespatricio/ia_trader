@@ -29,6 +29,16 @@
 
 ## 📜 Histórico Detalhado de Entregas e Iterações
 
+### [Wave P3 - v1.0.10: Motor Paralelo `SWING_4H` (Donchian40/ExitCh10) & Higiene de Logs (Option B)] - 2026-11-21
+- **Frente Estratégica (`data/swing_4h_strategy.py`, `smart_trade.py`, `scripts/run_paper_simulation.py`):**
+  - Implementado motor paralelo `SWING_4H` (Donchian 40 entrada / Donchian 10 saída, `|dist_sma_200| <= 20%`, `SL 2.5xATR`, trailing puro `3.5xATR` sem parciais, timeout `120` barras `4h`, alavancagem máx `2.0x`) operando exclusivamente sobre velas `4h` fechadas reamostradas de `1h` (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`).
+  - Saída `CHANNEL_EXIT_10` avaliada antes do curto-circuito de breaker/cota/margem; correção em `_close_ladder_on_stop` para classificar `TRAILING_STOP` em estratégias sem `TP1` (`tp1_hit=False`) e reconstrução de `trail_ref_extreme` no `restore_state`.
+- **Frente Referência & Governança (`scripts/eval_swing_4h_reference.py`, `docs/pilot_backtest_reference.json`, `docs/HIPOTESES_PRE_REGISTRADAS.md`):**
+  - Benchmark read-only em `market_cache.db` com custos estresse (`0.06%` taker + `0.02%` slip/lado) + funding 8h real: **IS** (`N=524`, `PF=1.396`, `exp=+0.6781%`, `Sharpe=0.9736`, `MaxDD=15.58%`, `+$12,709.02`), **OOS** (`N=99`, `PF=1.178`, `exp=+0.1844%`, `Sharpe=0.4688`, `MaxDD=11.76%`, `+$757.03`, `TRIAL_0175`), **FULL** (`N=624`, `PF=1.363`, `exp=+0.6263%`, `Sharpe=0.8993`, `MaxDD=15.58%`, `+$14,907.65`, `TRIAL_0174`).
+  - `SWING_4H` adicionado em `RiskPolicy`/`DefensiveRiskPolicy`, `FUNNEL_STRATEGIES`, `LEDGER_ACTION_LABELS`, `PREREG_ALLOW` e `tests/test_strategy_profiles_invariants.py`.
+- **Frente Higiene de Logs — Option B (`scripts/run_paper_simulation.py`, `scripts/system_supervisor.py`):**
+  - Logs de `stale candle` em `GP` e `SCALP` rebaixados para `DEBUG` e rotação simples (`> 50 MiB -> .1`) adicionada em `ServiceManager.start()`.
+
 ### [Wave P2 - v1.0.9: Desduplicação Binance+Bitget, Pipeline ML v2 Causal, Hot-Reload & Hardening P2-D] - 2026-11-20
 - **Frente DB (Auditoria & Desduplicação Canônica — `scripts/audit_and_dedup_candles.py`):**
   - Removidas `4.512` barras redundantes da Bitget (`192` sobreposições exatas em `ETHUSDT:4h` + `4.320` candles `1d` com offset UTC+8 sobre datas já presentes na Binance) com backup prévio em `datasets/backups/pre_dedup_20261120T145807Z.db` e `PRAGMA integrity_check = ok` (`--check` pós-limpeza = `0` removíveis; `0` duplicatas em `funding_rates`, `macro_daily_history` e `microstructure.db`), preservando todas as 21 costuras não sobrepostas.
