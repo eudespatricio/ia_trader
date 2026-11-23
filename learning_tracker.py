@@ -79,6 +79,7 @@ class LearningTracker:
     def __init__(self, db_path: str = "datasets/market_cache.db"):
         self.db_path = db_path
         self._ensure_tables()
+        self._bootstrap_structural_sub_rules_if_empty()
 
     def _get_connection(self) -> sqlite3.Connection:
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
@@ -576,6 +577,27 @@ class LearningTracker:
         except Exception as e:
             logger.debug(f"Aviso ao buscar multiplicadores de sub-regra: {e}")
         return mults
+
+    def _bootstrap_structural_sub_rules_if_empty(self) -> None:
+        """Auto-calibra `structural_sub_rule_calibration` no startup se vazia e houver histórico WIN/LOSS."""
+        needs_bootstrap = False
+        try:
+            with closing(self._get_connection()) as conn:
+                has_cal = conn.execute(
+                    "SELECT 1 FROM structural_sub_rule_calibration LIMIT 1"
+                ).fetchone()
+                if has_cal is not None:
+                    return
+                has_closed = conn.execute(
+                    "SELECT 1 FROM agent_learning_memory WHERE outcome IN ('WIN', 'LOSS') LIMIT 1"
+                ).fetchone()
+                needs_bootstrap = has_closed is not None
+        except Exception as e:
+            logger.warning(f"Aviso ao verificar bootstrap de sub-regras estruturais: {e}")
+            return
+
+        if needs_bootstrap:
+            self.recalibrate_structural_sub_rules()
 
     def retrain_daily_models(
         self,

@@ -13,6 +13,7 @@ Rules:
 - Fast execution (<15s total), zero dependency on production market_cache.db or live networks.
 """
 
+import json
 import math
 import os
 import sqlite3
@@ -359,6 +360,226 @@ class TestLivingSubRuleLearner:
         # Sliding window takes the latest 20 trades (all wins!): post_wr = (20 + 4) / (20 + 8) = 24/28 = 0.857 > 0.44
         assert sw_rec["is_muted"] in (0, False), "Sub-rule must unmute after winning window"
         assert sw_rec["multiplier"] > 0.0, "Recovered multiplier must be strictly positive"
+
+    def test_learning_tracker_bootstrap_cold_or_pending_db_stays_empty(self, tmp_path):
+        """Cold DB with 0 WIN/LOSS rows (or only PENDING/BREAKEVEN) leaves calibration table empty."""
+        db_path = str(tmp_path / "cold_learning.db")
+
+        # 1. Cold DB (0 rows)
+        tracker_cold = LearningTracker(db_path=db_path)
+        assert tracker_cold.get_sub_rule_multipliers() == {}, (
+            "Cold DB must return empty sub-rule multipliers"
+        )
+        with sqlite3.connect(db_path) as conn:
+            cnt = conn.execute("SELECT COUNT(*) FROM structural_sub_rule_calibration").fetchone()[0]
+            assert cnt == 0, "structural_sub_rule_calibration must have 0 rows on cold DB"
+
+        # 2. Insert only PENDING and BREAKEVEN rows
+        signals_json = json.dumps([{
+            "agent_name": "TechnicalAgent",
+            "direction": "BUY",
+            "metrics": {"structural_sub_rule": "sweep_trigger"},
+        }])
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("""
+                INSERT INTO agent_learning_memory (
+                    decision_id, timestamp, symbol, regime,
+                    consensus_direction, consensus_confidence,
+                    agent_signals_json, outcome, realized_pnl, position_id
+                ) VALUES
+                ('pending_1', 1700000000000, 'BTCUSDT', 'TREND_BULLISH', 'BUY', 0.6, ?, 'PENDING', 0.0, 'pos_p1'),
+                ('breakeven_1', 1700000060000, 'BTCUSDT', 'TREND_BULLISH', 'BUY', 0.6, ?, 'BREAKEVEN', 0.0, 'pos_b1')
+            """, (signals_json, signals_json))
+            conn.commit()
+
+        # Re-instantiate fresh tracker - should still not bootstrap
+        fresh_tracker = LearningTracker(db_path=db_path)
+        assert fresh_tracker.get_sub_rule_multipliers() == {}, (
+            "DB with only PENDING/BREAKEVEN rows must not trigger calibration bootstrap"
+        )
+        with sqlite3.connect(db_path) as conn:
+            cnt_after = conn.execute("SELECT COUNT(*) FROM structural_sub_rule_calibration").fetchone()[0]
+            assert cnt_after == 0, "structural_sub_rule_calibration must remain empty"
+
+    def test_learning_tracker_bootstrap_auto_populates_on_init_with_closed_trades(self, tmp_path):
+        """Pre-populated DB with closed WIN/LOSS auto-bootstraps structural_sub_rule_calibration on __init__."""
+        db_path = str(tmp_path / "prepopulated_learning.db")
+
+        # Create schema directly via sqlite3 (simulating existing DB with empty calibration)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("""
+                CREATE TABLE agent_learning_memory (
+                    decision_id TEXT PRIMARY KEY,
+                    timestamp INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    regime TEXT NOT NULL,
+                    consensus_direction TEXT NOT NULL,
+                    consensus_confidence REAL NOT NULL,
+                    agent_signals_json TEXT NOT NULL,
+                    outcome TEXT DEFAULT 'PENDING',
+                    realized_pnl REAL DEFAULT 0.0,
+                    position_id TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE structural_sub_rule_calibration (
+                    sub_rule TEXT PRIMARY KEY,
+                    total_samples INTEGER NOT NULL,
+                    wins INTEGER NOT NULL,
+                    posterior_wr REAL NOT NULL,
+                    cumulative_pnl REAL NOT NULL,
+                    multiplier REAL NOT NULL,
+                    is_muted INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                )
+            """)
+
+            # Pre-populate 5 LOSS rows for 'sweep_trigger' (n=5, wins=0, cum_pnl=-250.0)
+            # Bayesian Beta(4,4) posterior: (0 + 4) / (5 + 4 + 4) = 4/13 = 0.3077 < 0.44 -> auto-mute (multiplier=0.0)
+            sig_sweep = json.dumps([{
+                "agent_name": "TechnicalAgent",
+                "direction": "BUY",
+                "metrics": {"structural_sub_rule": "sweep_trigger"},
+            }])
+            now_ms = 1700000000000
+            for i in range(5):
+                conn.execute("""
+                    INSERT INTO agent_learning_memory (
+                        decision_id, timestamp, symbol, regime,
+                        consensus_direction, consensus_confidence,
+                        agent_signals_json, outcome, realized_pnl, position_id
+                    ) VALUES (?, ?, 'BTCUSDT', 'TREND_BULLISH', 'BUY', 0.65, ?, 'LOSS', -50.0, ?)
+                """, (f"dec_loss_{i}", now_ms + i * 1000, sig_sweep, f"pos_loss_{i}"))
+
+            # Pre-populate 5 WIN rows for 'poi_confluence' (n=5, wins=5, cum_pnl=+200.0)
+            # Bayesian Beta(4,4) posterior: (5 + 4) / (5 + 4 + 4) = 9/13 = 0.6923 > 0.44 -> active multiplier
+            sig_poi = json.dumps([{
+                "agent_name": "TechnicalAgent",
+                "direction": "BUY",
+                "metrics": {"structural_sub_rule": "poi_confluence"},
+            }])
+            for i in range(5):
+                conn.execute("""
+                    INSERT INTO agent_learning_memory (
+                        decision_id, timestamp, symbol, regime,
+                        consensus_direction, consensus_confidence,
+                        agent_signals_json, outcome, realized_pnl, position_id
+                    ) VALUES (?, ?, 'BTCUSDT', 'TREND_BULLISH', 'BUY', 0.70, ?, 'WIN', 40.0, ?)
+                """, (f"dec_win_{i}", now_ms + (10 + i) * 1000, sig_poi, f"pos_win_{i}"))
+
+            conn.commit()
+
+            # Verify calibration table is empty before LearningTracker initialization
+            pre_count = conn.execute("SELECT COUNT(*) FROM structural_sub_rule_calibration").fetchone()[0]
+            assert pre_count == 0, "structural_sub_rule_calibration must be empty prior to init"
+
+        # Initialize fresh LearningTracker: MUST auto-bootstrap without manual recalibrate call
+        tracker = LearningTracker(db_path=db_path)
+
+        multipliers = tracker.get_sub_rule_multipliers()
+        assert "sweep_trigger" in multipliers, "Auto-bootstrap must populate sweep_trigger"
+        assert multipliers["sweep_trigger"] == 0.0, (
+            f"sweep_trigger must be auto-muted (expected 0.0, got {multipliers['sweep_trigger']})"
+        )
+        assert "poi_confluence" in multipliers, "Auto-bootstrap must populate poi_confluence"
+        assert multipliers["poi_confluence"] > 0.0, (
+            f"poi_confluence multiplier must be positive, got {multipliers['poi_confluence']}"
+        )
+
+        # Confirm persisted rows directly in SQLite
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = {r["sub_rule"]: dict(r) for r in conn.execute("SELECT * FROM structural_sub_rule_calibration").fetchall()}
+            assert "sweep_trigger" in rows
+            sw = rows["sweep_trigger"]
+            assert sw["total_samples"] == 5
+            assert sw["wins"] == 0
+            assert math.isclose(sw["posterior_wr"], 4.0 / 13.0, abs_tol=0.01)
+            assert sw["cumulative_pnl"] == -250.0
+            assert sw["multiplier"] == 0.0
+            assert sw["is_muted"] == 1
+
+            assert "poi_confluence" in rows
+            poi = rows["poi_confluence"]
+            assert poi["total_samples"] == 5
+            assert poi["wins"] == 5
+            assert math.isclose(poi["posterior_wr"], 9.0 / 13.0, abs_tol=0.01)
+            assert poi["multiplier"] > 0.0
+            assert poi["is_muted"] == 0
+
+    def test_learning_tracker_bootstrap_idempotent_preserves_existing_calibration(self, tmp_path):
+        """Existing calibration rows (e.g. custom sentinel multiplier) must NEVER be overwritten on __init__."""
+        db_path = str(tmp_path / "existing_learning.db")
+
+        # 1. Setup closed trades in agent_learning_memory AND pre-insert custom calibration row
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("""
+                CREATE TABLE agent_learning_memory (
+                    decision_id TEXT PRIMARY KEY,
+                    timestamp INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    regime TEXT NOT NULL,
+                    consensus_direction TEXT NOT NULL,
+                    consensus_confidence REAL NOT NULL,
+                    agent_signals_json TEXT NOT NULL,
+                    outcome TEXT DEFAULT 'PENDING',
+                    realized_pnl REAL DEFAULT 0.0,
+                    position_id TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE structural_sub_rule_calibration (
+                    sub_rule TEXT PRIMARY KEY,
+                    total_samples INTEGER NOT NULL,
+                    wins INTEGER NOT NULL,
+                    posterior_wr REAL NOT NULL,
+                    cumulative_pnl REAL NOT NULL,
+                    multiplier REAL NOT NULL,
+                    is_muted INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                )
+            """)
+
+            # Pre-populate a closed loss trade in memory that would normally mute sweep_trigger to 0.0
+            sig_sweep = json.dumps([{
+                "agent_name": "TechnicalAgent",
+                "direction": "BUY",
+                "metrics": {"structural_sub_rule": "sweep_trigger"},
+            }])
+            conn.execute("""
+                INSERT INTO agent_learning_memory (
+                    decision_id, timestamp, symbol, regime,
+                    consensus_direction, consensus_confidence,
+                    agent_signals_json, outcome, realized_pnl, position_id
+                ) VALUES ('dec_loss_0', 1700000000000, 'BTCUSDT', 'TREND_BULLISH', 'BUY', 0.65, ?, 'LOSS', -50.0, 'pos_0')
+            """, (sig_sweep,))
+
+            # Pre-insert custom sentinel calibration row
+            sentinel_mult = 0.7777
+            sentinel_ts = 123456789
+            conn.execute("""
+                INSERT INTO structural_sub_rule_calibration (
+                    sub_rule, total_samples, wins, posterior_wr, cumulative_pnl, multiplier, is_muted, updated_at
+                ) VALUES ('sweep_trigger', 99, 88, 0.8888, 999.0, ?, 0, ?)
+            """, (sentinel_mult, sentinel_ts))
+            conn.commit()
+
+        # 2. Instantiate fresh LearningTracker - bootstrap must NOT run because table is not empty
+        fresh_tracker = LearningTracker(db_path=db_path)
+        mults = fresh_tracker.get_sub_rule_multipliers()
+        assert mults.get("sweep_trigger") == sentinel_mult, (
+            f"Expected sentinel multiplier {sentinel_mult}, got {mults.get('sweep_trigger')}"
+        )
+
+        # 3. Verify SQLite values remain completely untouched
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM structural_sub_rule_calibration WHERE sub_rule = 'sweep_trigger'").fetchone()
+            assert row is not None
+            assert row["multiplier"] == sentinel_mult
+            assert row["total_samples"] == 99
+            assert row["wins"] == 88
+            assert row["updated_at"] == sentinel_ts
 
     def test_core_injects_sub_rule_multipliers_into_context(self, tmp_path):
         """IA_TraderCore automatically injects sub_rule_multipliers into context in deterministic and async evaluations."""
