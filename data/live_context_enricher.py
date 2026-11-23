@@ -130,7 +130,18 @@ class LiveContextEnricher:
             # FEAR_AND_GREED
             fng = series.get("FEAR_AND_GREED", [])
             if fng and (day_start_ms - fng[-1][1] <= 3 * 86_400_000):
+                latest_fng_ts = fng[-1][1]
                 ctx["fear_and_greed"] = float(fng[-1][2])
+                target_fng_7d = latest_fng_ts - 7 * 86_400_000
+                prior_fng = [x for x in fng if x[1] <= target_fng_7d]
+                if not prior_fng:
+                    prior_fng = [
+                        x for x in fng
+                        if 6 * 86_400_000 <= (latest_fng_ts - x[1]) <= 8 * 86_400_000
+                    ]
+                if prior_fng:
+                    best_prior = min(prior_fng, key=lambda x: abs((latest_fng_ts - x[1]) - 7 * 86_400_000)) if len(prior_fng) > 1 else prior_fng[-1]
+                    ctx["fng_7d_chg"] = float(fng[-1][2] - best_prior[2])
 
             # STABLECOINS
             stbl = series.get("STABLECOINS_CIRCULATING_USD") or series.get("STABLECOIN_MCAP")
@@ -186,28 +197,78 @@ class LiveContextEnricher:
             logger.debug(f"Falha ao processar macro_events_calendar: {e}")
 
         # 4. Funding Rate & Z-Score
-        rates = []
+        rates: List[float] = []
+        funding_source: Optional[str] = None
         try:
+            def _extract_finite_rates(rows_in: List[Tuple[Any, Any]]) -> List[float]:
+                out: List[float] = []
+                for row in rows_in:
+                    if row[1] is None:
+                        continue
+                    try:
+                        val = float(row[1])
+                        if np.isfinite(val):
+                            out.append(val)
+                    except (TypeError, ValueError):
+                        continue
+                return out
+
             funding_rows = self._fetch_all(
                 self.cache_db_path,
-                "SELECT timestamp, funding_rate FROM funding_rates WHERE symbol=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 30",
+                "SELECT timestamp, funding_rate FROM funding_rates WHERE symbol=? AND timestamp<=? AND funding_rate IS NOT NULL ORDER BY timestamp DESC LIMIT 90",
                 (symbol, ts_ms),
             )
-            if not funding_rows:
-                funding_rows = self._fetch_all(
+            is_cache_fresh = (
+                bool(funding_rows)
+                and (ts_ms - int(funding_rows[0][0]) <= 12 * 3_600_000)
+                and funding_rows[0][1] is not None
+            )
+            if is_cache_fresh:
+                rates = _extract_finite_rates(funding_rows)
+                if rates:
+                    funding_source = "cache"
+            else:
+                deriv_latest = self._fetch_all(
                     self.micro_db_path,
-                    "SELECT ts_ms, funding_rate FROM derivs WHERE symbol=? AND ts_ms<=? ORDER BY ts_ms DESC LIMIT 30",
+                    "SELECT ts_ms, funding_rate FROM derivs WHERE symbol=? AND ts_ms<=? AND funding_rate IS NOT NULL ORDER BY ts_ms DESC LIMIT 1",
                     (symbol, ts_ms),
                 )
-            if funding_rows:
-                newest_ts = int(funding_rows[0][0])
-                if ts_ms - newest_ts <= 12 * 3_600_000:
+                if deriv_latest and (ts_ms - int(deriv_latest[0][0]) <= 12 * 3_600_000):
                     try:
-                        rates = [float(r[1]) for r in funding_rows]
+                        fresh_rate = float(deriv_latest[0][1])
                     except (TypeError, ValueError):
-                        rates = []
+                        fresh_rate = float("nan")
+                    if np.isfinite(fresh_rate):
+                        funding_source = "micro_derivs"
+                        hist_rates_from_cache = _extract_finite_rates(funding_rows) if funding_rows else []
+                        combined = [fresh_rate] + hist_rates_from_cache
+                        if len(combined) >= 10:
+                            rates = combined
+                        else:
+                            deriv_hist = self._fetch_all(
+                                self.micro_db_path,
+                                "SELECT ts_ms, funding_rate FROM derivs WHERE symbol=? AND ts_ms<=? AND funding_rate IS NOT NULL ORDER BY ts_ms DESC LIMIT 200",
+                                (symbol, ts_ms),
+                            )
+                            seen_buckets = set()
+                            bucket_rates: List[float] = []
+                            for r_ts, r_val in deriv_hist:
+                                try:
+                                    rv = float(r_val)
+                                    if not np.isfinite(rv):
+                                        continue
+                                    bucket = int(r_ts) // 3_600_000
+                                    if bucket not in seen_buckets:
+                                        seen_buckets.add(bucket)
+                                        bucket_rates.append(rv)
+                                except (TypeError, ValueError):
+                                    continue
+                            rates = bucket_rates if bucket_rates else [fresh_rate]
+
             if rates:
                 ctx["funding_rate"] = float(rates[0])
+                if funding_source is not None:
+                    ctx["funding_source"] = funding_source
                 if len(rates) >= 10:
                     std = float(np.std(rates, ddof=0))
                     if std > 1e-9:

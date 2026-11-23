@@ -140,6 +140,18 @@ class TradingCore:
         except Exception:
             return None
 
+    def _resolve_sub_rule_multipliers(self) -> Optional[Dict[str, float]]:
+        """Retorna multiplicadores de sub-regras estruturais via LearningTracker quando disponíveis."""
+        lt = getattr(self, "learning_tracker", None)
+        if lt is None or not hasattr(lt, "get_sub_rule_multipliers"):
+            return None
+        try:
+            mults = lt.get_sub_rule_multipliers()
+            return dict(mults) if isinstance(mults, dict) else mults
+        except Exception as exc:
+            logger.debug(f"Falha ao resolver sub_rule_multipliers: {exc}")
+            return None
+
     def evaluate_market_deterministic(
         self,
         context: Dict[str, Any],
@@ -175,10 +187,23 @@ class TradingCore:
             return sig
 
         # 2. Avaliação dos demais agentes
+        sub_rule_mults = (
+            self._resolve_sub_rule_multipliers()
+            if "sub_rule_multipliers" not in context
+            else None
+        )
         signals: List[AgentSignal] = [sentinel_signal]
         for agent in self.agents:
             if agent.name != self.risk_sentinel.name and agent.is_backtestable:
-                signals.append(agent.evaluate(context))
+                agent_ctx = context
+                if (
+                    (agent is self.technical_agent or isinstance(agent, TechnicalAgent))
+                    and "sub_rule_multipliers" not in context
+                    and sub_rule_mults is not None
+                ):
+                    agent_ctx = dict(context)
+                    agent_ctx["sub_rule_multipliers"] = sub_rule_mults
+                signals.append(agent.evaluate(agent_ctx))
 
         # 3. Deliberação do Juiz de Consenso
         eff_weights = self._resolve_regime_weights(context, weights_override)
@@ -252,8 +277,23 @@ class TradingCore:
             return sig
 
         # 2. Executa os demais agentes em paralelo
+        sub_rule_mults = (
+            self._resolve_sub_rule_multipliers()
+            if "sub_rule_multipliers" not in context
+            else None
+        )
         other_agents = [a for a in self.agents if a.name != self.risk_sentinel.name]
-        tasks = [agent.evaluate_async(context) for agent in other_agents]
+        tasks = []
+        for agent in other_agents:
+            agent_ctx = context
+            if (
+                (agent is self.technical_agent or isinstance(agent, TechnicalAgent))
+                and "sub_rule_multipliers" not in context
+                and sub_rule_mults is not None
+            ):
+                agent_ctx = dict(context)
+                agent_ctx["sub_rule_multipliers"] = sub_rule_mults
+            tasks.append(agent.evaluate_async(agent_ctx))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         signals: List[AgentSignal] = [sentinel_signal]

@@ -60,7 +60,7 @@ def test_d1_anti_lookahead_and_contextual_voting(tmp_path):
         assert k in ctx, f"Missing {k}"
 
     assert MacroAgent().evaluate(ctx).direction == "SELL"
-    assert SentimentAgent().evaluate(ctx).direction == "BUY"
+    assert SentimentAgent().evaluate(ctx).direction == "SELL"
     assert OnChainAgent().evaluate(ctx).direction == "BUY"
 
 

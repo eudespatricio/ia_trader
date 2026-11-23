@@ -4,6 +4,27 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.11] - 2026-11-23 - Patch Final S5: Auto-Learner Estrutural, ML Multi-Symbol Calibrado, Reforma SentimentAgent, Fix Funding Live & SWING_4H Shadow Meta-Sizer
+
+### Added
+- **Auto-Learner por Sub-Regra Estrutural (`S5-1` em `learning_tracker.py`, `agents/technical_agent.py`, `core.py`):** Nova tabela `structural_sub_rule_calibration`, extração de sub-regra (`sweep_trigger`, `poi_confluence`, `open_air`, `normal_no_sr`), recalibração Bayesiana `Beta(4,4)` com janela `W=20` e auto-silenciamento causal (`n>=5`, `post_wr<0.44`, `cum_pnl<0`), além de injeção automática no `IA_TraderCore` respeitando overrides explícitos de `context["sub_rule_multipliers"]`.
+- **Calibração Pós-Hoc & Família `ExtraTrees` (`S5-3` em `model_trainer.py`):** Novo `CalibratedMulticlassModel` (`Platt`/`Isotonic` ajustado exclusivamente em split temporal purgado com embargo e guarda de universo de classes), métrica `compute_multiclass_ece()`, regularização rasa no `LGBMClassifier` (`max_depth=4`, `num_leaves=15`, `reg_lambda=5.0`) e suporte nativo a `ExtraTreesClassifier`.
+- **`SWING_4H` Shadow Meta-Sizer (`S5-5` em `data/swing_4h_meta_sizer.py`, `scripts/run_paper_simulation.py`):** Novo módulo causal (`296` linhas) combinando `LogReg-L2 (C=0.1)` em 10 features D-1 + `EWMA_VolTarget` (mais telemetria diagnóstica `atr_risk_parity_mult` e `rs_14d_mult`), rodando em `mode="shadow"` por padrão (`applied_mult = 1.0`) e persistindo decisões em `swing_4h_meta_telemetry` sem alterar regras congeladas de `data/swing_4h_strategy.py`.
+- **Suíte TDD Independente (`tests/test_patch_s5_final.py`):** 24 testes comportamentais cobrindo invariantes de S5-1..S5-5, preservação nativa de `NaN` no LightGBM, calibração/ECE, fallback `micro_derivs` e ausência de lookahead por perturbação futura.
+
+### Changed
+- **Default Seguro de `TechnicalAgent` & Deprecação de `structure_context` (`S5-1` em `agents/technical_agent.py`, `signal_generator.py`):** `enable_sweep_trigger=False` por padrão; `SignalGenerator.generate()` mantém múltiplos padrão de ATR e trata `structure_context` como no-op depreciado.
+- **Treino Multi-Símbolo & Gate Conjunto (`S5-2` em `learning_tracker.py`, `agents/technical_agent.py`):** `ModelEvolutionManager.run_retraining_cycle()` treina painel `BTC+ETH+SOL` com Triple-Barrier isolado por ativo e embargo por timestamp, preserva `NaN` nativo em `dist_resistance_pct`/`dist_support_pct` apenas para LightGBM e adota `evaluate_challenger_joint()` (`log_loss` + `roc_auc_ovr`).
+- **Reforma do `SentimentAgent` (`S5-4` em `agents/sentiment_agent.py`):** Novo modo padrão `"trend_momentum"` (`F&G >= 55 & fng_7d_chg >= +5 -> BUY`; `<= 45 & <= -5 -> SELL`), preservando `"neutral_telemetry"` e `"legacy_contrarian"`.
+
+### Fixed
+- **Bug P0 Funding Rate Zerado ao Vivo (`data/live_context_enricher.py`):** Fallback automático e causal para `microstructure.db` (`derivs`) sempre que `funding_rates` do `market_cache.db` estiver vazio ou desatualizado (`> 12h`), com cálculo causal de `fng_7d_chg` e z-score em `rates`.
+
+### Verified
+- Revisão cruzada DeepSeek (`auto-pro`) em 4 chunks sem truncamento (`0` P0); suíte completa `./.venv/bin/pytest -q`: **`689 passed, 1 skipped, 6 xfailed`**.
+
+---
+
 ## [1.0.10] - 2026-11-21 - Wave P3: Motor Paralelo `SWING_4H` (Donchian40/ExitCh10) & Higiene de Logs (Option B)
 
 ### Added

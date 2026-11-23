@@ -8,15 +8,28 @@ Avalia sentimento de mercado através de duas fontes:
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Optional
 from agents.base_agent import BaseAgent, AgentSignal
+
+
+def _to_finite_float(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        fv = float(val)
+    except (TypeError, ValueError):
+        return None
+    return fv if math.isfinite(fv) else None
 
 
 class SentimentAgent(BaseAgent):
     """
     Agente especialista em sentimento de multidão e psicologia de mercado.
-    Opera com lógica contrária e momentum de sentimento.
+    Suporta modos: 'trend_momentum' (padrão), 'neutral_telemetry' e 'legacy_contrarian'.
     """
+
+    SUPPORTED_MODES = ("trend_momentum", "neutral_telemetry", "legacy_contrarian")
 
     def __init__(
         self,
@@ -24,29 +37,59 @@ class SentimentAgent(BaseAgent):
         weight: float = 1.0,
         extreme_fear_threshold: float = 25.0,
         extreme_greed_threshold: float = 75.0,
+        mode: str = "trend_momentum",
     ):
+        if mode not in self.SUPPORTED_MODES:
+            raise ValueError(f"Modo inválido para SentimentAgent: {mode!r}. Esperado: {self.SUPPORTED_MODES}")
         super().__init__(name=name, weight=weight, is_backtestable=True)
         self.extreme_fear_threshold = extreme_fear_threshold
         self.extreme_greed_threshold = extreme_greed_threshold
+        self.mode = mode
 
     def evaluate(self, context: Dict[str, Any]) -> AgentSignal:
         """
         Avalia o contexto de sentimento:
         - `fear_and_greed`: valor numérico de 0 a 100 (ontem / D-1 sem lookahead)
+        - `fng_7d_chg`: variação de 7 dias do Fear & Greed (causal)
         - `news_score`: opcional (média ponderada de sentimento CryptoPanic em live)
         """
-        fng = context.get("fear_and_greed")
-        news_score = context.get("news_score")
+        fng_val = _to_finite_float(context.get("fear_and_greed"))
+        fng_7d_val = _to_finite_float(context.get("fng_7d_chg"))
+        news_val = _to_finite_float(context.get("news_score"))
 
         direction = "HOLD"
         confidence = 0.50
         rationale = "Sentimento de mercado neutro ou moderado."
-        metrics = {}
+        metrics: Dict[str, Any] = {"sentiment_mode": self.mode}
 
-        if fng is not None:
-            fng_val = float(fng)
+        if fng_val is not None:
             metrics["fear_and_greed"] = fng_val
+        if fng_7d_val is not None:
+            metrics["fng_7d_chg"] = fng_7d_val
 
+        if self.mode == "neutral_telemetry":
+            direction = "HOLD"
+            confidence = 0.50
+            rationale = "Sentimento em modo telemetria neutra."
+        elif self.mode == "trend_momentum":
+            if fng_val is not None and fng_7d_val is not None:
+                if fng_val >= 55.0 and fng_7d_val >= 5.0:
+                    direction = "BUY"
+                    confidence = min(0.80, 0.58 + min(abs(fng_7d_val), 30.0) / 30.0 * 0.22)
+                    rationale = f"Momentum de sentimento altista (F&G={fng_val:.0f}, 7d={fng_7d_val:+.1f})."
+                elif fng_val <= 45.0 and fng_7d_val <= -5.0:
+                    direction = "SELL"
+                    confidence = min(0.80, 0.58 + min(abs(fng_7d_val), 30.0) / 30.0 * 0.22)
+                    rationale = f"Momentum de sentimento baixista (F&G={fng_val:.0f}, 7d={fng_7d_val:+.1f})."
+                else:
+                    direction = "HOLD"
+                    confidence = 0.55
+                    rationale = f"Momentum de sentimento neutro (F&G={fng_val:.0f}, 7d={fng_7d_val:+.1f})."
+            elif fng_val is not None:
+                direction = "HOLD"
+                confidence = 0.55
+                rationale = f"Momentum de sentimento indisponível sem fng_7d_chg (F&G={fng_val:.0f})."
+        elif self.mode == "legacy_contrarian" and fng_val is not None:
             # Lógica de sentimento contrária institucional
             if fng_val <= self.extreme_fear_threshold:
                 direction = "BUY"
@@ -70,13 +113,13 @@ class SentimentAgent(BaseAgent):
                 confidence = 0.55
                 rationale = f"Equilíbrio psicológico no mercado (F&G={fng_val:.0f}). Neurônio de sentimento em vigília."
 
-        # Modulação ao vivo via notícias (se presente)
-        if news_score is not None:
-            metrics["news_score"] = float(news_score)
-            if float(news_score) >= 0.5 and direction == "BUY":
+        # Modulação ao vivo via notícias (se presente) em todos os modos
+        if news_val is not None:
+            metrics["news_score"] = news_val
+            if news_val >= 0.5 and direction == "BUY":
                 confidence = min(0.95, confidence + 0.10)
                 rationale += " Confirmado por notícias positivas recentes (CryptoPanic)."
-            elif float(news_score) <= -0.5 and direction == "SELL":
+            elif news_val <= -0.5 and direction == "SELL":
                 confidence = min(0.95, confidence + 0.10)
                 rationale += " Confirmado por notícias negativas recentes (CryptoPanic)."
 

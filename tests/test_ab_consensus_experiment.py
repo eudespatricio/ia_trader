@@ -62,7 +62,7 @@ def test_p4_requires_strong_close_or_volume():
 
 
 def test_p6_confidence_is_monotonic_at_25_and_75_but_original_is_not():
-    base, p6 = SentimentAgent(), ab.SentimentAgentP6()
+    base, p6 = SentimentAgent(mode="legacy_contrarian"), ab.SentimentAgentP6(mode="legacy_contrarian")
     lo = base.evaluate({"fear_and_greed": 25.0}).confidence
     hi = base.evaluate({"fear_and_greed": 25.5}).confidence
     assert lo < hi  # defeito original: extremo menos confiante que moderado

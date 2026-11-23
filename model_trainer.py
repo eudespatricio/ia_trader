@@ -26,8 +26,18 @@ import numpy as np
 import pandas as pd
 import joblib
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    log_loss,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 
 try:
     import lightgbm as lgb
@@ -291,6 +301,136 @@ class PurgedTimeSeriesSplit:
 
 
 # =====================================================================
+# 3.5 CALIBRAÇÃO MULTICLASSE OOS & ECE
+# =====================================================================
+
+def compute_multiclass_ece(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    classes: np.ndarray,
+    n_bins: int = 10,
+) -> float:
+    """
+    Calcula o Expected Calibration Error (ECE) multiclasse top-label em `n_bins` faixas uniformes.
+    Alinha `argmax(y_proba)` ao vetor `classes` para suportar subconjuntos arbitrários de rótulos.
+    """
+    y_true_arr = np.asarray(y_true)
+    proba_arr = np.asarray(y_proba, dtype=np.float64)
+    classes_arr = np.asarray(classes)
+    if len(y_true_arr) == 0 or proba_arr.size == 0 or len(classes_arr) == 0:
+        return 0.0
+    if proba_arr.ndim == 1:
+        proba_arr = proba_arr.reshape(-1, 1)
+
+    n_bins_eff = max(1, int(n_bins))
+    pred_col = np.argmax(proba_arr, axis=1)
+    pred_cls = classes_arr[np.clip(pred_col, 0, len(classes_arr) - 1)]
+    confidences = np.clip(np.max(proba_arr, axis=1), 0.0, 1.0)
+    accuracies = (y_true_arr == pred_cls).astype(np.float64)
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins_eff + 1)
+    ece = 0.0
+    n_total = float(len(y_true_arr))
+    for b in range(n_bins_eff):
+        lo, hi = bin_edges[b], bin_edges[b + 1]
+        mask = ((confidences >= lo) & (confidences <= hi)) if b == 0 else ((confidences > lo) & (confidences <= hi))
+        cnt = int(np.sum(mask))
+        if cnt > 0:
+            bin_acc = float(np.mean(accuracies[mask]))
+            bin_conf = float(np.mean(confidences[mask]))
+            ece += (cnt / n_total) * abs(bin_acc - bin_conf)
+    return float(ece)
+
+
+class CalibratedMulticlassModel:
+    """
+    Wrapper multiclasse serializável (picklable) para calibração pós-hoc One-Vs-Rest ('platt' ou 'isotonic')
+    sobre estimadores já ajustados em partição temporal disjunta (sem vazamento in-sample).
+    """
+
+    VALID_METHODS = ("platt", "isotonic")
+
+    def __init__(self, base_estimator: Any, method: str = "platt"):
+        method_norm = (method or "platt").lower()
+        if method_norm not in self.VALID_METHODS:
+            raise ValueError(f"Método de calibração inválido: {method!r}. Use 'platt' ou 'isotonic'.")
+        self.base_estimator = base_estimator
+        self.method = method_norm
+        self.classes_: np.ndarray = np.asarray(getattr(base_estimator, "classes_", [0, 1, 2]))
+        self.calibrators_: List[Optional[Any]] = []
+
+    @property
+    def feature_names_in_(self) -> np.ndarray:
+        if hasattr(self.base_estimator, "feature_names_in_"):
+            return getattr(self.base_estimator, "feature_names_in_")
+        raise AttributeError(f"{type(self).__name__!r} base_estimator has no attribute 'feature_names_in_'")
+
+    @staticmethod
+    def _to_logit(p: np.ndarray) -> np.ndarray:
+        clipped = np.clip(np.asarray(p, dtype=np.float64), 1e-6, 1.0 - 1e-6)
+        return np.log(clipped / (1.0 - clipped)).reshape(-1, 1)
+
+    def fit(self, X_cal: Any, y_cal: Any) -> "CalibratedMulticlassModel":
+        raw_p = np.asarray(self.base_estimator.predict_proba(X_cal), dtype=np.float64)
+        if raw_p.ndim == 1:
+            raw_p = raw_p.reshape(-1, 1)
+        self.classes_ = np.asarray(self.base_estimator.classes_)
+        y_arr = np.asarray(y_cal)
+        n_samples = len(y_arr)
+        self.calibrators_ = []
+
+        for col_idx, cls_val in enumerate(self.classes_):
+            y_bin = (y_arr == cls_val).astype(int)
+            p_col = raw_p[:, col_idx]
+            # Fallback para identidade quando alvo binário tem <2 classes únicas ou <5 amostras
+            if n_samples < 5 or len(np.unique(y_bin)) < 2:
+                self.calibrators_.append(None)
+                continue
+
+            if self.method == "platt":
+                cal = LogisticRegression(C=1.0, max_iter=500)
+                cal.fit(self._to_logit(p_col), y_bin)
+                self.calibrators_.append(cal)
+            else:
+                cal = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+                cal.fit(np.clip(p_col, 0.0, 1.0), y_bin)
+                self.calibrators_.append(cal)
+
+        return self
+
+    def predict_proba(self, X: Any) -> np.ndarray:
+        raw_p = np.asarray(self.base_estimator.predict_proba(X), dtype=np.float64)
+        if raw_p.ndim == 1:
+            raw_p = raw_p.reshape(1, -1)
+        n_rows = raw_p.shape[0]
+        n_classes = len(self.classes_)
+
+        if not self.calibrators_:
+            cal_p = raw_p.copy()
+        else:
+            cal_p = np.empty((n_rows, n_classes), dtype=np.float64)
+            for col_idx in range(n_classes):
+                p_col = raw_p[:, col_idx]
+                cal = self.calibrators_[col_idx] if col_idx < len(self.calibrators_) else None
+                if cal is None:
+                    cal_p[:, col_idx] = p_col
+                elif self.method == "platt":
+                    cal_p[:, col_idx] = cal.predict_proba(self._to_logit(p_col))[:, 1]
+                else:
+                    cal_p[:, col_idx] = cal.predict(np.clip(p_col, 0.0, 1.0))
+
+        cal_p = np.nan_to_num(cal_p, nan=1.0 / max(n_classes, 1), posinf=1.0, neginf=1e-7)
+        cal_p = np.clip(cal_p, 1e-7, 1.0)
+        row_sums = cal_p.sum(axis=1, keepdims=True)
+        proba = cal_p / np.where(row_sums > 0.0, row_sums, 1.0)
+        return proba
+
+    def predict(self, X: Any) -> np.ndarray:
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
+
+
+# =====================================================================
 # 4. MOTOR ORQUESTRADOR: ModelTrainer
 # =====================================================================
 
@@ -310,6 +450,7 @@ class ModelTrainer:
         confidence_threshold: float = 0.55,
         n_jobs: int = 12,
         models_dir: Optional[str] = None,
+        calibration_method: str = "none",
     ):
         self.model_type = model_type.lower()
         self.horizon = horizon
@@ -318,9 +459,15 @@ class ModelTrainer:
         self.confidence_threshold = confidence_threshold
         self.n_jobs = n_jobs
         self.models_dir = models_dir or self.DEFAULT_MODELS_DIR
+        self.calibration_method = (calibration_method or "none").lower()
+        if self.calibration_method not in ("none", "platt", "isotonic"):
+            raise ValueError(
+                f"calibration_method inválido: {calibration_method!r}. Use 'none', 'platt' ou 'isotonic'."
+            )
         os.makedirs(self.models_dir, exist_ok=True)
 
-        self.device, self.device_info = resolve_compute_device(requested_device="auto", n_jobs=self.n_jobs)
+        req_dev = "auto" if self.model_type == "lgbm" else "cpu"
+        self.device, self.device_info = resolve_compute_device(requested_device=req_dev, n_jobs=self.n_jobs)
 
     def prepare_dataset(
         self,
@@ -381,6 +528,17 @@ class ModelTrainer:
                 random_state=random_state,
                 verbosity=-1,
             )
+        elif self.model_type in ("extratrees", "et"):
+            return ExtraTreesClassifier(
+                n_estimators=200,
+                max_depth=8,
+                min_samples_split=20,
+                min_samples_leaf=10,
+                max_features="sqrt",
+                class_weight="balanced",
+                n_jobs=self.n_jobs,
+                random_state=random_state,
+            )
         else:
             return RandomForestClassifier(
                 n_estimators=200,
@@ -392,6 +550,127 @@ class ModelTrainer:
                 n_jobs=self.n_jobs,
                 random_state=random_state,
             )
+
+    def _split_inner_calibration(
+        self,
+        idx_arr: np.ndarray,
+        ts_arr: Optional[np.ndarray] = None,
+        eff_embargo_ms: Optional[float] = None,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Particiona índices cronológicos em `inner_fit` (primeiros 80%) e `inner_cal` (últimos 20%)
+        com embargo estrito anti-vazamento (gap >= self.horizon em índice E >= eff_embargo_ms em tempo).
+        """
+        idx_sorted = np.sort(np.asarray(idx_arr, dtype=int))
+        if len(idx_sorted) < 200:
+            return None
+
+        if ts_arr is not None and eff_embargo_ms is not None:
+            ts_sub = ts_arr[idx_sorted]
+            uniq_ts = np.unique(ts_sub)
+            if len(uniq_ts) < 10:
+                return None
+            fit_ts_pos = max(1, int(len(uniq_ts) * 0.80))
+            fit_end_ts = uniq_ts[fit_ts_pos - 1]
+            cal_start_ts = fit_end_ts + float(eff_embargo_ms)
+            inner_fit = idx_sorted[ts_sub <= fit_end_ts]
+            if len(inner_fit) == 0:
+                return None
+            min_cal_idx = int(np.max(inner_fit)) + int(self.horizon)
+            inner_cal = idx_sorted[
+                (ts_sub >= cal_start_ts) & (ts_sub > fit_end_ts) & (idx_sorted >= min_cal_idx)
+            ]
+            if len(inner_cal) < 5:
+                return None
+            assert int(np.max(inner_fit)) + int(self.horizon) <= int(np.min(inner_cal)), (
+                "Vazamento de índice entre inner_fit e inner_cal na calibração!"
+            )
+            assert float(np.min(ts_arr[inner_cal]) - np.max(ts_arr[inner_fit])) >= float(eff_embargo_ms), (
+                "Vazamento temporal entre inner_fit e inner_cal na calibração!"
+            )
+            return inner_fit, inner_cal
+
+        split_pos = int(len(idx_sorted) * 0.80)
+        inner_fit = idx_sorted[:split_pos]
+        if len(inner_fit) == 0:
+            return None
+        min_cal_idx = int(np.max(inner_fit)) + max(1, int(self.horizon))
+        inner_cal = idx_sorted[idx_sorted >= min_cal_idx]
+        if len(inner_cal) < 5:
+            return None
+        assert int(np.max(inner_fit)) + max(1, int(self.horizon)) <= int(np.min(inner_cal)), (
+            "Vazamento de índice entre inner_fit e inner_cal na calibração!"
+        )
+        return inner_fit, inner_cal
+
+    def _fit_with_optional_calibration(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        idx_arr: np.ndarray,
+        ts_arr: Optional[np.ndarray] = None,
+        eff_embargo_ms: Optional[float] = None,
+        random_state: int = 42,
+    ) -> Any:
+        """Ajusta estimador base ou wrapper calibrado OOF respeitando embargo temporal."""
+        if self.calibration_method in ("platt", "isotonic") and len(idx_arr) >= 200:
+            cal_split = self._split_inner_calibration(
+                idx_arr, ts_arr=ts_arr, eff_embargo_ms=eff_embargo_ms
+            )
+            if cal_split is not None:
+                inner_fit, inner_cal = cal_split
+                if set(np.unique(y.iloc[inner_fit])) != set(np.unique(y.iloc[idx_arr])):
+                    cal_split = None
+            if cal_split is not None:
+                inner_fit, inner_cal = cal_split
+                X_fit, y_fit = X.iloc[inner_fit], y.iloc[inner_fit]
+                X_cal, y_cal = X.iloc[inner_cal], y.iloc[inner_cal]
+                if len(np.unique(y_fit)) >= 2 and len(inner_cal) >= 5:
+                    base_est = self._build_estimator(random_state=random_state)
+                    base_est.fit(X_fit, y_fit)
+                    cal_model = CalibratedMulticlassModel(base_est, method=self.calibration_method)
+                    cal_model.fit(X_cal, y_cal)
+                    return cal_model
+
+        est = self._build_estimator(random_state=random_state)
+        est.fit(X.iloc[idx_arr], y.iloc[idx_arr])
+        return est
+
+    @staticmethod
+    def _compute_probabilistic_metrics(
+        y_true_arr: np.ndarray,
+        y_proba_arr: np.ndarray,
+        classes: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        """Calcula (log_loss, roc_auc_ovr, ece) de forma numericamente estável em OOS."""
+        n_classes = max(len(classes), 1)
+        proba_clean = np.nan_to_num(
+            np.asarray(y_proba_arr, dtype=np.float64),
+            nan=1.0 / n_classes,
+            posinf=1.0,
+            neginf=1e-7,
+        )
+        proba_clipped = np.clip(proba_clean, 1e-7, 1.0)
+        row_sums = proba_clipped.sum(axis=1, keepdims=True)
+        proba_norm = proba_clipped / np.where(row_sums > 0.0, row_sums, 1.0)
+
+        if len(classes) >= 2 and len(y_true_arr) > 0:
+            ll = float(log_loss(y_true_arr, proba_norm, labels=classes))
+        else:
+            ll = 0.0
+
+        ovr_aucs: List[float] = []
+        for col_i, cls_val in enumerate(classes):
+            if col_i >= proba_norm.shape[1]:
+                continue
+            y_bin = (y_true_arr == cls_val).astype(int)
+            n_pos = int(np.sum(y_bin))
+            if 0 < n_pos < len(y_bin):
+                ovr_aucs.append(float(roc_auc_score(y_bin, proba_norm[:, col_i])))
+        auc_ovr = float(np.mean(ovr_aucs)) if ovr_aucs else 0.5
+
+        ece = compute_multiclass_ece(y_true_arr, proba_norm, classes=classes, n_bins=10)
+        return ll, auc_ovr, ece
 
     def train_walk_forward(
         self,
@@ -418,12 +697,17 @@ class ModelTrainer:
             else None
         )
 
+        canonical_classes = np.sort(np.unique(np.asarray(y)))
+        if len(canonical_classes) == 0:
+            canonical_classes = np.array([0, 1, 2])
+
         all_test_indices: List[int] = []
         all_y_true: List[int] = []
         all_y_pred: List[int] = []
         all_y_proba: List[np.ndarray] = []
 
         fold_metrics = []
+        last_model: Optional[Any] = None
 
         for fold, (train_idx, test_idx) in enumerate(splits):
             # ASSERT ANTI-VAZAMENTO: Prova matemática que não há interseção e o embargo foi respeitado
@@ -442,18 +726,36 @@ class ModelTrainer:
                     f"inferior ao horizonte de embargo ({self.horizon})!"
                 )
 
-            X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
+            y_train = y.iloc[train_idx]
             X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
 
             # Valida classes presentes no treino
             if len(np.unique(y_train)) < 2:
                 continue
 
-            model = self._build_estimator(random_state=42 + fold)
-            model.fit(X_train, y_train)
+            model = self._fit_with_optional_calibration(
+                X,
+                y,
+                train_idx,
+                ts_arr=ts_arr,
+                eff_embargo_ms=eff_embargo_ms,
+                random_state=42 + fold,
+            )
+            last_model = model
 
             y_pred = model.predict(X_test)
-            y_proba = model.predict_proba(X_test)
+            raw_fold_proba = np.asarray(model.predict_proba(X_test), dtype=np.float64)
+            model_classes = np.asarray(getattr(model, "classes_", canonical_classes))
+            if np.array_equal(model_classes, canonical_classes):
+                y_proba = raw_fold_proba
+            else:
+                y_proba = np.full((len(X_test), len(canonical_classes)), 1e-7, dtype=np.float64)
+                for col_i, cls_val in enumerate(model_classes):
+                    target_idx = np.where(canonical_classes == cls_val)[0]
+                    if len(target_idx) > 0 and col_i < raw_fold_proba.shape[1]:
+                        y_proba[:, target_idx[0]] = raw_fold_proba[:, col_i]
+                row_sums = y_proba.sum(axis=1, keepdims=True)
+                y_proba = y_proba / np.where(row_sums > 0.0, row_sums, 1.0)
 
             all_test_indices.extend(test_idx.tolist())
             all_y_true.extend(y_test.tolist())
@@ -470,8 +772,8 @@ class ModelTrainer:
         y_pred_arr = np.array(all_y_pred)
         y_proba_arr = np.vstack(all_y_proba)
 
-        # Classes inferidas
-        classes = getattr(model, "classes_", np.array([0, 1, 2]))
+        # Classes inferidas alinhadas às colunas de y_proba_arr
+        classes = canonical_classes if len(canonical_classes) == y_proba_arr.shape[1] else getattr(last_model, "classes_", np.array([0, 1, 2]))
 
         # Métricas globais
         acc = float(accuracy_score(y_true_arr, y_pred_arr))
@@ -485,8 +787,13 @@ class ModelTrainer:
                 y_onehot[:, col_i] = (y_true_arr == cls_val).astype(np.float64)
         brier_score = float(np.mean((y_proba_arr - y_onehot) ** 2))
 
+        # Log-loss, ROC-AUC OvR e ECE multiclasse OOS
+        ll_oos, roc_auc_ovr, ece_oos = self._compute_probabilistic_metrics(
+            y_true_arr, y_proba_arr, classes
+        )
+
         # Precision por classe: 0 (HOLD), 1 (BUY), 2 (SELL)
-        precisions = precision_score(y_true_arr, y_pred_arr, average=None, zero_division=0)
+        precisions = precision_score(y_true_arr, y_pred_arr, labels=classes, average=None, zero_division=0)
         class_precisions = {f"class_{cls}_precision": float(prec) for cls, prec in zip(classes, precisions)}
 
         # =====================================================================
@@ -513,12 +820,16 @@ class ModelTrainer:
 
         results = {
             "model_type": self.model_type,
+            "calibration_method": self.calibration_method,
             "device": self.device,
             "samples_evaluated": len(y_true_arr),
             "global_accuracy": acc,
             "f1_macro": f1_mac,
             "f1_weighted": f1_weighted,
             "brier_score": brier_score,
+            "log_loss": ll_oos,
+            "roc_auc_ovr": roc_auc_ovr,
+            "ece": ece_oos,
             "class_precisions": class_precisions,
             "emitted_signals_accuracy": emitted_accuracy,
             "emitted_signals_count": total_signals,
@@ -533,8 +844,9 @@ class ModelTrainer:
         }
 
         logger.info(
-            f"Resultados Walk-Forward [{self.model_type.upper()}]: "
+            f"Resultados Walk-Forward [{self.model_type.upper()}|cal={self.calibration_method}]: "
             f"Global Acc={acc:.2%}, Sinais Emitidos Acc={emitted_accuracy:.2%}, "
+            f"LogLoss={ll_oos:.4f}, AUC={roc_auc_ovr:.4f}, ECE={ece_oos:.4f}, "
             f"Cobertura={coverage_pct:.2%} ({total_signals}/{len(y_true_arr)} trades)."
         )
 
@@ -561,9 +873,28 @@ class ModelTrainer:
             embargo_ms=embargo_ms,
         )
 
-        # 2. Treino final na base completa
-        final_model = self._build_estimator(random_state=42)
-        final_model.fit(X, y)
+        # 2. Treino final na base completa (ou split cronológico 80/20 com embargo quando calibrado)
+        ts_arr = np.asarray(timestamps) if timestamps is not None else None
+        eff_embargo_ms = (
+            PurgedTimeSeriesSplit(horizon_embargo=self.horizon).resolve_embargo_ms(
+                ts_arr, embargo_ms=embargo_ms
+            )
+            if ts_arr is not None
+            else None
+        )
+        if self.calibration_method in ("platt", "isotonic") and len(X) >= 200:
+            full_indices = np.arange(len(X), dtype=int)
+            final_model = self._fit_with_optional_calibration(
+                X,
+                y,
+                full_indices,
+                ts_arr=ts_arr,
+                eff_embargo_ms=eff_embargo_ms,
+                random_state=42,
+            )
+        else:
+            final_model = self._build_estimator(random_state=42)
+            final_model.fit(X, y)
 
         # 3. Metadados e Persistência
         filename = save_name or f"{self.model_type}_model_v1.joblib"
@@ -572,6 +903,7 @@ class ModelTrainer:
         payload: Dict[str, Any] = {
             "model": final_model,
             "model_type": self.model_type,
+            "calibration_method": self.calibration_method,
             "features": list(X.columns),
             "feature_names": list(X.columns),
             "horizon": self.horizon,

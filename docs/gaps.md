@@ -1,10 +1,29 @@
-# Gaps, Auditoria & Roadmap — Wave P3 (`v1.0.10`)
+# Gaps, Auditoria & Roadmap — Patch Final S5 (`v1.0.11`)
 
-Todos os **4 itens P2 diferidos do Patch S5 (`v1.0.8`)** foram resolvidos na **Wave P2 (`v1.0.9`)**, e na **Wave P3 (`v1.0.10`)** foi entregue o motor paralelo **`SWING_4H` (Donchian40 / ExitCh10)** junto com **Option B (Higiene & Rotação de Logs)**.
+Patch Final S5 (`v1.0.11`, `2026-11-23`) entrega **S5-1..S5-5** + correção P0 de funding ao vivo, todos aprovados em backtests OOS zero-leakage e validados com **`689 passed, 1 skipped, 6 xfailed`** + revisão cruzada DeepSeek em 4 chunks sem truncamento (`0` P0).
 
 ---
 
-## 0. Entregas Wave P3 (`v1.0.10`, 2026-11-21)
+## 0. Entregas Patch Final S5 (`v1.0.11`, 2026-11-23)
+
+1. **`S5-1` Living Sub-Rule Learner (`agents/technical_agent.py`, `learning_tracker.py`, `signal_generator.py`, `core.py`):**
+   - `enable_sweep_trigger=False` por padrão (`Gatilho Estrutural` isolado: `-333.3R` OOS, `PF 0.66`); deprecado `structure_context` (`0.7/0.85x` SL); calibração `Beta(4,4)` com janela `W=20` e auto-silenciamento em `structural_sub_rule_calibration` (`n>=5, post_wr<0.44, pnl<0`; replay real: `+$821.24 -> +$1,317.32`).
+   - Preservação de precedência explícita de `context["sub_rule_multipliers"]` em `core.py` para replay causal.
+2. **`S5-2` + `S5-3` ML `1h` Multi-Symbol & Calibração (`model_trainer.py`, `learning_tracker.py`, `agents/technical_agent.py`):**
+   - Treino `BTC+ETH+SOL` com Triple-Barrier isolado por ativo e embargo por timestamp; `NaN` nativo preservado apenas para `dist_resistance_pct`/`dist_support_pct` no LightGBM; adição de `ExtraTrees`, regularização rasa LGBM (`max_depth=4, num_leaves=15`), pós-calibração `Platt`/`Isotonic` (`ECE` reduzido ~15×–17× OOS), guarda de classes na calibração e gate conjunto `log_loss` + `roc_auc_ovr`.
+3. **`S5-4` Reforma `SentimentAgent` + Bug P0 Funding Live (`agents/sentiment_agent.py`, `data/live_context_enricher.py`):**
+   - Novo padrão `mode="trend_momentum"` (`F&G >= 55 & fng_7d_chg >= +5 -> BUY`; `<= 45 & <= -5 -> SELL`), superando `S0` em `+241.3R` OOS standalone e melhorando comitê `1h` OOS (`+34.4R`).
+   - Corrigido bug P0 em que `funding_rates` (`> 12h` stale) bloqueava fallback para `microstructure.db.derivs` (`funding_rate == 0.0` em 50/50 decisões ao vivo).
+4. **`S5-5` `SWING_4H` Shadow Meta-Sizer (`data/swing_4h_meta_sizer.py`, `scripts/run_paper_simulation.py`):**
+   - `Swing4HMetaSizer` causal (`LogReg-L2 C=0.1` em 10 features D-1 + `EWMA_VolTarget`, `OOS Sharpe 1.07 -> 1.24`, `Calmar 2.13`) operando em **`mode="shadow"` por padrão** (`applied_mult = 1.0`), gravando `swing_4h_meta_telemetry` sem alterar `data/swing_4h_strategy.py`.
+5. **Notas P2/P3 da Revisão Cruzada & Itens Diferidos para S6 / Wave P4b:**
+   - **Overlay `atr_risk_parity_mult` e `rs_14d_mult`:** Calculados e logados em `swing_4h_meta_telemetry` apenas como diagnóstico independente; não são multiplicados junto a `vol_target_mult` em `combined_shadow_mult` para evitar dupla contagem de volatilidade (`VT + S5-5` foi a combinação validada em OOS).
+   - **`open_air` sem resistência mapeada:** `dist_res_val is None` continua mapeando `open_air` ("céu aberto") conforme baseline `EXP 6C`; separar `"unknown_sr"` só faz sentido caso o extrator passe a falhar sem sinalizar.
+   - **Diferidos propositalmente:** **`T2` Carry Treasury** (em `STANDBY` — yield OOS 2025–26 em `+0.12%/ano`), **`T11` Expansão Top 15–20 Perps** (S6), **`DAY_TRADE 1h` geometria `G2/G3`** (`OOS PF 0.90/0.95 < 1.0`, manter E7 congelado), **`T6a 4h` Lead-Lag** (amostra OOS `n=38` insuficiente), **`Wave P4b` liquidations/`tick_agg`** (~30–60d coleta limpa) e Meta-Labeling sobre gatilhos já filtrados.
+
+---
+
+## 0-prev. Entregas Wave P3 (`v1.0.10`, 2026-11-21)
 
 1. **`SWING_4H` Paralelo (`data/swing_4h_strategy.py`, `smart_trade.py`, `scripts/run_paper_simulation.py`, `rollback_guard.py`, `flask_interface.py`, `scripts/pilot_report.py`):**
    - Motor trend-following 4h independente do comitê (`Donchian40/ExitCh10`, `|dist_sma_200| <= 20%`, `SL 2.5xATR`, trailing puro `3.5xATR`, timeout `120` barras, `max_leverage=2.0`).

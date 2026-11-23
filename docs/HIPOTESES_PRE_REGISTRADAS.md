@@ -543,9 +543,7 @@ Auditoria cirúrgica executada em `2026-11-13` (preservando daemons live e `2` p
 
 ## 3. Portas de Refutação & Aceite (`pilot_report.py`)
 - Herda todos os critérios A1–A14 e R1–R7 de `docs/CRITERIOS_APROVACAO_PILOTO.md` (N >= 100 em >= 56 dias limpos, `MaxDD estresse >= 20%` refuta, `IC95 sup < 0` com N >= 30 refuta, `expectância bruta <= 0` com N >= 30 refuta).
-- Proibido ajustar `Donchian 40/10`, `|dist_sma_200| <= 0.20`, `SL=2.5xATR`, `Trail=3.5xATR` ou `max_leverage=2.0` durante a janela de observação sem novo pré-registro.
-
-
-
-
+- **Aditivo Pós-S5 (2026-11-23 — Patch Final S5 `v1.0.11`, Telemetria `shadow`):**
+  - Mantidos **100% intocados** todos os parâmetros congelados do `SWING_4H` (`Donchian40/ExitCh10`, `SL 2.5x`, `Trail 3.5x`, `|dist_sma_200|<=0.20`, `max_holding=120`, `cooldown=2`, `max_leverage=2.0`).
+  - Adicionado módulo causal `data/swing_4h_meta_sizer.py` (`mode="shadow"` por padrão, `applied_mult == 1.0`) gravando telemetria (`meta_prob`, `meta_size_mult`, `vol_target_mult`, `atr_risk_parity_mult`, `rs_14d_mult`) em `swing_4h_meta_telemetry`, além de `S5-1` (auto-learner por sub-regra estrutural `Beta(4,4)` `W=20`), `S5-2/S5-3` (`Platt`/`Isotonic` + `ExtraTrees` + Multi-Symbol `F0_TechOnly` + gate conjunto `LogLoss`/`ROC-AUC`), `S5-4` (`SentimentAgent trend_momentum` + fix P0 `micro_derivs` funding) e registro formal de `Alpha-1/2/3` (**NO-GOs:** `T1-DDThrottle`, `T3 EWMAC`, `T4 Squeeze`, `T5 Capitulation`, `T6a/T6b`, `T7b ORB`, `T8`, `T9`, `T10`, `T12`).
 

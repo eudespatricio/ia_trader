@@ -29,6 +29,13 @@
 
 ## 📜 Histórico Detalhado de Entregas e Iterações
 
+### [Patch Final S5 - v1.0.11: Auto-Learner Estrutural, ML Calibrado, Reforma Sentiment, Fix Live Funding & SWING_4H Meta-Sizer (`shadow`)] - 2026-11-23
+- **`S5-1` Auto-Aprendizado por Sub-Regra (`agents/technical_agent.py`, `learning_tracker.py`, `core.py`, `signal_generator.py`):** `enable_sweep_trigger=False` por padrão, depreciação de `structure_context`, tabela `structural_sub_rule_calibration` com shrinkage `Beta(4,4)` em `W=20` e auto-silenciamento (`n>=5, post_wr<0.44, pnl<0`; replay real `+$821.24 -> +$1,317.32`).
+- **`S5-2`/`S5-3` ML `1h` Multi-Symbol & Calibração (`model_trainer.py`, `learning_tracker.py`, `agents/technical_agent.py`):** Treino `BTC+ETH+SOL` com Triple-Barrier isolado e embargo temporal, `NaN` nativo S/R só para LightGBM, LGBM raso (`depth=4`), `ExtraTrees`, `CalibratedMulticlassModel` (`Platt`/`Isotonic`, ECE ~15× menor OOS) e gate conjunto `log_loss` + `roc_auc_ovr`.
+- **`S5-4` Reforma `SentimentAgent` + Fix Live Funding P0 (`agents/sentiment_agent.py`, `data/live_context_enricher.py`):** Novo padrão `"trend_momentum"` (`+241.3R` OOS sobre `S0`), exportação causal de `fng_7d_chg` e fallback automático para `microstructure.db.derivs` quando cache `> 12h` (`funding_source='micro_derivs'` verificado ao vivo).
+- **`S5-5` Meta-Sizer `SWING_4H` em `shadow` (`data/swing_4h_meta_sizer.py`, `scripts/run_paper_simulation.py`):** Novo módulo (`296` linhas) com `LogReg-L2 (C=0.1)` + `EWMA_VolTarget` (`applied_mult = 1.0` em `mode="shadow"`, gravando `swing_4h_meta_telemetry`), mantendo `data/swing_4h_strategy.py` e E7 congelados.
+- **Validação & Qualidade:** Revisão cruzada DeepSeek em 4 chunks sem truncamento (`0` P0; P1/P2 aplicáveis resolvidos) + **`689 passed, 1 skipped, 6 xfailed`** (`tests/test_patch_s5_final.py` com 24 invariantes).
+
 ### [Wave P3 - v1.0.10: Motor Paralelo `SWING_4H` (Donchian40/ExitCh10) & Higiene de Logs (Option B)] - 2026-11-21
 - **Frente Estratégica (`data/swing_4h_strategy.py`, `smart_trade.py`, `scripts/run_paper_simulation.py`):**
   - Implementado motor paralelo `SWING_4H` (Donchian 40 entrada / Donchian 10 saída, `|dist_sma_200| <= 20%`, `SL 2.5xATR`, trailing puro `3.5xATR` sem parciais, timeout `120` barras `4h`, alavancagem máx `2.0x`) operando exclusivamente sobre velas `4h` fechadas reamostradas de `1h` (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`).

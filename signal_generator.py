@@ -101,25 +101,11 @@ class SignalGenerator:
                 contributing_agents=[s.to_dict() for s in decision.agent_signals],
             )
 
-        # Múltiplos de SL/TP com adaptação assimétrica institucional (Smart Money Concepts)
+        # `structure_context` mantido apenas por compatibilidade retroativa (no-op depreciado):
+        # Wave P4-SR OOS refutation (-66.6R -> -87.7R) mostrou que comprimir SL para 0.7/0.85x ATR piora o retorno.
+        _ = structure_context
         eff_tp_mult = self.tp_atr_multiple
         eff_sl_mult = self.sl_atr_multiple
-        is_asymmetric_poi = False
-
-        if structure_context:
-            sweep_bull = bool(structure_context.get("liquidity_sweep_bull", 0))
-            sweep_bear = bool(structure_context.get("liquidity_sweep_bear", 0))
-            at_bull_poi = bool(structure_context.get("at_bullish_poi", 0))
-            at_bear_poi = bool(structure_context.get("at_bearish_poi", 0))
-
-            if direction == "BUY" and (sweep_bull or at_bull_poi):
-                eff_sl_mult = 0.7 if sweep_bull else 0.85
-                eff_tp_mult = 2.1 if sweep_bull else 1.8
-                is_asymmetric_poi = True
-            elif direction == "SELL" and (sweep_bear or at_bear_poi):
-                eff_sl_mult = 0.7 if sweep_bear else 0.85
-                eff_tp_mult = 2.1 if sweep_bear else 1.8
-                is_asymmetric_poi = True
 
         # Cálculo de Barreiras ATR
         if direction == "BUY":

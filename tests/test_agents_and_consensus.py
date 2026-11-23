@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 # Adiciona raiz ao sys.path
-sys.path.insert(0, "/home/eudespatricio/ia_trader")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.base_agent import AgentSignal, BaseAgent
 from agents.technical_agent import TechnicalAgent
@@ -88,8 +88,15 @@ class TestAgentContractsAndImplementations:
         assert sig_candle.metrics["close_position"] > 0.5
 
     def test_sentiment_agent_fear_and_greed_contrarian(self):
-        """SentimentAgent opera de forma contrária em extremos de sentimento."""
-        agent = SentimentAgent(extreme_fear_threshold=25.0, extreme_greed_threshold=75.0)
+        """SentimentAgent suporta trend_momentum (padrão) e legacy_contrarian explícito."""
+        # Modo padrão: trend_momentum
+        trend_agent = SentimentAgent()
+        assert trend_agent.evaluate({"fear_and_greed": 65.0, "fng_7d_chg": 10.0}).direction == "BUY"
+        assert trend_agent.evaluate({"fear_and_greed": 35.0, "fng_7d_chg": -10.0}).direction == "SELL"
+        assert trend_agent.evaluate({"fear_and_greed": 12.0}).direction == "HOLD"
+
+        # Modo legacy_contrarian explícito
+        agent = SentimentAgent(extreme_fear_threshold=25.0, extreme_greed_threshold=75.0, mode="legacy_contrarian")
 
         # Medo Extremo (F&G = 12) -> Sinal Contrário de BUY
         sig_fear = agent.evaluate({"fear_and_greed": 12.0})
@@ -353,7 +360,7 @@ class TestAntiLookaheadAndMethodologicalRigor:
         fng_lagged = mock_series.get(("FEAR_AND_GREED", prev_date_str))
         assert fng_lagged == 15.0  # D-1
 
-        sent_agent = SentimentAgent()
+        sent_agent = SentimentAgent(mode="legacy_contrarian")
         sig = sent_agent.evaluate({"fear_and_greed": fng_lagged})
         assert sig.direction == "BUY"
         assert sig.metrics["fear_and_greed"] == 15.0
@@ -557,7 +564,7 @@ class TestInstitutionalAgentRefinements:
         assert sig_breakout_sell.metrics.get("status") == "CLEAR"
 
     def test_signal_generator_asymmetric_poi_risk_reward(self):
-        """SignalGenerator calibra Stop Loss mais curto e Take Profit mais longo com POI / Sweeps."""
+        """structure_context é no-op depreciado: SignalGenerator mantém sempre múltiplos padrão de ATR."""
         gen = SignalGenerator(capital=10000.0, tp_atr_multiple=1.5, sl_atr_multiple=1.0)
         decision = ConsensusDecision(direction="BUY", confidence=0.85, aggregated_score=0.85)
 
@@ -566,7 +573,7 @@ class TestInstitutionalAgentRefinements:
         assert sig_std.take_profit == 50000.0 + 1500.0
         assert sig_std.stop_loss == 50000.0 - 1000.0
 
-        # Com confluência de Liquidity Sweep: R:R assimétrico 2.1 : 0.7 = 3:1!
+        # Com structure_context: mantém R:R padrão 1.5 : 1.0 (no-op depreciado)
         sig_asym = gen.generate(
             decision,
             "BTCUSDT",
@@ -575,10 +582,9 @@ class TestInstitutionalAgentRefinements:
             timestamp=1000,
             structure_context={"liquidity_sweep_bull": 1, "at_bullish_poi": 1}
         )
-        assert sig_asym.take_profit == 50000.0 + 2100.0
-        assert sig_asym.stop_loss == 50000.0 - 700.0
-        # Relação Payoff: (2100 / 700) = 3.0
-        assert (sig_asym.take_profit - 50000.0) / (50000.0 - sig_asym.stop_loss) == pytest.approx(3.0)
+        assert sig_asym.take_profit == 50000.0 + 1500.0
+        assert sig_asym.stop_loss == 50000.0 - 1000.0
+        assert (sig_asym.take_profit - 50000.0) / (50000.0 - sig_asym.stop_loss) == pytest.approx(1.5)
 
 
 
@@ -636,7 +642,7 @@ class TestDecisionAuditRegressions:
         assert s.risk_dollars < 100.0
         s2 = SignalGenerator().generate(
             dec, "BTCUSDT", 100.0, 1.0, 1, structure_context={"liquidity_sweep_bull": 1})
-        assert "2.1x ATR" in s2.rationale and "0.7x ATR" in s2.rationale
+        assert "1.5x ATR" in s2.rationale and "1.0x ATR" in s2.rationale
 
     def test_signal_generator_capital_override_zero_respected(self):
         from consensus_judge import ConsensusDecision

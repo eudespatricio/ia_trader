@@ -94,7 +94,7 @@ def _insert_flexible(conn, table, values):
 
 
 def test_counter_trend_sweeps_are_blocked():
-    agent = TechnicalAgent(confidence_threshold=0.55)
+    agent = TechnicalAgent(confidence_threshold=0.55, enable_sweep_trigger=True)
 
     r = _evaluate(
         agent,
@@ -133,7 +133,7 @@ def test_counter_trend_sweeps_are_blocked():
     ],
 )
 def test_aligned_bull_sweep_gating(volume_z, expected_direction, expected_conf):
-    agent = TechnicalAgent(confidence_threshold=0.55)
+    agent = TechnicalAgent(confidence_threshold=0.55, enable_sweep_trigger=True)
     r = _evaluate(
         agent,
         macro_bull=True,
@@ -151,7 +151,7 @@ def test_aligned_bull_sweep_gating(volume_z, expected_direction, expected_conf):
 
 
 def test_aligned_bear_sweep_gating():
-    agent = TechnicalAgent(confidence_threshold=0.55)
+    agent = TechnicalAgent(confidence_threshold=0.55, enable_sweep_trigger=True)
     r = _evaluate(
         agent,
         macro_bull=False,

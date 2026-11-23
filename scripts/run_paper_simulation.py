@@ -47,6 +47,7 @@ from data.data_loader import DataLoader
 from data.feature_engineering import FeatureEngineer
 from data.live_context_enricher import LiveContextEnricher
 from data.ml_features_v2 import enrich_v2_features_live, is_v2_feature_bundle
+from data.swing_4h_meta_sizer import Swing4HMetaSizer
 from data.swing_4h_strategy import (
     SWING_4H_BAR_MS,
     SWING_4H_COOLDOWN_BARS,
@@ -227,6 +228,7 @@ class PaperTradingDaemon:
         self.enable_live_context_enrichment: bool = not is_fake_loader
         micro_db = getattr(self.tape_agent, "db_path", MICROSTRUCTURE_DB)
         self.context_enricher = LiveContextEnricher(cache_db_path=self.engine.db_path, micro_db_path=micro_db)
+        self.swing_4h_meta_sizer = Swing4HMetaSizer(cache_db_path=self.engine.db_path, mode="shadow")
         self.require_strict_tape_majors: bool = (not is_fake_loader) if require_strict_tape_majors is None else bool(require_strict_tape_majors)
         self.use_scalp_squeeze_ml15: bool = (not is_fake_loader) if use_scalp_squeeze_ml15 is None else bool(use_scalp_squeeze_ml15)
         self.enforce_gp_btc_macro: bool = (not is_fake_loader) if enforce_gp_btc_macro is None else bool(enforce_gp_btc_macro)
@@ -1522,6 +1524,8 @@ class PaperTradingDaemon:
                 df_4h = fetched_4h.get(sym)
                 if df_4h is None:
                     df_4h = await _fetch_4h(sym)
+                    if df_4h is not None:
+                        fetched_4h[sym] = df_4h
                 if df_4h is None or len(df_4h) < SWING_4H_MIN_CLOSED_4H:
                     logger.debug(
                         f"[{sym}] SWING_4H ignorado: {0 if df_4h is None else len(df_4h)} velas 4h (< {SWING_4H_MIN_CLOSED_4H})."
@@ -1578,6 +1582,27 @@ class PaperTradingDaemon:
                 sl_price = close - sgn * SWING_4H_SL_ATR_MULT * atr
                 sl_dist = abs(close - sl_price)
                 sl_dist_pct = (sl_dist / close) if close > 0 else 0.02
+                sim_settings = self.engine.get_simulation_settings() if hasattr(self.engine, "get_simulation_settings") else {}
+                raw_meta_mode = str((sim_settings or {}).get("swing_4h_meta_sizing_mode", "shadow") or "shadow").lower()
+                meta_mode = raw_meta_mode if raw_meta_mode in ("shadow", "active") else "shadow"
+                meta_ctx: Dict[str, Any] = {}
+                if self.enable_live_context_enrichment and getattr(self, "context_enricher", None) is not None:
+                    try:
+                        meta_ctx = self.context_enricher.enrich(sym, {}, None, ts + SWING_4H_BAR_MS) or {}
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(f"[{sym}] Aviso ao enriquecer contexto meta SWING_4H: {exc}")
+                for _s in self.core_symbols:
+                    if fetched_4h.get(_s) is None:
+                        try:
+                            _s_df = await _fetch_4h(_s)
+                            if _s_df is not None:
+                                fetched_4h[_s] = _s_df
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug(f"[{_s}] Aviso ao buscar 4h para contexto meta SWING_4H: {exc}")
+                meta_res = self.swing_4h_meta_sizer.score_entry(
+                    sym, direction, fetched_4h, meta_ctx, ts + SWING_4H_BAR_MS, mode_override=meta_mode
+                )
+                risk_scale = float(meta_res.get("applied_mult", 1.0))
                 tmp_sig = TradeSignal(
                     signal_id=f"swing4h_{sym}_{bar_id}",
                     timestamp=ts,
@@ -1592,15 +1617,25 @@ class PaperTradingDaemon:
                     position_size=self.engine.paper_lot_usd,
                     risk_dollars=0.0,
                     rationale=why,
-                    metrics={"regime_alignment": True},
+                    metrics={
+                        "regime_alignment": True,
+                        "meta_sizing_mode": meta_res["mode"],
+                        "meta_prob": meta_res["meta_prob"],
+                        "meta_size_mult": meta_res["meta_size_mult"],
+                        "vol_target_mult": meta_res["vol_target_mult"],
+                        "atr_risk_parity_mult": meta_res["atr_risk_parity_mult"],
+                        "rs_14d_mult": meta_res["rs_14d_mult"],
+                        "combined_shadow_mult": meta_res["combined_shadow_mult"],
+                        "applied_mult": risk_scale,
+                    },
                 )
                 if hasattr(self.engine, "_lot_margin"):
                     est_margin, _ = self.engine._lot_margin(
-                        tmp_sig, lev, 0.25, sl_distance_pct=sl_dist_pct, risk_scale=1.0, current_price=close
+                        tmp_sig, lev, 0.25, sl_distance_pct=sl_dist_pct, risk_scale=risk_scale, current_price=close
                     )
                     notional = est_margin * lev
                 else:
-                    notional = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95) * lev
+                    notional = min(self.engine.paper_lot_usd * risk_scale, self.engine.available_margin * 0.95) * lev
                 sig = replace(
                     tmp_sig,
                     position_size=notional,
@@ -1611,6 +1646,9 @@ class PaperTradingDaemon:
                 self._fi(S4N, sym, ts, "gate_passed")
                 pos = self.engine.execute_swing_4h_signal(
                     sig, current_price=close, timestamp=ts, leverage=lev
+                )
+                self.swing_4h_meta_sizer.record_telemetry(
+                    ts, sym, direction, meta_res, position_id=pos.position_id if pos else None
                 )
                 if not pos:
                     self._fr_open(S4N, sym, ts)

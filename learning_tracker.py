@@ -22,6 +22,7 @@ Pilares:
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import logging
 import os
@@ -133,6 +134,19 @@ class LearningTracker:
                         PRIMARY KEY (regime, agent_name)
                     )
                 """)
+                # 4. Auto-calibração Bayesiana de sub-regras estruturais (Living Sub-Rule Learner - S5)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS structural_sub_rule_calibration (
+                        sub_rule TEXT PRIMARY KEY,
+                        total_samples INTEGER NOT NULL,
+                        wins INTEGER NOT NULL,
+                        posterior_wr REAL NOT NULL,
+                        cumulative_pnl REAL NOT NULL,
+                        multiplier REAL NOT NULL,
+                        is_muted INTEGER NOT NULL DEFAULT 0,
+                        updated_at INTEGER NOT NULL
+                    )
+                """)
                 conn.commit()
         except Exception as e:
             logger.warning(f"Aviso ao inicializar tabelas do LearningTracker: {e}")
@@ -208,9 +222,10 @@ class LearningTracker:
                 """, (outcome, pnl, position_id))
                 conn.commit()
                 
-            # Dispara recalibração de pesos com a nova evidência
+            # Dispara recalibração de pesos e sub-regras estruturais com a nova evidência
             self.recalibrate_agent_weights()
-            logger.info(f"Desfecho {outcome} (${pnl:+.2f}) registrado para posição {position_id}. Pesos atualizados.")
+            self.recalibrate_structural_sub_rules()
+            logger.info(f"Desfecho {outcome} (${pnl:+.2f}) registrado para posição {position_id}. Pesos e sub-regras atualizados.")
         except Exception as e:
             logger.warning(f"Erro ao atualizar desfecho de trade no LearningTracker: {e}")
 
@@ -460,6 +475,108 @@ class LearningTracker:
             logger.debug(f"Aviso ao buscar calibração de agentes: {e}")
         return calib
 
+    @staticmethod
+    def extract_structural_sub_rule(signals_list: List[Dict[str, Any]]) -> str:
+        """Extrai `structural_sub_rule` do TechnicalAgent com fallback determinístico pré-S5."""
+        if not signals_list:
+            return "normal_no_sr"
+        tech_sig: Optional[Dict[str, Any]] = None
+        for raw_sig in signals_list:
+            sig = raw_sig.to_dict() if hasattr(raw_sig, "to_dict") else (raw_sig if isinstance(raw_sig, dict) else None)
+            if sig is not None and str(sig.get("agent_name", "")) == "TechnicalAgent":
+                tech_sig = sig
+                break
+        if tech_sig is None:
+            return "normal_no_sr"
+
+        metrics = tech_sig.get("metrics")
+        metrics_dict = metrics if isinstance(metrics, dict) else {}
+        explicit_sub = metrics_dict.get("structural_sub_rule")
+        if isinstance(explicit_sub, str) and explicit_sub.strip():
+            return explicit_sub.strip()
+
+        rationale = str(tech_sig.get("rationale") or "")
+        if "Gatilho Estrutural" in rationale:
+            return "sweep_trigger"
+        direction = str(tech_sig.get("direction") or "").upper()
+        poi_sweep_true = any(
+            bool(metrics_dict.get(k))
+            for k in ("at_bullish_poi", "at_bearish_poi", "liquidity_sweep_bull", "liquidity_sweep_bear")
+        )
+        if (
+            "CONFLUÊNCIA POI/SWEEP" in rationale
+            or "CONFLUENCIA POI/SWEEP" in rationale.upper()
+            or (poi_sweep_true and direction != "HOLD")
+        ):
+            return "poi_confluence"
+        return "normal_no_sr"
+
+    def recalibrate_structural_sub_rules(
+        self, window: int = 20, alpha: float = 4.0, beta: float = 4.0,
+        min_samples: int = 5, mute_wr_threshold: float = 0.44,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Auto-calibração Bayesiana Beta(alpha, beta) em janela deslizante por `sub_rule`."""
+        now_ms = int(time.time() * 1000)
+        eff_window = max(1, int(window))
+        stats_out: Dict[str, Dict[str, Any]] = {}
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT agent_signals_json, outcome, realized_pnl FROM agent_learning_memory "
+                    "WHERE outcome IN ('WIN', 'LOSS') ORDER BY timestamp DESC, rowid DESC"
+                ).fetchall()
+                buckets: Dict[str, List[Tuple[str, float]]] = {}
+                for row in rows:
+                    try:
+                        parsed = json.loads(row["agent_signals_json"])
+                        signals_list = parsed if isinstance(parsed, list) else []
+                    except Exception:
+                        signals_list = []
+                    sub_rule = self.extract_structural_sub_rule(signals_list)
+                    bucket = buckets.setdefault(sub_rule, [])
+                    if len(bucket) < eff_window:
+                        bucket.append((str(row["outcome"]), float(row["realized_pnl"] or 0.0)))
+
+                for sub_rule, trades in buckets.items():
+                    n = len(trades)
+                    wins = sum(1 for outcome, _ in trades if outcome == "WIN")
+                    cum_pnl = float(sum(pnl for _, pnl in trades))
+                    post_wr = float((wins + alpha) / (n + alpha + beta))
+                    if n >= min_samples and post_wr < mute_wr_threshold and cum_pnl < 0.0:
+                        is_muted, multiplier = True, 0.0
+                    elif n < min_samples:
+                        is_muted, multiplier = False, 1.0
+                    else:
+                        is_muted, multiplier = False, round(min(1.25, max(0.25, post_wr / 0.50)), 4)
+
+                    conn.execute(
+                        "INSERT OR REPLACE INTO structural_sub_rule_calibration ("
+                        "sub_rule, total_samples, wins, posterior_wr, cumulative_pnl, multiplier, is_muted, updated_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (sub_rule, int(n), int(wins), post_wr, cum_pnl, float(multiplier), 1 if is_muted else 0, now_ms),
+                    )
+                    stats_out[sub_rule] = {
+                        "sub_rule": sub_rule, "total_samples": int(n), "wins": int(wins),
+                        "posterior_wr": post_wr, "cumulative_pnl": cum_pnl,
+                        "multiplier": float(multiplier), "is_muted": bool(is_muted), "updated_at": now_ms,
+                    }
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Erro ao recalibrar sub-regras estruturais: {e}")
+        return stats_out
+
+    def get_sub_rule_multipliers(self) -> Dict[str, float]:
+        """Retorna mapa `{sub_rule: float(multiplier)}` persistido no SQLite (vazio se tabela vazia)."""
+        mults: Dict[str, float] = {}
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute("SELECT sub_rule, multiplier FROM structural_sub_rule_calibration").fetchall()
+                for row in rows:
+                    mults[str(row["sub_rule"])] = float(row["multiplier"])
+        except Exception as e:
+            logger.debug(f"Aviso ao buscar multiplicadores de sub-regra: {e}")
+        return mults
+
     def retrain_daily_models(
         self,
         symbol: str = "BTCUSDT",
@@ -550,6 +667,116 @@ class ModelEvolutionManager:
         else:
             return False, f"PROMOÇÃO REJEITADA: Challenger obteve {delta_pct:+.2f}% de variação (abaixo da melhoria mínima de +{self.min_improvement_pct}%). Champion mantido em produção."
 
+    @staticmethod
+    def _extract_finite_metric(metrics: Optional[Dict[str, Any]], key: str) -> Optional[float]:
+        if not isinstance(metrics, dict) or key not in metrics or metrics[key] is None:
+            return None
+        try:
+            val = float(metrics[key])
+        except (TypeError, ValueError):
+            return None
+        return val if np.isfinite(val) else None
+
+    def evaluate_challenger_joint(
+        self,
+        champion_metrics: Dict[str, Any],
+        challenger_metrics: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        """
+        Gate conjunto Champion-Challenger orientado a calibração probabilística e discriminação OOS:
+        - Se `log_loss > 0` finito e `roc_auc_ovr` finito existirem em ambos:
+          * Rejeita se `ch_ll > cp_ll + 0.002` ou `ch_auc < cp_auc - 0.005`;
+          * Aprova se `(cp_ll - ch_ll) >= 0.001` ou `(ch_auc - cp_auc) >= 0.005` (sem regressão fora da tolerância);
+          * Caso contrário, rejeita por melhoria insuficiente.
+        - Fallback limpo para `evaluate_challenger` sobre `emitted_signals_accuracy` quando métricas conjuntas ausentes.
+        """
+        cp_ll = self._extract_finite_metric(champion_metrics, "log_loss")
+        ch_ll = self._extract_finite_metric(challenger_metrics, "log_loss")
+        cp_auc = self._extract_finite_metric(champion_metrics, "roc_auc_ovr")
+        ch_auc = self._extract_finite_metric(challenger_metrics, "roc_auc_ovr")
+
+        if (
+            cp_ll is not None
+            and ch_ll is not None
+            and cp_ll > 0.0
+            and ch_ll > 0.0
+            and cp_auc is not None
+            and ch_auc is not None
+        ):
+            eps = 1e-12
+            if (ch_ll - cp_ll) > (0.002 + eps) or (cp_auc - ch_auc) > (0.005 + eps):
+                return (
+                    False,
+                    f"PROMOÇÃO REJEITADA: regressão conjunta detectada "
+                    f"(log_loss {cp_ll:.4f} -> {ch_ll:.4f}, roc_auc_ovr {cp_auc:.4f} -> {ch_auc:.4f}).",
+                )
+            if (cp_ll - ch_ll) >= (0.001 - eps) or (ch_auc - cp_auc) >= (0.005 - eps):
+                return (
+                    True,
+                    f"PROMOÇÃO APROVADA: melhoria conjunta OOS validada "
+                    f"(log_loss {cp_ll:.4f} -> {ch_ll:.4f}, roc_auc_ovr {cp_auc:.4f} -> {ch_auc:.4f}).",
+                )
+            return (
+                False,
+                f"PROMOÇÃO REJEITADA: melhoria conjunta insuficiente "
+                f"(log_loss {cp_ll:.4f} -> {ch_ll:.4f}, roc_auc_ovr {cp_auc:.4f} -> {ch_auc:.4f}).",
+            )
+
+        cp_acc = self._extract_finite_metric(champion_metrics, "emitted_signals_accuracy") or 0.0
+        ch_acc = self._extract_finite_metric(challenger_metrics, "emitted_signals_accuracy") or 0.0
+        if ch_acc <= 0.0:
+            return False, "PROMOÇÃO REJEITADA: challenger sem acurácia positiva válida."
+        eff_cp_acc = cp_acc if cp_acc > 0.0 else ch_acc * 0.95
+        return self.evaluate_challenger(
+            champion_metric=eff_cp_acc,
+            challenger_metric=ch_acc,
+            metric_name="emitted_signals_accuracy",
+        )
+
+    @staticmethod
+    def _load_symbol_candles_from_conn(
+        conn: sqlite3.Connection,
+        sym: str,
+        timeframe: str,
+        max_candles: int,
+    ) -> pd.DataFrame:
+        """Carrega candles de `sym` tolerando esquemas sintéticos sem `quote_volume` ou `exchange`."""
+        tbl_info = conn.execute("PRAGMA table_info(candles)").fetchall()
+        if not tbl_info:
+            return pd.DataFrame()
+        col_names = {str(r[1]) for r in tbl_info}
+        sel_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+        if "quote_volume" in col_names:
+            sel_cols.append("quote_volume")
+        cols_sql = ", ".join(sel_cols)
+
+        if "exchange" in col_names:
+            df_sym = pd.read_sql(
+                f"SELECT {cols_sql} FROM candles "
+                "WHERE symbol = ? AND timeframe = ? AND (exchange = 'binance' OR exchange IS NULL) "
+                "ORDER BY timestamp DESC LIMIT ?",
+                conn,
+                params=(sym, timeframe, int(max_candles)),
+            )
+            if len(df_sym) < min(500, int(max_candles)):
+                df_sym = pd.read_sql(
+                    f"SELECT {cols_sql} FROM candles "
+                    "WHERE symbol = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT ?",
+                    conn,
+                    params=(sym, timeframe, int(max_candles)),
+                )
+        else:
+            df_sym = pd.read_sql(
+                f"SELECT {cols_sql} FROM candles "
+                "WHERE symbol = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT ?",
+                conn,
+                params=(sym, timeframe, int(max_candles)),
+            )
+
+        if df_sym.empty:
+            return df_sym
+        return df_sym.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+
     def run_retraining_cycle(
         self,
         symbol: str = "BTCUSDT",
@@ -561,19 +788,24 @@ class ModelEvolutionManager:
         multiple_sl: float = 1.2,
         confidence_threshold: float = 0.50,
         force_promote: bool = False,
+        symbols: Optional[Tuple[str, ...]] = None,
+        calibration_method: str = "platt",
     ) -> Dict[str, Any]:
         """
         Executa uma rodada completa de treinamento Walk-Forward + avaliação Champion-Challenger
-        usando os candles acumulados no SQLite local (custo zero de API).
+        usando os candles acumulados no SQLite local (custo zero de API), suportando painel
+        multi-símbolo F0_TechOnly com isolamento de rótulos Triple-Barrier por ativo.
         """
         import shutil
         from datetime import datetime, timezone
-        import pandas as pd
         from data.feature_engineering import FeatureEngineer
         from model_trainer import ModelTrainer
 
+        model_type_norm = model_type.lower()
+        cal_method_norm = (calibration_method or "none").lower()
         filename = f"{model_type}_model_v1.joblib"
         filepath = os.path.join(self.model_dir, filename)
+        champ_metrics: Dict[str, Any] = {}
         champion_acc = 0.0
         champion_global = 0.0
         if os.path.exists(filepath):
@@ -593,37 +825,51 @@ class ModelEvolutionManager:
                                 f"opera com schema v2 (feature_pipeline={fp!r}, schema_version={sv!r})."
                             ),
                         }
-                    champ_metrics = champ_payload.get("metrics", {})
-                    if isinstance(champ_metrics, dict):
+                    loaded_metrics = champ_payload.get("metrics", {})
+                    if isinstance(loaded_metrics, dict):
+                        champ_metrics = dict(loaded_metrics)
                         champion_acc = float(champ_metrics.get("emitted_signals_accuracy", 0.0))
                         champion_global = float(champ_metrics.get("global_accuracy", 0.0))
             except Exception as exc:
                 logger.warning(f"Aviso ao ler Champion atual ({filepath}): {exc}")
 
-        with _db_connect(self.db_path, timeout=15.0) as conn:
-            df = pd.read_sql(
-                "SELECT timestamp, open, high, low, close, volume, quote_volume "
-                "FROM candles WHERE symbol = ? AND timeframe = ? AND (exchange = 'binance' OR exchange IS NULL) "
-                "ORDER BY timestamp DESC LIMIT ?",
-                conn,
-                params=(symbol, timeframe, int(max_candles)),
-            )
-            if len(df) < 500:
-                df = pd.read_sql(
-                    "SELECT timestamp, open, high, low, close, volume, quote_volume "
-                    "FROM candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT ?",
-                    conn,
-                    params=(symbol, timeframe, int(max_candles)),
-                )
+        if symbols is not None:
+            candidate_symbols = tuple(dict.fromkeys(str(s) for s in symbols if s))
+        elif symbol == "BTCUSDT":
+            candidate_symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+        else:
+            candidate_symbols = (symbol,)
 
-        df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
-        if len(df) < 500:
-            return {"status": "SKIPPED", "reason": f"Candles insuficientes ({len(df)} < 500) para {symbol} {timeframe}."}
+        symbol_raw_dfs: Dict[str, pd.DataFrame] = {}
+        with closing(_db_connect(self.db_path, timeout=15.0)) as conn:
+            with conn:
+                for sym in candidate_symbols:
+                    df_sym = self._load_symbol_candles_from_conn(conn, sym, timeframe, int(max_candles))
+                    if len(df_sym) >= 500:
+                        symbol_raw_dfs[sym] = df_sym
 
+        if not symbol_raw_dfs:
+            return {
+                "status": "SKIPPED",
+                "reason": f"Candles insuficientes (< 500) para {candidate_symbols} {timeframe}.",
+            }
+
+        symbols_used = list(symbol_raw_dfs.keys())
         fe = FeatureEngineer()
-        df_feat = fe.compute_all_features(df, drop_na=False)
-        if len(df_feat) > 210:
-            df_feat = df_feat.iloc[210:].reset_index(drop=True)
+        per_symbol_feats: Dict[str, pd.DataFrame] = {}
+        for sym in symbols_used:
+            # F0_TechOnly estrito: sem merge macro/on-chain
+            df_feat = fe.compute_all_features(symbol_raw_dfs[sym], drop_na=False)
+            # Restaura NaN nativo onde não há BSL/SSL ativo (evitando falso 0.0% de distância S/R)
+            if "nearest_bsl" in df_feat.columns and "dist_resistance_pct" in df_feat.columns:
+                no_bsl = df_feat["nearest_bsl"].isna() | (df_feat["nearest_bsl"] <= 0.0)
+                df_feat.loc[no_bsl, "dist_resistance_pct"] = np.nan
+            if "nearest_ssl" in df_feat.columns and "dist_support_pct" in df_feat.columns:
+                no_ssl = df_feat["nearest_ssl"].isna() | (df_feat["nearest_ssl"] <= 0.0)
+                df_feat.loc[no_ssl, "dist_support_pct"] = np.nan
+            if len(df_feat) > 210:
+                df_feat = df_feat.iloc[210:].reset_index(drop=True)
+            per_symbol_feats[sym] = df_feat
 
         # Seleciona apenas features estacionárias/normalizadas para evitar overfitting de nível de preço
         non_stationary = {
@@ -632,11 +878,16 @@ class ModelEvolutionManager:
             "obv", "vol_sma_20", "atr_14", "nearest_bsl", "nearest_ssl",
         }
         structural_optional_nan = {"dist_resistance_pct", "dist_support_pct"}
+        ref_df = per_symbol_feats[symbols_used[0]]
         feature_cols = [
-            c for c in df_feat.select_dtypes(include=["number"]).columns
-            if c not in non_stationary and (c in structural_optional_nan or df_feat[c].notna().mean() > 0.95)
+            c for c in ref_df.select_dtypes(include=["number"]).columns
+            if c not in non_stationary
+            and all(c in d.columns for d in per_symbol_feats.values())
+            and (
+                c in structural_optional_nan
+                or all(d[c].notna().mean() > 0.95 for d in per_symbol_feats.values())
+            )
         ]
-        df_clean = df_feat[["timestamp", "open", "high", "low", "close", "atr_14"] + feature_cols].fillna(0.0)
 
         trainer = ModelTrainer(
             model_type=model_type,
@@ -645,22 +896,60 @@ class ModelEvolutionManager:
             multiple_sl=multiple_sl,
             confidence_threshold=confidence_threshold,
             models_dir=self.model_dir,
+            calibration_method=cal_method_norm,
         )
-        X, y = trainer.prepare_dataset(df_clean, feature_columns=feature_cols)
-        wf_res = trainer.train_walk_forward(X, y, n_splits=4)
+
+        is_lgbm = (model_type_norm == "lgbm")
+        base_cols = ["timestamp", "open", "high", "low", "close", "atr_14"]
+        X_parts: List[pd.DataFrame] = []
+        y_parts: List[pd.Series] = []
+        ts_parts: List[np.ndarray] = []
+
+        for sym in symbols_used:
+            df_sub = per_symbol_feats[sym][base_cols + feature_cols].copy()
+            df_sub = df_sub.replace([np.inf, -np.inf], np.nan)
+            if is_lgbm:
+                fill_zero_cols = [c for c in df_sub.columns if c not in structural_optional_nan]
+                df_sub[fill_zero_cols] = df_sub[fill_zero_cols].fillna(0.0)
+            else:
+                df_sub = df_sub.fillna(0.0)
+
+            # Gera rótulos Triple-Barrier isoladamente por símbolo (zero contaminação cruzada entre ativos)
+            X_sym, y_sym = trainer.prepare_dataset(df_sub, feature_columns=feature_cols)
+            ts_sym = df_sub.loc[X_sym.index, "timestamp"].to_numpy(dtype=np.int64)
+            X_parts.append(X_sym)
+            y_parts.append(y_sym)
+            ts_parts.append(ts_sym)
+
+        X_cat = pd.concat(X_parts, axis=0, ignore_index=True)
+        y_cat = pd.concat(y_parts, axis=0, ignore_index=True)
+        ts_cat = np.concatenate(ts_parts)
+
+        sort_order = np.argsort(ts_cat, kind="mergesort")
+        X = X_cat.iloc[sort_order].reset_index(drop=True)
+        y = y_cat.iloc[sort_order].reset_index(drop=True)
+        ts_arr = ts_cat[sort_order]
+
+        wf_res = trainer.train_walk_forward(X, y, n_splits=4, timestamps=ts_arr)
 
         challenger_acc = float(wf_res.get("emitted_signals_accuracy", 0.0))
         challenger_global = float(wf_res.get("global_accuracy", 0.0))
         challenger_f1 = float(wf_res.get("f1_macro", 0.0))
+        challenger_ll = float(wf_res.get("log_loss", 0.0))
+        challenger_auc = float(wf_res.get("roc_auc_ovr", 0.0))
+        challenger_ece = float(wf_res.get("ece", 0.0))
 
         if force_promote:
             promoted = True
-            rationale = f"PROMOÇÃO FORÇADA (Saneamento de Base Desduplicada): Challenger promovido (acc={challenger_acc:.4f}, global={challenger_global:.4f})."
+            rationale = (
+                f"PROMOÇÃO FORÇADA (Saneamento de Base Desduplicada): Challenger promovido "
+                f"(acc={challenger_acc:.4f}, global={challenger_global:.4f}, "
+                f"log_loss={challenger_ll:.4f}, roc_auc_ovr={challenger_auc:.4f})."
+            )
         else:
-            promoted, rationale = self.evaluate_challenger(
-                champion_metric=champion_acc if champion_acc > 0 else challenger_acc * 0.95,
-                challenger_metric=challenger_acc,
-                metric_name="emitted_signals_accuracy",
+            promoted, rationale = self.evaluate_challenger_joint(
+                champion_metrics=champ_metrics,
+                challenger_metrics=wf_res,
             )
 
         if promoted:
@@ -668,7 +957,16 @@ class ModelEvolutionManager:
                 ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
                 arch_path = os.path.join(self.model_dir, "archive", f"{model_type}_model_v1_{ts_tag}.joblib")
                 shutil.copy2(filepath, arch_path)
-            trainer.train_full_model(X, y, save_name=filename)
+            trainer.train_full_model(
+                X,
+                y,
+                save_name=filename,
+                timestamps=ts_arr,
+                extra_metadata={
+                    "symbols_used": list(symbols_used),
+                    "calibration_method": cal_method_norm,
+                },
+            )
             try:
                 from agents.technical_agent import TechnicalAgent
                 TechnicalAgent.invalidate_default_model_cache()
@@ -678,8 +976,10 @@ class ModelEvolutionManager:
         return {
             "status": "PROMOTED" if promoted else "RETAINED",
             "symbol": symbol,
+            "symbols_used": list(symbols_used),
             "timeframe": timeframe,
             "model_type": model_type,
+            "calibration_method": cal_method_norm,
             "samples_evaluated": int(wf_res.get("samples_evaluated", 0)),
             "features_count": len(feature_cols),
             "champion_emitted_accuracy": round(champion_acc, 4),
@@ -687,6 +987,9 @@ class ModelEvolutionManager:
             "champion_global_accuracy": round(champion_global, 4),
             "challenger_global_accuracy": round(challenger_global, 4),
             "challenger_f1_macro": round(challenger_f1, 4),
+            "challenger_log_loss": round(challenger_ll, 6),
+            "challenger_roc_auc_ovr": round(challenger_auc, 6),
+            "challenger_ece": round(challenger_ece, 6),
             "emitted_signals_count": int(wf_res.get("emitted_signals_count", 0)),
             "rationale": rationale,
         }

@@ -29,8 +29,13 @@ from agents.base_agent import BaseAgent, AgentSignal
 logger = logging.getLogger("ia_trader.technical_agent")
 
 
+NATIVE_NAN_FEATURES = {"dist_resistance_pct", "dist_support_pct"}
+
+
 class _DefaultMLEnsemble:
     """Ensemble leve em memória combinando LightGBM + Random Forest (suporta múltiplos schemas v1/v2)."""
+
+    NATIVE_NAN_FEATURES = NATIVE_NAN_FEATURES
 
     def __init__(
         self,
@@ -76,15 +81,23 @@ class _DefaultMLEnsemble:
         self.feature_names: List[str] = union_feats
         self.classes_ = np.array([0, 1, 2])
 
-    @staticmethod
-    def _safe_float(v: Any) -> float:
+    @classmethod
+    def _safe_float(cls, v: Any, key: Optional[str] = None) -> float:
+        is_native_nan = key in cls.NATIVE_NAN_FEATURES
         if v is None:
-            return 0.0
+            return np.nan if is_native_nan else 0.0
         try:
             fv = float(v)
         except (TypeError, ValueError):
-            return 0.0
-        return fv if np.isfinite(fv) else 0.0
+            return np.nan if is_native_nan else 0.0
+        if np.isfinite(fv):
+            return fv
+        return np.nan if is_native_nan else 0.0
+
+    @staticmethod
+    def _is_lightgbm_estimator(estimator: Any) -> bool:
+        base = getattr(estimator, "base_estimator", estimator)
+        return type(base).__module__.startswith("lightgbm")
 
     def predict_proba(self, X: Any) -> np.ndarray:
         X_df: Optional[pd.DataFrame] = None
@@ -94,11 +107,14 @@ class _DefaultMLEnsemble:
             X_df = X
         elif isinstance(X, dict):
             all_keys = set(self.feature_names) | set(X.keys())
-            row = {k: self._safe_float(X.get(k, 0.0)) for k in all_keys}
+            row = {
+                k: self._safe_float(X.get(k, np.nan if k in self.NATIVE_NAN_FEATURES else 0.0), key=k)
+                for k in all_keys
+            }
             X_df = pd.DataFrame([row], dtype=np.float64)
         elif isinstance(X, pd.Series):
             if any(isinstance(idx, str) for idx in X.index):
-                row = {str(k): self._safe_float(v) for k, v in X.items()}
+                row = {str(k): self._safe_float(v, key=str(k)) for k, v in X.items()}
                 X_df = pd.DataFrame([row], dtype=np.float64)
             else:
                 arr = np.asarray(X.values, dtype=np.float64).reshape(1, -1)
@@ -113,13 +129,27 @@ class _DefaultMLEnsemble:
 
         probs = []
         for m, fnames in self.models_with_features:
+            is_lgbm = self._is_lightgbm_estimator(m)
             if X_df is not None:
                 if fnames:
-                    X_sub = X_df.reindex(columns=fnames, fill_value=0.0)
-                    if X_sub.isna().any().any():
-                        X_sub = X_sub.fillna(0.0)
+                    X_sub = X_df.reindex(columns=fnames).copy()
+                    if is_lgbm:
+                        for col in X_sub.columns:
+                            col_vals = pd.to_numeric(X_sub[col], errors="coerce").to_numpy(dtype=np.float64)
+                            if col in self.NATIVE_NAN_FEATURES:
+                                X_sub[col] = np.where(np.isfinite(col_vals), col_vals, np.nan)
+                            else:
+                                X_sub[col] = np.where(np.isfinite(col_vals), col_vals, 0.0)
+                    else:
+                        X_sub = X_sub.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
                 else:
-                    X_sub = X_df
+                    X_sub = X_df.copy()
+                    for col in X_sub.columns:
+                        col_vals = pd.to_numeric(X_sub[col], errors="coerce").to_numpy(dtype=np.float64)
+                        if is_lgbm and col in self.NATIVE_NAN_FEATURES:
+                            X_sub[col] = np.where(np.isfinite(col_vals), col_vals, np.nan)
+                        else:
+                            X_sub[col] = np.where(np.isfinite(col_vals), col_vals, 0.0)
             elif arr is not None:
                 if fnames and arr.shape[1] == len(fnames):
                     X_sub = pd.DataFrame(arr, columns=fnames)
@@ -288,9 +318,11 @@ class TechnicalAgent(BaseAgent):
         weight: float = 1.0,
         confidence_threshold: float = 0.55,
         model: Optional[Any] = None,
+        enable_sweep_trigger: bool = False,
     ):
         super().__init__(name=name, weight=weight, is_backtestable=True)
         self.confidence_threshold = confidence_threshold
+        self.enable_sweep_trigger = bool(enable_sweep_trigger)
         self._uses_default_model: bool = model is None
         self.model = model if model is not None else self._get_default_model()
 
@@ -312,7 +344,7 @@ class TechnicalAgent(BaseAgent):
         # Se features brutas forem passadas e houver modelo instanciado
         if proba_buy is None and self.model is not None and "features" in context:
             features = context["features"]
-            if isinstance(self.model, _DefaultMLEnsemble) and isinstance(features, (pd.DataFrame, dict)):
+            if isinstance(self.model, _DefaultMLEnsemble) and isinstance(features, (pd.DataFrame, dict, pd.Series)):
                 probas = self.model.predict_proba(features)[0]
             elif hasattr(features, "values"):
                 feat_arr = features.values.reshape(1, -1)
@@ -482,13 +514,34 @@ class TechnicalAgent(BaseAgent):
         dist_supp_val = float(dist_supp) if dist_supp is not None and not np.isnan(float(dist_supp)) else None
         dist_res_val = float(dist_res) if dist_res is not None and not np.isnan(float(dist_res)) else None
 
-        # Ajuste de convicção e direção por Confluência Estrutural
+        # Ajuste de convicção e direção por Confluência Estrutural e sub-regras
+        sub_rule_mults = context.get("sub_rule_multipliers") or {}
+
+        def _get_sub_rule_mult(key: str, default: float = 1.0) -> float:
+            if not isinstance(sub_rule_mults, dict):
+                return default
+            raw = sub_rule_mults.get(key, default)
+            if raw is None:
+                return default
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                return default
+            return val if np.isfinite(val) else default
+
+        poi_eff_mult = max(0.0, min(1.5, _get_sub_rule_mult("poi_confluence", 1.0)))
+        sweep_mult = _get_sub_rule_mult("sweep_trigger", 1.0)
+        used_sweep_trigger = False
+
         if direction == "BUY":
             # Confluência positiva em POI ou varredura de fundo (Sweep de SSL)
             if sweep_bull or at_bullish_poi:
                 bonus = 0.15 if sweep_bull else 0.08
-                confidence = min(0.98, confidence + bonus)
-                rationale += " [CONFLUÊNCIA POI/SWEEP: Alta convicção compradora em zona de liquidez mitigada]."
+                if poi_eff_mult == 0.0:
+                    rationale += " [POI/SWEEP silenciado pelo Auto-Learner]"
+                else:
+                    confidence = min(0.98, confidence + bonus * poi_eff_mult)
+                    rationale += " [CONFLUÊNCIA POI/SWEEP: Alta convicção compradora em zona de liquidez mitigada]."
             # Penalidade se comprando direto contra resistência imediata (< 0.25%)
             if dist_res_val is not None and 0.0 < dist_res_val < 0.25 and has_valid_bsl and not sweep_bull:
                 confidence = max(0.40, confidence - 0.20)
@@ -499,8 +552,11 @@ class TechnicalAgent(BaseAgent):
             # Confluência positiva em POI vendedor ou varredura de topo (Sweep de BSL)
             if sweep_bear or at_bearish_poi:
                 bonus = 0.15 if sweep_bear else 0.08
-                confidence = min(0.98, confidence + bonus)
-                rationale += " [CONFLUÊNCIA POI/SWEEP: Alta convicção vendedora em zona de liquidez mitigada]."
+                if poi_eff_mult == 0.0:
+                    rationale += " [POI/SWEEP silenciado pelo Auto-Learner]"
+                else:
+                    confidence = min(0.98, confidence + bonus * poi_eff_mult)
+                    rationale += " [CONFLUÊNCIA POI/SWEEP: Alta convicção vendedora em zona de liquidez mitigada]."
             # Penalidade se vendendo direto contra suporte imediato (< 0.25%)
             if dist_supp_val is not None and 0.0 < dist_supp_val < 0.25 and has_valid_ssl and not sweep_bear:
                 confidence = max(0.40, confidence - 0.20)
@@ -510,14 +566,36 @@ class TechnicalAgent(BaseAgent):
         elif direction == "HOLD":
             vol_z = _clean(context.get("volume_zscore_20"))
             # Gatilho Estrutural Puro: Reversão em Liquidity Sweep mesmo sem sinal do modelo tradicional
-            if sweep_bull and (macro_bull is not False) and (dist_supp_val is None or dist_supp_val <= 0.8) and (vol_z is None or vol_z >= 0.8):
-                direction = "BUY"
-                confidence = 0.72 if (vol_z is not None and vol_z >= 1.5) else 0.68
-                rationale = "Gatilho Estrutural: Liquidity Sweep comprador detectado com rejeição de mínima (SSL varrido)."
-            elif sweep_bear and (macro_bull is not True) and (dist_res_val is None or dist_res_val <= 0.8) and (vol_z is None or vol_z >= 0.8):
-                direction = "SELL"
-                confidence = 0.72 if (vol_z is not None and vol_z >= 1.5) else 0.68
-                rationale = "Gatilho Estrutural: Liquidity Sweep vendedor detectado com rejeição de máxima (BSL varrido)."
+            if self.enable_sweep_trigger and sweep_mult > 0.0:
+                if sweep_bull and (macro_bull is not False) and (dist_supp_val is None or dist_supp_val <= 0.8) and (vol_z is None or vol_z >= 0.8):
+                    direction = "BUY"
+                    confidence = 0.72 if (vol_z is not None and vol_z >= 1.5) else 0.68
+                    rationale = "Gatilho Estrutural: Liquidity Sweep comprador detectado com rejeição de mínima (SSL varrido)."
+                    used_sweep_trigger = True
+                elif sweep_bear and (macro_bull is not True) and (dist_res_val is None or dist_res_val <= 0.8) and (vol_z is None or vol_z >= 0.8):
+                    direction = "SELL"
+                    confidence = 0.72 if (vol_z is not None and vol_z >= 1.5) else 0.68
+                    rationale = "Gatilho Estrutural: Liquidity Sweep vendedor detectado com rejeição de máxima (BSL varrido)."
+                    used_sweep_trigger = True
+
+        if used_sweep_trigger:
+            structural_sub_rule = "sweep_trigger"
+            sub_rule_multiplier = float(sweep_mult)
+        elif direction in ("BUY", "SELL") and (
+            (direction == "BUY" and (sweep_bull or at_bullish_poi))
+            or (direction == "SELL" and (sweep_bear or at_bearish_poi))
+        ):
+            structural_sub_rule = "poi_confluence"
+            sub_rule_multiplier = float(poi_eff_mult)
+        elif direction in ("BUY", "SELL") and (
+            (direction == "BUY" and (dist_res_val is None or dist_res_val >= 1.5))
+            or (direction == "SELL" and (dist_supp_val is None or dist_supp_val >= 1.5))
+        ):
+            structural_sub_rule = "open_air"
+            sub_rule_multiplier = float(_get_sub_rule_mult("open_air", 1.0))
+        else:
+            structural_sub_rule = "normal_no_sr"
+            sub_rule_multiplier = float(_get_sub_rule_mult("normal_no_sr", 1.0))
 
         return AgentSignal(
             agent_name=self.name,
@@ -537,6 +615,8 @@ class TechnicalAgent(BaseAgent):
                 "liquidity_sweep_bear": sweep_bear,
                 "dist_support_pct": dist_supp_val,
                 "dist_resistance_pct": dist_res_val,
+                "structural_sub_rule": structural_sub_rule,
+                "sub_rule_multiplier": sub_rule_multiplier,
             },
             timestamp=context.get("timestamp"),
         )
