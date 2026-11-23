@@ -547,3 +547,14 @@ Auditoria cirúrgica executada em `2026-11-13` (preservando daemons live e `2` p
   - Mantidos **100% intocados** todos os parâmetros congelados do `SWING_4H` (`Donchian40/ExitCh10`, `SL 2.5x`, `Trail 3.5x`, `|dist_sma_200|<=0.20`, `max_holding=120`, `cooldown=2`, `max_leverage=2.0`).
   - Adicionado módulo causal `data/swing_4h_meta_sizer.py` (`mode="shadow"` por padrão, `applied_mult == 1.0`) gravando telemetria (`meta_prob`, `meta_size_mult`, `vol_target_mult`, `atr_risk_parity_mult`, `rs_14d_mult`) em `swing_4h_meta_telemetry`, além de `S5-1` (auto-learner por sub-regra estrutural `Beta(4,4)` `W=20`), `S5-2/S5-3` (`Platt`/`Isotonic` + `ExtraTrees` + Multi-Symbol `F0_TechOnly` + gate conjunto `LogLoss`/`ROC-AUC`), `S5-4` (`SentimentAgent trend_momentum` + fix P0 `micro_derivs` funding) e registro formal de `Alpha-1/2/3` (**NO-GOs:** `T1-DDThrottle`, `T3 EWMAC`, `T4 Squeeze`, `T5 Capitulation`, `T6a/T6b`, `T7b ORB`, `T8`, `T9`, `T10`, `T12`).
 
+---
+
+# Experimento E_PATCH_S6_ONDA1 — Auditoria SCALP 15m / Cap RSI 1h (`S6-1`) & Filtro TradFi `GOLDEN_POT` (`S6-2`, `v1.0.12`, 2026-11-23)
+
+- **`TRIAL_S6_01` (`SCALP 15m` Squeeze Ablação OOS — `98.116` barras BTC+ETH+SOL, split `2026-07-29`, embargo `10` barras, `SL 1.4x / TP 2.2x`, `16 bps` RT):**
+  - Full Squeeze (`N=261`, `IS=174 / OOS=87`): `Prod (6-ag conf>=0.70, RSI<=75)` obteve **OOS `n=37, WR 59.5%, PF 1.56, +10.30R (+0.278R)`**, superando `Intraday+RSI75` (`PF 1.26, +4.52R`), `Intraday NoRSI` (`PF 1.06, +1.32R`), `RiskOnly+RSI75` (`PF 1.38, +9.64R`) e `RiskOnly` (`PF 1.21, +6.43R`). Pós-`ML15m` purgado (`65.683` IS rows, `OOS N=11`): `Prod` manteve **OOS `PF 1.18 (+0.41R)`**, enquanto `conf>=0.55` (`PF 0.78, -0.75R`), `NoRSI75` (`PF 0.77, -0.80R`) e `RiskOnly` (`PF 0.89, -0.66R`) colapsaram (`RSI > 75/< 25` OOS: `n=5, WR 20%, PF 0.31, -3.24R`) -> **NO-GO** (preservar gate atual).
+- **`TRIAL_S6_02` (`DAY_TRADE 1h` Teto `RSI > 75 / < 25` — `2020–2026`, `IS<=2024 | 7d | OOS>=2025`, `SL 1.0x / TP 1.5x`, `16 bps` RT):**
+  - Entradas em extremo `RSI > 75 (bull) / < 25 (bear)` registraram IS `PF 0.928 (-238.0R)` e **OOS `n=2.143, WR 39.6%, PF 0.730, -395.6R`**. Relaxar `25..75 -> 20..80 / 15..85 / 0..100` piorou o OOS em `-178.4R` a `-208.7R` -> **NO-GO** (manter `TechnicalAgent` intacto).
+- **`TRIAL_S6_03` (`S6-2` Classificação Dinâmica TradFi `GOLDEN_POT` — GO):**
+  - Auditoria ao vivo em `/fapi/v1/exchangeInfo` identificou `253` contratos não-cripto (`TradFi`/`EQUITY`/`COMMODITY`/`PREMARKET`/`INDEX`), incluindo `28+` ativos que vazavam da lista estática de `42` nomes. Implementada unificação em `NON_CRYPTO_BASE_EXCLUSIONS` (`85` bases) + cache TTL `6h` via `exchangeInfo` (backoff `5m`) mantendo 100% dos cripto/RWA `COIN` (`PAXG`, `XAUT`, `MANTRA`, `CFG`). Referência viva: `docs/PLANO_EVOLUTIVO_S6.md`.
+

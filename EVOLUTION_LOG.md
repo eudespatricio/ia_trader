@@ -29,6 +29,11 @@
 
 ## 📜 Histórico Detalhado de Entregas e Iterações
 
+### [Patch S6 (Onda 1) - v1.0.12: Filtro Dinâmico TradFi no `GOLDEN_POT` & Validação OOS de Gates `SCALP`/`1h`] - 2026-11-23
+- **`S6-2` Exclusão Dinâmica + Estática de Perps TradFi (`agents/golden_pot_agent.py`, `scripts/run_paper_simulation.py`):** Fonte única `NON_CRYPTO_BASE_EXCLUSIONS` (`85` bases) + cache `/fapi/v1/exchangeInfo` (TTL `6h`, backoff `5m`) filtrando todos os perps `TradFi`/`EQUITY`/`COMMODITY`/`PREMARKET`/`INDEX` (`253` na Binance) tanto no scanner Binance quanto no fallback Bitget, preservando cripto/RWA `COIN` (`PAXG`, `XAUT`, `MANTRA`, `CFG`).
+- **`S6-1` Validação OOS Anti-Overfitting (`NO-GO`):** Ablação purgada em `98k` barras `15m` (`OOS PF 1.56` na produção vs `1.26`/`1.06`/`1.21` ao relaxar comitê/`Macro+OnChain`/`RSI>75`) e backtest `2020–2026` no `1h` (`RSI > 75/< 25` perdeu `-395.6R` OOS, `PF 0.730`) provaram que os filtros atuais evitam armadilhas de exaustão.
+- **Documentação S6:** Criado [PLANO_EVOLUTIVO_S6.md](file:///home/eudespatricio/ia_trader/docs/PLANO_EVOLUTIVO_S6.md) e atualizados [HIPOTESES_PRE_REGISTRADAS.md](file:///home/eudespatricio/ia_trader/docs/HIPOTESES_PRE_REGISTRADAS.md), [gaps.md](file:///home/eudespatricio/ia_trader/docs/gaps.md) e [CHANGELOG.md](file:///home/eudespatricio/ia_trader/CHANGELOG.md).
+
 ### [Patch Final S5 - v1.0.11: Auto-Learner Estrutural, ML Calibrado, Reforma Sentiment, Fix Live Funding & SWING_4H Meta-Sizer (`shadow`)] - 2026-11-23
 - **`S5-1` Auto-Aprendizado por Sub-Regra (`agents/technical_agent.py`, `learning_tracker.py`, `core.py`, `signal_generator.py`):** `enable_sweep_trigger=False` por padrão, depreciação de `structure_context`, tabela `structural_sub_rule_calibration` com shrinkage `Beta(4,4)` em `W=20` e auto-silenciamento (`n>=5, post_wr<0.44, pnl<0`; replay real `+$821.24 -> +$1,317.32`).
 - **`S5-2`/`S5-3` ML `1h` Multi-Symbol & Calibração (`model_trainer.py`, `learning_tracker.py`, `agents/technical_agent.py`):** Treino `BTC+ETH+SOL` com Triple-Barrier isolado e embargo temporal, `NaN` nativo S/R só para LightGBM, LGBM raso (`depth=4`), `ExtraTrees`, `CalibratedMulticlassModel` (`Platt`/`Isotonic`, ECE ~15× menor OOS) e gate conjunto `log_loss` + `roc_auc_ovr`.

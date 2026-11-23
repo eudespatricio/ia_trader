@@ -44,6 +44,27 @@ STABLECOIN_EXCLUSIONS = {
     "USDPUSDT", "AEURUSDT", "DAIUSDT", "USDTUSDC", "USDTCAD"
 }
 
+NON_CRYPTO_SUBTYPES = frozenset({
+    "TRADFI", "PRE-IPO", "PRE-MARKET", "STOCK", "ETF", "EQUITY", "COMMODITY"
+})
+
+GP_QUOTE_SUFFIXES = ("USDT", "USDC", "USD", "PERP")
+
+# Lista estática canônica de ativos-base não-cripto (TradFi, ações, ETFs, pré-IPO, commodities e índices)
+# Nota: Criptoativos COIN lastreados/RWA (PAXG, XAUT, MANTRA, CFG, AIGENSYN, etc.) NÃO entram aqui.
+NON_CRYPTO_BASE_EXCLUSIONS = frozenset({
+    # 42 originais (GP_EXCLUDED_BASE_ASSETS)
+    "SKHYNIX", "SKHY", "SAMSUNG", "KORU", "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
+    "TSLA", "NVDA", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NFLX", "AMD", "INTC",
+    "COIN", "MSTR", "HOOD", "PLTR", "BABA", "TSM", "SPY", "QQQ", "IWM", "GLD", "SLV", "USO",
+    "SNXX", "SNDK", "UNITREE", "OPENAI", "SPACEX", "ANTHROPIC", "STRIPE", "FIGMA",
+    # Expansão S6-2 (TradFi, equities, ETFs, pré-IPO, commodities e índice sintético BTCDOM)
+    "MU", "MUU", "MRVL", "NVDL", "CRCL", "IREN", "NBIS", "EWY", "EWJ", "NATGAS", "CL", "BZ",
+    "COPPER", "XAU", "XAG", "XPT", "XPD", "DRAM", "CBRS", "SPCX", "ZHIPU", "MINIMAX", "ZHONGJI",
+    "ANT", "BE", "AVGO", "QCOM", "ORCL", "DIS", "UBER", "CSCO", "HD", "WMT", "JPM", "BRKB",
+    "RKLB", "CRWV", "PAYP", "FLNC", "USAR", "LITE", "BTCDOM", "V",
+})
+
 
 @dataclass
 class GoldenPotOpportunity:
@@ -90,7 +111,74 @@ class GoldenPotAgent:
 
         self._cached_scan: Optional[Dict[str, Any]] = None
         self._last_scan_time: float = 0.0
+        self._non_crypto_symbols: frozenset[str] = frozenset()
+        self._non_crypto_loaded_at: float = 0.0
+        self._non_crypto_ttl_s: float = 21600.0
+        self._non_crypto_retry_until: float = 0.0
         self._init_database_table()
+
+    @staticmethod
+    def extract_base_asset(symbol: str) -> str:
+        """Extrai o ativo-base normalizando separadores e removendo um único sufixo de cotação."""
+        s = str(symbol or "").strip().upper().replace("-", "").replace("_", "").replace("/", "")
+        for q in GP_QUOTE_SUFFIXES:
+            if s.endswith(q) and len(s) > len(q):
+                return s[: -len(q)]
+        return s
+
+    @staticmethod
+    def classify_non_crypto_from_exchange_info(exchange_info: Any) -> frozenset[str]:
+        """Classifica símbolos não-cripto a partir de underlyingType/underlyingSubType do exchangeInfo."""
+        if not isinstance(exchange_info, dict):
+            return frozenset()
+        symbols_raw = exchange_info.get("symbols", [])
+        if not isinstance(symbols_raw, list):
+            return frozenset()
+        non_crypto = set()
+        for entry in symbols_raw:
+            if not isinstance(entry, dict):
+                continue
+            sym = str(entry.get("symbol") or "").strip().upper()
+            if not sym:
+                continue
+            utype = str(entry.get("underlyingType") or "").strip().upper()
+            raw_subs = entry.get("underlyingSubType") or []
+            if isinstance(raw_subs, str):
+                raw_subs = [raw_subs]
+            subs = {str(x).strip().upper() for x in raw_subs if x} if isinstance(raw_subs, (list, tuple, set, frozenset)) else set()
+            if (utype and utype != "COIN") or bool(subs & NON_CRYPTO_SUBTYPES):
+                non_crypto.add(sym)
+        return frozenset(non_crypto)
+
+    async def refresh_non_crypto_symbols(self, force: bool = False) -> frozenset[str]:
+        """Atualiza o cache dinâmico de símbolos não-cripto via Binance /fapi/v1/exchangeInfo (TTL 6h)."""
+        now = time.monotonic()
+        if not force:
+            if (self._non_crypto_loaded_at > 0.0 and (now - self._non_crypto_loaded_at) < self._non_crypto_ttl_s) or (
+                now < self._non_crypto_retry_until
+            ):
+                return self._non_crypto_symbols
+
+        url = f"{self.binance.FUTURES_URL}/fapi/v1/exchangeInfo"
+        try:
+            payload = await self.binance.http.get_json(url)
+            if isinstance(payload, dict) and isinstance(payload.get("symbols"), list):
+                self._non_crypto_symbols = self.classify_non_crypto_from_exchange_info(payload)
+                self._non_crypto_loaded_at = time.monotonic()
+                self._non_crypto_retry_until = 0.0
+            else:
+                logger.warning("Payload inválido em /fapi/v1/exchangeInfo; preservando cache não-cripto anterior.")
+                self._non_crypto_retry_until = time.monotonic() + 300.0
+        except Exception as e:
+            logger.warning(f"Falha ao consultar /fapi/v1/exchangeInfo ({e}); preservando cache não-cripto anterior.")
+            self._non_crypto_retry_until = time.monotonic() + 300.0
+
+        return self._non_crypto_symbols
+
+    def is_non_crypto_symbol(self, symbol: str) -> bool:
+        """Retorna True se o símbolo for classificado como não-cripto (cache dinâmico ou lista estática)."""
+        sym_u = str(symbol or "").strip().upper()
+        return sym_u in self._non_crypto_symbols or self.extract_base_asset(sym_u) in NON_CRYPTO_BASE_EXCLUSIONS
 
     async def close(self) -> None:
         """Encerra graciosamente as conexões HTTP subjacentes."""
@@ -133,6 +221,8 @@ class GoldenPotAgent:
         Coleta dados 24h de todo o universo de futuros USDT em chamada única.
         Tenta Binance Futuros como fonte primária; usa Bitget Futuros como fallback.
         """
+        await self.refresh_non_crypto_symbols()
+
         # 1. Fonte Primária: Binance Futuros (/fapi/v1/ticker/24hr)
         try:
             url = f"{self.binance.FUTURES_URL}/fapi/v1/ticker/24hr"
@@ -142,7 +232,7 @@ class GoldenPotAgent:
 
                 for item in data:
                     sym = str(item.get("symbol", "")).upper()
-                    if not sym.endswith("USDT") or sym in STABLECOIN_EXCLUSIONS:
+                    if not sym.endswith("USDT") or sym in STABLECOIN_EXCLUSIONS or self.is_non_crypto_symbol(sym):
                         continue
                     try:
                         last_p = float(item.get("lastPrice", 0.0))
@@ -179,7 +269,7 @@ class GoldenPotAgent:
                 normalized = []
                 for item in items:
                     sym = str(item.get("symbol", "")).upper()
-                    if not sym.endswith("USDT") or sym in STABLECOIN_EXCLUSIONS:
+                    if not sym.endswith("USDT") or sym in STABLECOIN_EXCLUSIONS or self.is_non_crypto_symbol(sym):
                         continue
                     try:
                         last_p = float(item.get("lastPr", 0.0))

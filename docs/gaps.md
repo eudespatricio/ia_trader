@@ -1,6 +1,17 @@
-# Gaps, Auditoria & Roadmap — Patch Final S5 (`v1.0.11`)
+# Gaps, Auditoria & Roadmap — Patch S6 (Onda 1 `v1.0.12`) & S5 (`v1.0.11`)
 
-Patch Final S5 (`v1.0.11`, `2026-11-23`) entrega **S5-1..S5-5** + correção P0 de funding ao vivo, todos aprovados em backtests OOS zero-leakage e validados com **`689 passed, 1 skipped, 6 xfailed`** + revisão cruzada DeepSeek em 4 chunks sem truncamento (`0` P0).
+Patch S6 Onda 1 (`v1.0.12`, `2026-11-23`) resolve o vazamento de perps TradFi no `GOLDEN_POT` (`S6-2`) e encerra empiricamente em OOS a hipótese de relaxamento do comitê/`RSI>75` no `SCALP 15m` e `DAY_TRADE 1h` (`S6-1`), preservando produção protegida. Detalhes completos em [PLANO_EVOLUTIVO_S6.md](file:///home/eudespatricio/ia_trader/docs/PLANO_EVOLUTIVO_S6.md).
+
+---
+
+## 0-s6. Auditoria Pós-Pump (`2026-11-23 11:55 BRT`) — Patch S6 Onda 1 (`v1.0.12`)
+
+1. **`S6-2` Filtro Dinâmico TradFi no `GOLDEN_POT` (`agents/golden_pot_agent.py`, `scripts/run_paper_simulation.py`) [RESOLVED]:**
+   - `GP_EXCLUDED_BASE_ASSETS` (`42` estáticos) deixava vazar `28+` perps TradFi (`MUUSDT`, `MUUUSDT`, `ZHONGJIUSDT`, `ZHIPUUSDT`, `NATGASUSDT`, `DRAMUSDT`, `NBISUSDT`, `EWYUSDT`, etc.) dos `253` listados em `/fapi/v1/exchangeInfo`.
+   - Criada fonte única `NON_CRYPTO_BASE_EXCLUSIONS` (`85` bases) + cache dinâmico via `/fapi/v1/exchangeInfo` (TTL `6h`, backoff `5m` em erro) filtrando Binance e fallback Bitget sem bloquear tokens cripto/RWA `COIN` (`PAXG`, `XAUT`, `MANTRA`, `CFG`).
+2. **`S6-1` Conflito de Camadas `SCALP 15m` / `RSI > 75` (`15m` / `1h`) [NO-GO EMPÍRICO]:**
+   - `SCALP 15m` (`N=261` Full Squeeze / `98k` barras OOS): Produção (`6-ag conf>=0.70, RSI<=75`) foi superior em IS e OOS (`OOS PF 1.56, +10.30R`) vs remover `Macro+OnChain` (`PF 1.26, +4.52R`), remover `RSI>75` (`PF 1.06, +1.32R`) ou usar `RiskOnly` (`PF 1.21, +6.43R`). Entradas em `RSI > 75 / < 25` no `15m` tiveram `PF 0.59 (-2.86R)` no Full Squeeze OOS e `PF 0.31 (-3.24R)` pós-`ML15m`.
+   - `DAY_TRADE 1h`: Trades isolados em `RSI > 75 / < 25` perderam `-238.0R` (IS) e **`-395.6R` (`PF 0.730`, `n=2.143`)** em OOS `2025–2026`. Filtros originais preservados intactos.
 
 ---
 

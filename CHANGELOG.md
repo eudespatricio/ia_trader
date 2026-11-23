@@ -4,6 +4,18 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.12] - 2026-11-23 - Patch S6 (Onda 1): Filtro Dinâmico TradFi no `GOLDEN_POT` & Homologação OOS de Gates `SCALP`/`1h`
+
+### Added
+- **Filtro Dinâmico TradFi / Não-Cripto (`S6-2` em `agents/golden_pot_agent.py`, `scripts/run_paper_simulation.py`):** Novo classificador `classify_non_crypto_from_exchange_info()`, normalizador único `extract_base_asset()`, atualização TTL `6h` via `/fapi/v1/exchangeInfo` (backoff `5m` em erro sem silenciar exceções) e `is_non_crypto_symbol()` filtrando Binance e fallback Bitget sem falsos positivos em tokens `COIN`/`RWA` (`PAXG`, `XAUT`, `MANTRA`, `CFG`).
+- **Suíte TDD Independente (`tests/test_patch_s6_onda1.py`) & Plano S6 (`docs/PLANO_EVOLUTIVO_S6.md`):** Cobertura contratual em janela limpa + registro formal das ablações OOS `S6-1a` (`SCALP 15m`, `98k` barras) e `S6-1b` (`DAY_TRADE 1h`, `2020–2026`).
+
+### Changed
+- **Fonte Única de Exclusões Estáticas (`scripts/run_paper_simulation.py`):** `GP_EXCLUDED_BASE_ASSETS` passa a referenciar `NON_CRYPTO_BASE_EXCLUSIONS` (`85` ativos-base, cobrindo `MU`, `MUU`, `ZHONGJI`, `ZHIPU`, `NATGAS`, `DRAM`, `NBIS`, `EWY`, `MRVL`, `NVDL`, etc.), com guarda unificada `_is_gp_symbol_excluded()` em `evaluate_golden_pot_opportunities()`.
+- **Preservação Comprovada em OOS (`S6-1` NO-GO):** `_committee_gate` + teto `RSI > 75 / < 25` no `SCALP 15m` (`OOS PF 1.56 vs 1.26/1.06/1.21`) e no `DAY_TRADE 1h` (`OOS extremos PF 0.730, -395.6R`) mantidos intactos após validação empírica zero-leakage.
+
+---
+
 ## [1.0.11] - 2026-11-23 - Patch Final S5: Auto-Learner Estrutural, ML Multi-Symbol Calibrado, Reforma SentimentAgent, Fix Funding Live & SWING_4H Shadow Meta-Sizer
 
 ### Added

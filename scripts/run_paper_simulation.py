@@ -57,7 +57,7 @@ from data.swing_4h_strategy import (
     resample_1h_to_closed_4h,
     should_exit_swing_4h_channel,
 )
-from agents.golden_pot_agent import GoldenPotAgent
+from agents.golden_pot_agent import GoldenPotAgent, GP_QUOTE_SUFFIXES, NON_CRYPTO_BASE_EXCLUSIONS
 from agents.tape_reading_agent import MICROSTRUCTURE_DB, TapeReadingAgent
 from agents.technical_agent import TechnicalAgent, _disable_estimator_parallelism
 from signal_generator import TradeSignal
@@ -156,16 +156,10 @@ GP_KNIFE_RSI_HIGH = 80.0            # simétrico (SHORT) se close > sma_200
 GP_KNIFE_ATR_MOVE = 3.0             # movimento > X ATR na última hora também caracteriza tendência forte
 GP_KNIFE_LOOKBACK_BARS = 4          # 4 barras de 15m = 1h
 GP_LOW_LIQUIDITY_USD = 50_000_000.0  # volume 24h abaixo disso => alavancagem forçada a 1x
-GP_QUOTE_SUFFIXES = ("USDT", "USDC", "USD", "PERP")
-# Lista de exclusão configurável: ações/ETFs/índices tokenizados (perps TradFi) - fora do universo GP,
+# Lista de exclusão canônica: ações/ETFs/índices/commodities tokenizados (perps TradFi) - fora do universo GP,
 # pois não seguem a dinâmica cripto 24/7 (gaps de sessão, liquidez fina fora do pregão).
-# Casamento por ativo-base exato (após remover o sufixo da cotação). Edite aqui para ampliar.
-GP_EXCLUDED_BASE_ASSETS = frozenset({
-    "SKHYNIX", "SKHY", "SAMSUNG", "KORU", "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
-    "TSLA", "NVDA", "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NFLX", "AMD", "INTC",
-    "COIN", "MSTR", "HOOD", "PLTR", "BABA", "TSM", "SPY", "QQQ", "IWM", "GLD", "SLV", "USO",
-    "SNXX", "SNDK", "UNITREE", "OPENAI", "SPACEX", "ANTHROPIC", "STRIPE", "FIGMA",
-})
+# Casamento por ativo-base exato (após remover o sufixo da cotação). Fonte única em golden_pot_agent.py.
+GP_EXCLUDED_BASE_ASSETS = NON_CRYPTO_BASE_EXCLUSIONS
 
 
 class PaperTradingDaemon:
@@ -525,16 +519,19 @@ class PaperTradingDaemon:
     # ------------------------------------------------------------------
     @staticmethod
     def _gp_base_asset(symbol: str) -> str:
-        s = symbol.upper().replace("-", "").replace("_", "").replace("/", "")
-        for q in GP_QUOTE_SUFFIXES:
-            if s.endswith(q) and len(s) > len(q):
-                return s[: -len(q)]
-        return s
+        return GoldenPotAgent.extract_base_asset(symbol)
 
     @classmethod
     def is_gp_excluded_symbol(cls, symbol: str) -> bool:
         """True para perps de ações/ETFs tokenizados (lista GP_EXCLUDED_BASE_ASSETS)."""
         return cls._gp_base_asset(symbol) in GP_EXCLUDED_BASE_ASSETS
+
+    def _is_gp_symbol_excluded(self, symbol: str) -> bool:
+        """True se o símbolo está na lista estática ou no cache dinâmico não-cripto do scanner."""
+        return bool(
+            self.is_gp_excluded_symbol(symbol)
+            or getattr(self.scanner, "is_non_crypto_symbol", lambda _: False)(symbol)
+        )
 
     @staticmethod
     def _regime_aligned(direction: str, latest: pd.Series) -> Optional[bool]:
@@ -982,7 +979,7 @@ class PaperTradingDaemon:
             if not s or s in seen_syms:
                 continue
             seen_syms.add(s)
-            if self.is_gp_excluded_symbol(s):
+            if self._is_gp_symbol_excluded(s):
                 self._fr(GPN, s, nom, "excluded_symbol")
             else:
                 candidates.append(p)
