@@ -1,6 +1,21 @@
-# Gaps, Auditoria & Roadmap — Patch S6 (Onda 1 `v1.0.12`) & S5 (`v1.0.11`)
+# Gaps, Auditoria & Roadmap — Patch S6 (Onda 2 `v1.0.13`, Onda 1 `v1.0.12`) & S5 (`v1.0.11`)
 
-Patch S6 Onda 1 (`v1.0.12`, `2026-11-23`) resolve o vazamento de perps TradFi no `GOLDEN_POT` (`S6-2`) e encerra empiricamente em OOS a hipótese de relaxamento do comitê/`RSI>75` no `SCALP 15m` e `DAY_TRADE 1h` (`S6-1`), preservando produção protegida. Detalhes completos em [PLANO_EVOLUTIVO_S6.md](file:///home/eudespatricio/ia_trader/docs/PLANO_EVOLUTIVO_S6.md).
+Patch S6 Onda 2 (`v1.0.13`, `2026-11-24`) resolve o deadlock matemático pré-S5 em `BEAR_TREND` (`S6-3`) e destrava os baselines ML calibrados `Platt` (`S6-4`), somando-se à Onda 1 (`S6-2`/`S6-1`, `v1.0.12`). Detalhes completos em [PLANO_EVOLUTIVO_S6.md](file:///home/eudespatricio/ia_trader/docs/PLANO_EVOLUTIVO_S6.md).
+
+---
+
+## 0-s6-2. Auditoria Pós-S5 (`2026-11-24 13:43 BRT`) — Patch S6 Onda 2 (`v1.0.13`)
+
+1. **`S6-3` Deadlock Auto-Travante de Calibração em `BEAR_TREND` (`learning_tracker.py`) [RESOLVED]:**
+   - `agent_regime_weights`/`agent_regime_calibration` retenham `n=16` trades pré-S5 de `BEAR_TREND` (`19/11`, `acc=31.25%`), fazendo `ConsensusJudge` travar `TechnicalAgent` e `OrderFlowAgent` em `0.55` e limitar consenso unânime em `0.65–0.698 < 0.70` (`32` `reject:low_confidence` em `DAY_TRADE` nas 25h e deadlock de `1.673,9d` no OOS `V0_PROD`).
+   - Implementados isolamento estrito por `pilot_start_utc` (`max(s3_epoch_ms, pilot_ms)` sem fallback pré-piloto) e TTL `72h` anti-deadlock com quebra de cluster por silêncio (`CALIBRATION_STALE_TTL_MS`), vencedor empírico no OOS 5 anos (`V1_TTL_72H` `BEAR OOS PF 0.77` vs `V2_TTL72_UNAN3 PF 0.69` / `V3_NO_DAMPEN_TREND PF 0.75`), mantendo `consensus_judge.py` e `S5-1` (`sweep_trigger` mutado) intactos.
+2. **`S6-4` Trava de Baseline Legado no `ModelEvolutionManager` (`models/*.joblib`) [RESOLVED]:**
+   - Champions de `08/11` (`rf`) e `17/11` (`lgbm`) sem chaves `log_loss`/`roc_auc_ovr` em `metrics` forçavam `evaluate_challenger_joint()` ao fallback `emitted_signals_accuracy` e barravam Challengers multi-symbol `Platt`.
+   - Validada superioridade OOS zero-leakage em `2025–2026` (`LGBM LL 1.0760->1.0733, AUC 0.5847->0.5870`) e pós-`18/11` (`LGBM LL 1.0837->1.0752`, `RF LL 1.0790->1.0720`), executada troca única com `force_promote=True` (`lgbm LL=1.0746/AUC=0.5871`, `rf LL=1.0751/AUC=0.5869`) com arquivamento prévio.
+3. **Notas P2 Não-Bloqueantes (Revisão `review-s6-2` & Telemetria Live):**
+   - **P2 Timeout `1.0s` Árbitro LLM:** `10` timeouts de `1.0s` observados em 36,5h com `Ollama` ativo, caindo limpo no fallback determinístico (monitorar latência de cold-start local).
+   - **P2 Higiene/Alinhamento em `LearningTracker`:** Unificar `S3_EPOCH_MS = 1793577600000` entre `_is_regime_calibration_stale_or_empty` e `recalibrate_agent_weights`, documentar âncora sintética pré-S3 (`pilot_ms is None` e `MAX(ts) < S3_EPOCH_MS`), e avaliar janela `LIMIT 30` por regime vs global caso um regime domine o histórico recente.
+   - **P2 Higiene de Teste (`tests/test_patch_s6_onda2.py`):** Migrar `sqlite3.connect` em helpers de teste para `closing(...)`, adicionar `gc.collect()` antes da medição `/proc/self/fd` e cobrir fronteira exata `== TTL`.
 
 ---
 

@@ -1,7 +1,7 @@
 # Plano Evolutivo S6 — Pacote Evolutivo Contínuo
 
 **Data de abertura:** `2026-11-23`  
-**Status:** **Onda S6.1 (`v1.0.12`) IMPLEMENTADA & EM HOMOLOGAÇÃO**  
+**Status:** **Onda S6.2 (`v1.0.13`) IMPLEMENTADA (2026-11-24)** — Onda S6.1 (`v1.0.12`) em produção  
 **Regra Mandatória:** *Toda alteração de lógica ou filtro exige prova empírica zero-leakage em OOS (custos estresse + embargo) antes de ir para produção, testes independentes em janela limpa e revisão cross-model.*
 
 ---
@@ -15,6 +15,28 @@
 - **Implementação Cirúrgica:**
   1. [golden_pot_agent.py](file:///home/eudespatricio/ia_trader/agents/golden_pot_agent.py#L47-L182): Fonte única `NON_CRYPTO_BASE_EXCLUSIONS` (`85` ativos-base estáticos, preservando tokens `COIN`/`RWA` cripto como `PAXG`, `XAUT`, `MANTRA`, `CFG`, `AIGENSYN`), classificadores `extract_base_asset()` e `classify_non_crypto_from_exchange_info()`, cache dinâmico via `/fapi/v1/exchangeInfo` com TTL `6h` e backoff de falha `5m` em `refresh_non_crypto_symbols()`, e filtro `is_non_crypto_symbol()` aplicado tanto no loop Binance quanto no fallback Bitget em `fetch_market_universe_tickers()`.
   2. [run_paper_simulation.py](file:///home/eudespatricio/ia_trader/scripts/run_paper_simulation.py#L159-L162): `GP_EXCLUDED_BASE_ASSETS = NON_CRYPTO_BASE_EXCLUSIONS` (eliminando duplicação) e `_is_gp_symbol_excluded()` na entrada de `evaluate_golden_pot_opportunities()`.
+
+---
+
+## 1-B. Onda S6.2 (`v1.0.13`, `2026-11-24`) — Destravamento Pós-S5 (`GO`)
+
+### Item `S6-3` — Anti-Deadlock de Calibração por Regime: Isolamento por Época (`pilot_start_utc`) + TTL `72h` ([`learning_tracker.py`](file:///home/eudespatricio/ia_trader/learning_tracker.py)) **[IMPLEMENTADO]**
+
+- **Diagnóstico (`2026-11-24 13:43 BRT`):** `agent_regime_weights` e `agent_regime_calibration` ainda carregavam `n=16` trades pré-S5 em `BEAR_TREND` (último em `19/11 19:00 BRT`, `TechnicalAgent` e `OrderFlowAgent` com `acc=31.25%`). Com `acc < 35%`, `ConsensusJudge._apply_confidence_calibration()` travava ambos em `0.55`, gerando teto matemático de `0.65–0.698 < 0.70` mesmo em unanimidade (`SOLUSDT 12:00 BRT`: `4/5 SELL` bloqueado em `0.6537`, `32` `reject:low_confidence` em `DAY_TRADE` nas últimas 25h) — um **deadlock auto-travante** sem recuperação possível sem abrir novos trades em `BEAR_TREND`.
+- **Prova Empírica Zero-Leakage (`TRIAL_S6_04`):**
+  - **Replay Live 24h (`23/11 13:00 → 24/11 12:00 BRT`, `16 bps` RT, `SL 1.0x / TP 1.5x ATR`):** `V0_PROD` (`1` sinal `>=0.70`, `30` `low_conf`, `+1.38R`) -> **`V1_CLEAN_EPOCH`** (`pilot_start_utc` preservando `S5-1`: **`27` sinais `>=0.70`, `0` `low_conf`, `6W/1L/2open`, `+8.10R`**). No candle `SOLUSDT 12:00 BRT`, consenso saltou de `0.6537` para **`0.7936`** (`-0.53 <= -0.30 | Unânime`).
+  - **Simulação Causal em Loop Fechado (`2022–2026`, `64.260` barras `2h`, `IS 2022–24 | 7d | OOS 2025–26`, `16 bps` RT):**
+    - `V0_PROD`: deadlock permanente de **`1.673,9` dias** (`OOS n=0`, `5.360` bloqueios em `BEAR_TREND`).
+    - **`V1_TTL_72H` (Vencedor):** Limita seca máxima em `BEAR_TREND` a **`3.0d`** e entrega **melhor `PF` OOS em `BEAR_TREND` (`PF 0.77`, `WR 41.3%`, `-62.3R`)** vs `48h` (`PF 0.65, -105.5R`), `120h` (`PF 0.49, -78.1R`), `168h` (`PF 0.69, -44.0R`), **`V2_TTL72_UNAN3` (`NO-GO`: `PF 0.69, -112.0R`)** e **`V3_NO_DAMPEN_TREND` (`NO-GO`: `PF 0.75, -297.1R`)**.
+- **Implementação Cirúrgica:** Apenas em [`learning_tracker.py`](file:///home/eudespatricio/ia_trader/learning_tracker.py) (mantendo `consensus_judge.py` e `recalibrate_structural_sub_rules()` 100% intactos): constante `CALIBRATION_STALE_TTL_MS = 72 * 3_600_000`, isolamento estrito `max(s3_epoch_ms, pilot_start_utc)` sem fallback pré-piloto, quebra de cluster por janela de silêncio `>= 72h`, expiração read-time em `get_calibrated_weights_for_regime()`/`get_agent_calibration_for_regime()` (`total_samples=0, stale_expired=True`) e fechamento explícito `with closing(...)` (`0` vazamento de FD).
+
+### Item `S6-4` — Promoção do Baseline ML `1h` Multi-Symbol + `Platt` (`LGBM` & `RF`) **[IMPLEMENTADO]**
+
+- **Diagnóstico:** Os Champions legados (`rf` `08/11`, `lgbm` `17/11`, BTC-only sem calibração) não possuíam `log_loss`/`roc_auc_ovr` em `metrics`, fazendo `evaluate_challenger_joint()` cair no fallback de `emitted_signals_accuracy` e rejeitar os Challengers calibrados multi-symbol no cron de 24h (`RETAINED -7.18%`).
+- **Prova Empírica Head-to-Head OOS (`TRIAL_S6_05`):**
+  - **OOS 2 Anos Purgado (`IS <= 2024 [n=99.498] | 7d | OOS >= 2025-01-08 [n=49.353]`):** `LGBM` `LogLoss 1.0760 -> 1.0733` (`AUC 0.5847 -> 0.5870`, `emAcc 56.8% -> 57.8%`); `RF` `LogLoss 1.0764 -> 1.0753` (`AUC 0.5856 -> 0.5852`).
+  - **Cauda Inédita Pós-Champions (`>= 2026-11-18, n=465`):** `LGBM` `LogLoss 1.0837 -> 1.0752` (`AUC 0.5691 -> 0.5745`); `RF` `LogLoss 1.0790 -> 1.0720` (`AUC 0.5817 -> 0.5809`).
+- **Execução Ao Vivo (`force_promote=True` pós-aprovação OOS):** `LGBM` (`LL=1.0746, AUC=0.5871, ECE=0.0097`, backup `lgbm_model_v1_20261124T174515Z.joblib`) e `RF` (`LL=1.0751, AUC=0.5869, ECE=0.0093`, backup `rf_model_v1_20261124T174559Z.joblib`) promovidos via `CalibratedMulticlassModel(method="platt")` sobre `89.772` amostras (`BTC+ETH+SOL`), destravando o gate conjunto `evaluate_challenger_joint()`.
 
 ---
 

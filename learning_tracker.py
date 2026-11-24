@@ -30,6 +30,7 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from db_conn import connect as _db_connect
@@ -75,6 +76,57 @@ class LearningTracker:
         "MacroAgent": 0.7,
         "OnChainAgent": 0.5,
     }
+
+    CALIBRATION_STALE_TTL_MS: int = 72 * 3_600_000  # 72h anti-deadlock cooldown (OOS-proven S6-3)
+
+    @staticmethod
+    def _get_pilot_epoch_ms(conn: sqlite3.Connection) -> Optional[int]:
+        try:
+            row = conn.execute(
+                "SELECT value FROM simulation_settings WHERE key = 'pilot_start_utc' LIMIT 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row or row[0] is None:
+            return None
+        raw = str(row[0]).strip()
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError):
+            return None
+
+    def _is_regime_calibration_stale_or_empty(
+        self, conn: sqlite3.Connection, regime: str, now_ms: int
+    ) -> Tuple[bool, Optional[int]]:
+        pilot_ms = self._get_pilot_epoch_ms(conn)
+        try:
+            if pilot_ms is not None:
+                row = conn.execute(
+                    "SELECT MAX(timestamp) FROM agent_learning_memory "
+                    "WHERE regime = ? AND outcome IN ('WIN', 'LOSS') AND timestamp >= ?",
+                    (regime, pilot_ms),
+                ).fetchone()
+                if not row or row[0] is None:
+                    return (True, None)
+                last_ts = int(row[0])
+                return ((now_ms - last_ts) >= self.CALIBRATION_STALE_TTL_MS, last_ts)
+            else:
+                row = conn.execute(
+                    "SELECT MAX(timestamp) FROM agent_learning_memory "
+                    "WHERE regime = ? AND outcome IN ('WIN', 'LOSS')",
+                    (regime,),
+                ).fetchone()
+                if not row or row[0] is None:
+                    return (False, None)
+                last_ts = int(row[0])
+                return ((now_ms - last_ts) >= self.CALIBRATION_STALE_TTL_MS, last_ts)
+        except sqlite3.OperationalError:
+            return (False, None)
 
     def __init__(self, db_path: str = "datasets/market_cache.db"):
         self.db_path = db_path
@@ -230,7 +282,7 @@ class LearningTracker:
         except Exception as e:
             logger.warning(f"Erro ao atualizar desfecho de trade no LearningTracker: {e}")
 
-    def recalibrate_agent_weights(self) -> Dict[str, Dict[str, float]]:
+    def recalibrate_agent_weights(self, now_ms: Optional[int] = None) -> Dict[str, Dict[str, float]]:
         """
         Nível 1 & Nível 2 do Protocolo S2 (docs/S2_CALIBRACAO_AGENTES_BACKTEST.md):
         Calcula os pesos dos agentes por regime usando Otimização Convexa Restrita
@@ -240,43 +292,78 @@ class LearningTracker:
         Calcula também a acurácia empírica e o ECE (Expected Calibration Error).
         Retorna dicionário: {regime: {agent_name: weight}}
         """
-        now_ms = int(time.time() * 1000)
+        raw_now_ms = now_ms
+        now_ms = int(now_ms) if now_ms is not None else int(time.time() * 1000)
         regimes = ["BULL_TREND", "BEAR_TREND", "SIDEWAYS_RANGE", "HIGH_VOLATILITY_PANIC"]
         all_weights: Dict[str, Dict[str, float]] = {}
 
         try:
-            # Patch S4 (v1.0.6-s4): Janela deslizante pós-S2/S3 (a partir de 02/11/2026 = 1793577600000 ms,
-            # últimas 30 decisões concluídas), evitando que falhas legadas da S1/S2 (v1.0.0-v1.0.3)
-            # contaminem permanentemente o ECE dos modelos recém-curados da S3/S4.
+            # Patch S4 (v1.0.6-s4) + Patch S6-3: Janela deslizante pós-S2/S3 (ou pilot_start_utc se ativo,
+            # últimas 30 decisões concluídas), com TTL de 72h anti-deadlock por regime.
             s3_epoch_ms = 1793577600000
-            with self._get_connection() as conn:
-                rows = conn.execute("""
-                    SELECT regime, consensus_direction, agent_signals_json, outcome, realized_pnl
-                    FROM agent_learning_memory
-                    WHERE outcome IN ('WIN', 'LOSS') AND timestamp >= ?
-                    ORDER BY timestamp DESC
-                    LIMIT 30
-                """, (s3_epoch_ms,)).fetchall()
-                if len(rows) < 5:
+            with closing(self._get_connection()) as conn:
+                pilot_ms = self._get_pilot_epoch_ms(conn)
+                if pilot_ms is not None:
+                    effective_epoch_ms = max(s3_epoch_ms, pilot_ms)
                     rows = conn.execute("""
-                        SELECT regime, consensus_direction, agent_signals_json, outcome, realized_pnl
+                        SELECT timestamp, regime, consensus_direction, agent_signals_json, outcome, realized_pnl
                         FROM agent_learning_memory
-                        WHERE outcome IN ('WIN', 'LOSS')
+                        WHERE outcome IN ('WIN', 'LOSS') AND timestamp >= ?
                         ORDER BY timestamp DESC
                         LIMIT 30
-                    """).fetchall()
+                    """, (effective_epoch_ms,)).fetchall()
+                else:
+                    rows = conn.execute("""
+                        SELECT timestamp, regime, consensus_direction, agent_signals_json, outcome, realized_pnl
+                        FROM agent_learning_memory
+                        WHERE outcome IN ('WIN', 'LOSS') AND timestamp >= ?
+                        ORDER BY timestamp DESC
+                        LIMIT 30
+                    """, (s3_epoch_ms,)).fetchall()
+                    if len(rows) < 5:
+                        rows = conn.execute("""
+                            SELECT timestamp, regime, consensus_direction, agent_signals_json, outcome, realized_pnl
+                            FROM agent_learning_memory
+                            WHERE outcome IN ('WIN', 'LOSS')
+                            ORDER BY timestamp DESC
+                            LIMIT 30
+                        """).fetchall()
 
-            if not rows:
+            if not rows and pilot_ms is None:
                 # Retorna pesos padrão caso ainda não haja desfechos acumulados
                 for r in regimes:
                     all_weights[r] = dict(self.DEFAULT_BASE_WEIGHTS)
                 return all_weights
 
+            ttl_ref_now_ms = now_ms
+            if raw_now_ms is None and pilot_ms is None and rows and int(rows[0]["timestamp"]) < s3_epoch_ms:
+                ttl_ref_now_ms = int(rows[0]["timestamp"])
+
+            # Agrupa por regime (mantendo timestamp DESC) e aplica TTL 72h + silence-gap clustering
+            rows_by_regime: Dict[str, List[sqlite3.Row]] = {r: [] for r in regimes}
+            for row in rows:
+                rows_by_regime.setdefault(row["regime"], []).append(row)
+
+            active_all_rows: List[sqlite3.Row] = []
+            for r, r_rows in rows_by_regime.items():
+                if not r_rows or (ttl_ref_now_ms - int(r_rows[0]["timestamp"])) >= self.CALIBRATION_STALE_TTL_MS:
+                    active_rows: List[sqlite3.Row] = []
+                else:
+                    active_rows = [r_rows[0]]
+                    prev_ts = int(r_rows[0]["timestamp"])
+                    for row in r_rows[1:]:
+                        cur_ts = int(row["timestamp"])
+                        if (prev_ts - cur_ts) >= self.CALIBRATION_STALE_TTL_MS:
+                            break
+                        active_rows.append(row)
+                        prev_ts = cur_ts
+                active_all_rows.extend(active_rows)
+
             # Agrupa estatísticas por (regime, agent_name) e amostras por regime
             stats: Dict[Tuple[str, str], Dict[str, Any]] = {}
             regime_samples: Dict[str, List[Dict[str, Any]]] = {r: [] for r in regimes}
 
-            for row in rows:
+            for row in active_all_rows:
                 regime = row["regime"]
                 outcome = row["outcome"]
                 cons_dir = row["consensus_direction"]
@@ -346,7 +433,7 @@ class LearningTracker:
                     s["ece"] = 0.0
 
             # Otimização Convexa Restrita (Ridge / L2 com prior bayesiano) por regime
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn:
                 for r in regimes:
                     all_weights[r] = dict(self.DEFAULT_BASE_WEIGHTS)
                     active_agents = [
@@ -428,14 +515,40 @@ class LearningTracker:
                 all_weights[r] = dict(self.DEFAULT_BASE_WEIGHTS)
             return all_weights
 
-    def get_calibrated_weights_for_regime(self, regime: str) -> Dict[str, float]:
+    def _resolve_effective_now_ms(
+        self, conn: sqlite3.Connection, now_ms: Optional[int]
+    ) -> int:
+        if now_ms is not None:
+            return int(now_ms)
+        wall_now_ms = int(time.time() * 1000)
+        if self._get_pilot_epoch_ms(conn) is not None:
+            return wall_now_ms
+        try:
+            row = conn.execute(
+                "SELECT MAX(timestamp) FROM agent_learning_memory WHERE outcome IN ('WIN', 'LOSS')"
+            ).fetchone()
+            if row and row[0] is not None and int(row[0]) < 1793577600000:
+                return int(row[0])
+        except sqlite3.OperationalError:
+            pass
+        return wall_now_ms
+
+    def get_calibrated_weights_for_regime(
+        self, regime: str, now_ms: Optional[int] = None
+    ) -> Dict[str, float]:
         """
         Retorna o dicionário de pesos atualizado para um determinado regime de mercado.
         Pode ser passado diretamente como `weights_override` no `ConsensusJudge`.
         """
         weights = dict(self.DEFAULT_BASE_WEIGHTS)
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn:
+                eff_now_ms = self._resolve_effective_now_ms(conn, now_ms)
+                is_stale, _ = self._is_regime_calibration_stale_or_empty(conn, regime, eff_now_ms)
+                if is_stale:
+                    weights["RiskSentinelAgent"] = 1.5
+                    return weights
+
                 rows = conn.execute("""
                     SELECT agent_name, weight, total_samples FROM agent_regime_weights
                     WHERE regime = ?
@@ -451,14 +564,30 @@ class LearningTracker:
         weights["RiskSentinelAgent"] = 1.5
         return weights
 
-    def get_agent_calibration_for_regime(self, regime: str) -> Dict[str, Dict[str, float]]:
+    def get_agent_calibration_for_regime(
+        self, regime: str, now_ms: Optional[int] = None
+    ) -> Dict[str, Dict[str, float]]:
         """
         Retorna mapa de calibração empírica por agente para um determinado regime:
         {agent_name: {"weight": float, "accuracy": float, "total_samples": int, "ece": float}}
         """
         calib: Dict[str, Dict[str, float]] = {}
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn:
+                eff_now_ms = self._resolve_effective_now_ms(conn, now_ms)
+                is_stale, _ = self._is_regime_calibration_stale_or_empty(conn, regime, eff_now_ms)
+                if is_stale:
+                    return {
+                        ag: {
+                            "weight": float(w),
+                            "accuracy": 0.5,
+                            "total_samples": 0,
+                            "ece": 0.0,
+                            "stale_expired": True,
+                        }
+                        for ag, w in self.DEFAULT_BASE_WEIGHTS.items()
+                    }
+
                 rows = conn.execute("""
                     SELECT w.agent_name, w.weight, w.accuracy, w.total_samples, COALESCE(c.ece, 0.0) as ece
                     FROM agent_regime_weights w

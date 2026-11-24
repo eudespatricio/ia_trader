@@ -558,3 +558,15 @@ Auditoria cirúrgica executada em `2026-11-13` (preservando daemons live e `2` p
 - **`TRIAL_S6_03` (`S6-2` Classificação Dinâmica TradFi `GOLDEN_POT` — GO):**
   - Auditoria ao vivo em `/fapi/v1/exchangeInfo` identificou `253` contratos não-cripto (`TradFi`/`EQUITY`/`COMMODITY`/`PREMARKET`/`INDEX`), incluindo `28+` ativos que vazavam da lista estática de `42` nomes. Implementada unificação em `NON_CRYPTO_BASE_EXCLUSIONS` (`85` bases) + cache TTL `6h` via `exchangeInfo` (backoff `5m`) mantendo 100% dos cripto/RWA `COIN` (`PAXG`, `XAUT`, `MANTRA`, `CFG`). Referência viva: `docs/PLANO_EVOLUTIVO_S6.md`.
 
+---
+
+# Experimento E_PATCH_S6_ONDA2 — Anti-Deadlock Época+`72h` em Calibração por Regime (`S6-3`) & Baseline ML Multi-Sym `Platt` (`S6-4`, `v1.0.13`, 2026-11-24)
+
+- **`TRIAL_S6_04` (`S6-3` Deadlock `BEAR_TREND` em `LearningTracker` — GO para `V1_TTL_72H` + `pilot_start_utc`):**
+  - **Replay Live 24h (`23/11 13:00 → 24/11 12:00 BRT`, `16 bps` RT, `SL 1.0x / TP 1.5x`):** `V0_PROD` gerou `1` sinal `>=0.70` / `30` `low_conf` (`+1.38R`); `V1_CLEAN_EPOCH` (`pilot_start_utc` com `S5-1` intacto) gerou **`27` sinais `>=0.70` / `0` `low_conf` (`6W/1L/2open`, `+8.10R`)**.
+  - **Simulação Causal 5 Anos (`2022–2026`, `64.260` barras `2h`, `IS 2022–24 | 7d | OOS 2025–26`, `16 bps` RT):** `V0_PROD` travou permanentemente (`1.673,9d`, `OOS n=0`); **`V1_TTL_72H`** obteve o melhor `BEAR_TREND` OOS (`n=390, WR 41.3%, PF 0.77, -62.3R, max_dry=3.0d`), superando `48h` (`PF 0.65`), `120h` (`PF 0.49`), `168h` (`PF 0.69`), **`V2_TTL72_UNAN3` (`NO-GO`: `PF 0.69, -112.0R`)** e **`V3_NO_DAMPEN_TREND` (`NO-GO`: `PF 0.75, -297.1R`)**.
+  - **Decisão:** Mantido `consensus_judge.py` 100% congelado; implementado isolamento estrito `pilot_start_utc` + TTL `72h` com quebra de cluster por silêncio apenas em `learning_tracker.py`.
+- **`TRIAL_S6_05` (`S6-4` Head-to-Head OOS Champions Legados vs Multi-Sym `Platt` — GO `LGBM` & `RF`):**
+  - **OOS 2 Anos Purgado (`IS <= 2024 [n=99.498] | 7d | OOS >= 2025-01-08 [n=49.353]`):** `LGBM` `LogLoss 1.0760 -> 1.0733` (`AUC 0.5847 -> 0.5870`, `emAcc 56.8% -> 57.8%`); `RF` `LogLoss 1.0764 -> 1.0753` (`AUC 0.5856 -> 0.5852`).
+  - **Cauda Inédita `>= 2026-11-18` (`n=465`):** `LGBM` `LogLoss 1.0837 -> 1.0752` (`AUC 0.5691 -> 0.5745`); `RF` `LogLoss 1.0790 -> 1.0720` (`AUC 0.5817 -> 0.5809`). Base autorizada para troca única (`force_promote=True`) destravando `evaluate_challenger_joint()`.
+

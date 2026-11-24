@@ -4,6 +4,20 @@ Todas as alterações notáveis deste projeto são documentadas neste arquivo de
 
 ---
 
+## [1.0.13] - 2026-11-24 - Patch S6 (Onda 2): Anti-Deadlock de Calibração Época+`72h` & Baseline ML Multi-Symbol `Platt`
+
+### Added
+- **Isolamento por Época & Cooldown `72h` Anti-Deadlock (`S6-3` em `learning_tracker.py`):** Nova constante `CALIBRATION_STALE_TTL_MS = 72 * 3_600_000`, helpers `_get_pilot_epoch_ms()`, `_is_regime_calibration_stale_or_empty()` e `_resolve_effective_now_ms()`, e quebra de cluster por janela de silêncio `>= 72h` em `recalibrate_agent_weights(now_ms=None)` com expiração read-time em `get_calibrated_weights_for_regime()` e `get_agent_calibration_for_regime()`, preservando `S5-1` (`structural_sub_rule_calibration`) e legados sem `simulation_settings`.
+- **Suíte TDD Independente (`tests/test_patch_s6_onda2.py`, `332` linhas):** Cobertura contratual em janela limpa de isolamento de época, proteção ativa `< 72h`, expiração `>= 72h` integrada ao `ConsensusJudge`, quebra de cluster pós-silêncio, imunidade `S5-1`, ausência de vazamento de FDs (`<= 2`) e compatibilidade `CalibratedMulticlassModel` + `evaluate_challenger_joint()`.
+
+### Changed
+- **Troca de Baseline ML `1h` para Multi-Symbol + `Platt` (`S6-4` em `models/lgbm_model_v1.joblib`, `models/rf_model_v1.joblib`):** Validação purgada OOS (`2025–2026`, `49.353` amostras) e pós-`18/11` (`465` amostras) confirmou ganho de `LogLoss` (`1.0837 -> 1.0752` LGBM; `1.0790 -> 1.0720` RF); promoção executada sobre `BTC+ETH+SOL` (`89.772` amostras, `LogLoss 1.0746 / AUC 0.5871` e `LogLoss 1.0751 / AUC 0.5869`) com arquivamento dos Champions legados em `models/archive/`.
+
+### Fixed
+- **Deadlock Auto-Travante em `BEAR_TREND` (`learning_tracker.py`):** Expurgada contaminação pré-`pilot_start_utc` (`19/11`, `acc=31.25%`) em `agent_regime_weights`/`agent_regime_calibration` e fechado ciclo de abertura de conexões SQLite via `with closing(...)`.
+
+---
+
 ## [1.0.12] - 2026-11-23 - Patch S6 (Onda 1): Filtro Dinâmico TradFi no `GOLDEN_POT` & Homologação OOS de Gates `SCALP`/`1h`
 
 ### Added
