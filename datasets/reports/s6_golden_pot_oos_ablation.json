@@ -1,0 +1,694 @@
+{
+  "metadata": {
+    "total_5m_symbols_in_db": 277,
+    "excluded_majors_count": 3,
+    "excluded_stables_count": 0,
+    "excluded_tradfi_count": 54,
+    "excluded_tradfi_sample": [
+      "ANTUSDT",
+      "AVGOUSDT",
+      "BEUSDT",
+      "BZUSDT",
+      "CBRSUSDT",
+      "CLUSDT",
+      "COPPERUSDT",
+      "CRCLUSDT",
+      "CRWVUSDT",
+      "DRAMUSDT",
+      "EWYUSDT",
+      "IRENUSDT",
+      "LITEUSDT",
+      "MINIMAXUSDT",
+      "MRVLUSDT",
+      "MUUSDT",
+      "MUUUSDT",
+      "NATGASUSDT",
+      "NBISUSDT",
+      "NVDLUSDT",
+      "ORCLUSDT",
+      "QCOMUSDT",
+      "RKLBUSDT",
+      "SNDKUSDT",
+      "SNXXUSDT",
+      "SPCXUSDT",
+      "UNITREEUSDT",
+      "XAGUSDT",
+      "XAUUSDT",
+      "XPTUSDT",
+      "ZHIPUUSDT",
+      "ZHONGJIUSDT"
+    ],
+    "excluded_extra_tradfi_sample": [
+      "AAOIUSDT",
+      "APPUSDT",
+      "ARMUSDT",
+      "ASTSUSDT",
+      "AXTIUSDT",
+      "BITOUSDT",
+      "BMNRUSDT",
+      "COHRUSDT",
+      "CSOPSKHYNIX2LUSDT",
+      "CXMTUSDT",
+      "DELLUSDT",
+      "INTWUSDT",
+      "KSTRUSDT",
+      "MRNAUSDT",
+      "MVLLUSDT",
+      "NOWUSDT",
+      "SKDDUSDT",
+      "SKUUUSDT",
+      "SMCIUSDT",
+      "STXXUSDT",
+      "TTWOUSDT",
+      "WDCUSDT"
+    ],
+    "kept_altcoins_count": 220,
+    "total_contiguous_segments_raw": 597,
+    "raw_segments_ge_250": 597,
+    "usable_segments": 597,
+    "usable_bars": 359465,
+    "split_ts": 1793836800000,
+    "split_ts_iso": "2026-11-05 00:00:00 UTC",
+    "embargo_ms": 10800000,
+    "is_window_days": 20.111,
+    "oos_window_days": 20.111,
+    "oos_bear_days": 19.193,
+    "oos_non_bear_days": 0.918,
+    "prior_trials": 175,
+    "n_trials_dsr": 183,
+    "purged_1h_train_n": 171077,
+    "purged_1h_train_cutoff_ts": 1791417600000,
+    "purged_1h_train_cutoff_iso": "2026-10-08 00:00:00 UTC",
+    "elapsed_seconds": 434.3,
+    "notes": [
+      "5m altcoin candles in market_cache.db exist as ~400-bar chunks fetched when the live scanner selected each symbol (pre-selection lookback bias; NO-GO verdicts remain conservative, no GO claim should rely on pre-selection windows).",
+      "Backtest scans all 220 non-TradFi altcoins on every bar without the live Top-6 24h scanner cap (GP_MAX_CANDIDATES=6) or live TapeReadingAgent _flow_gate.",
+      "TradFi exclusions combine canonical NON_CRYPTO_BASE_EXCLUSIONS (85 bases) + EXTRA_TRADFI_BASES (22 Binance TradFi/ETF/equity bases observed in market_cache.db)."
+    ]
+  },
+  "directional_1h_oos_20d": {
+    "n": 96,
+    "trades_per_day": 4.7735,
+    "wr_pct": 50.0,
+    "pf": 1.4896,
+    "pf_ex_top1": 1.4291,
+    "sum_r": 26.197,
+    "avg_r": 0.2729,
+    "max_dd_r": 13.4587,
+    "sharpe_per_trade": 0.1835
+  },
+  "variants": {
+    "G0_PROD": {
+      "funnel_counts": {
+        "raw_triggers": 2889,
+        "post_macro": 1666,
+        "post_climax": 422,
+        "post_committee": 189
+      },
+      "is": {
+        "n": 46,
+        "trades_per_day": 2.2873,
+        "wr_pct": 54.35,
+        "pf": 0.779,
+        "pf_ex_top1": 0.7078,
+        "sum_r": -4.0943,
+        "avg_r": -0.089,
+        "max_dd_r": 5.9927,
+        "sharpe_per_trade": -0.1102,
+        "dsr": 0.0208,
+        "bootstrap_ci95_avg_r": [
+          -0.3178,
+          0.1433
+        ]
+      },
+      "oos": {
+        "n": 54,
+        "trades_per_day": 2.6851,
+        "wr_pct": 61.11,
+        "pf": 1.0149,
+        "pf_ex_top1": 0.9469,
+        "sum_r": 0.3075,
+        "avg_r": 0.0057,
+        "max_dd_r": 5.6783,
+        "sharpe_per_trade": 0.0066,
+        "dsr": 0.2453,
+        "bootstrap_ci95_avg_r": [
+          -0.2372,
+          0.2496
+        ]
+      },
+      "oos_bear": {
+        "n": 51,
+        "trades_per_day": 2.6572,
+        "wr_pct": 58.82,
+        "pf": 0.9268,
+        "pf_ex_top1": 0.8588,
+        "sum_r": -1.5145,
+        "avg_r": -0.0297,
+        "max_dd_r": 5.6783,
+        "sharpe_per_trade": -0.0341,
+        "dsr": 0.1685,
+        "bootstrap_ci95_avg_r": [
+          -0.2627,
+          0.1994
+        ]
+      },
+      "oos_non_bear": {
+        "n": 3,
+        "trades_per_day": 3.2682,
+        "wr_pct": 100.0,
+        "pf": 99.0,
+        "pf_ex_top1": 99.0,
+        "sum_r": 1.822,
+        "avg_r": 0.6073,
+        "max_dd_r": 0.0,
+        "sharpe_per_trade": 1.4424,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          0.1227,
+          0.8836
+        ]
+      },
+      "unconstrained_signals_per_day": 4.6243,
+      "verdict": "NO-GO"
+    },
+    "G1_RELAX_CLIMAX": {
+      "funnel_counts": {
+        "raw_triggers": 2889,
+        "post_macro": 1666,
+        "post_climax": 916,
+        "post_committee": 446
+      },
+      "is": {
+        "n": 51,
+        "trades_per_day": 2.5359,
+        "wr_pct": 64.71,
+        "pf": 1.0223,
+        "pf_ex_top1": 0.91,
+        "sum_r": 0.3362,
+        "avg_r": 0.0066,
+        "max_dd_r": 4.5947,
+        "sharpe_per_trade": 0.0089,
+        "dsr": 0.0972,
+        "bootstrap_ci95_avg_r": [
+          -0.1872,
+          0.2091
+        ]
+      },
+      "oos": {
+        "n": 59,
+        "trades_per_day": 2.9337,
+        "wr_pct": 64.41,
+        "pf": 1.0144,
+        "pf_ex_top1": 0.9374,
+        "sum_r": 0.3106,
+        "avg_r": 0.0053,
+        "max_dd_r": 6.0701,
+        "sharpe_per_trade": 0.0062,
+        "dsr": 0.2344,
+        "bootstrap_ci95_avg_r": [
+          -0.209,
+          0.2097
+        ]
+      },
+      "oos_bear": {
+        "n": 56,
+        "trades_per_day": 2.9177,
+        "wr_pct": 62.5,
+        "pf": 0.8769,
+        "pf_ex_top1": 0.8,
+        "sum_r": -2.663,
+        "avg_r": -0.0476,
+        "max_dd_r": 6.0701,
+        "sharpe_per_trade": -0.0569,
+        "dsr": 0.1199,
+        "bootstrap_ci95_avg_r": [
+          -0.2646,
+          0.1729
+        ]
+      },
+      "oos_non_bear": {
+        "n": 3,
+        "trades_per_day": 3.2682,
+        "wr_pct": 100.0,
+        "pf": 99.0,
+        "pf_ex_top1": 99.0,
+        "sum_r": 2.9736,
+        "avg_r": 0.9912,
+        "max_dd_r": 0.0,
+        "sharpe_per_trade": 4.0043,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          0.8157,
+          1.2743
+        ]
+      },
+      "unconstrained_signals_per_day": 9.3978,
+      "verdict": "NO-GO"
+    },
+    "G2_NO_CLIMAX": {
+      "funnel_counts": {
+        "raw_triggers": 2889,
+        "post_macro": 1666,
+        "post_climax": 1666,
+        "post_committee": 744
+      },
+      "is": {
+        "n": 52,
+        "trades_per_day": 2.5856,
+        "wr_pct": 69.23,
+        "pf": 1.2435,
+        "pf_ex_top1": 1.1081,
+        "sum_r": 3.0483,
+        "avg_r": 0.0586,
+        "max_dd_r": 2.122,
+        "sharpe_per_trade": 0.0852,
+        "dsr": 0.2246,
+        "bootstrap_ci95_avg_r": [
+          -0.1208,
+          0.2457
+        ]
+      },
+      "oos": {
+        "n": 60,
+        "trades_per_day": 2.9834,
+        "wr_pct": 61.67,
+        "pf": 0.8457,
+        "pf_ex_top1": 0.7744,
+        "sum_r": -3.5956,
+        "avg_r": -0.0599,
+        "max_dd_r": 10.132,
+        "sharpe_per_trade": -0.0719,
+        "dsr": 0.0915,
+        "bootstrap_ci95_avg_r": [
+          -0.2818,
+          0.1415
+        ]
+      },
+      "oos_bear": {
+        "n": 57,
+        "trades_per_day": 2.9698,
+        "wr_pct": 59.65,
+        "pf": 0.7182,
+        "pf_ex_top1": 0.6468,
+        "sum_r": -6.5692,
+        "avg_r": -0.1152,
+        "max_dd_r": 10.132,
+        "sharpe_per_trade": -0.1412,
+        "dsr": 0.0355,
+        "bootstrap_ci95_avg_r": [
+          -0.3138,
+          0.0876
+        ]
+      },
+      "oos_non_bear": {
+        "n": 3,
+        "trades_per_day": 3.2682,
+        "wr_pct": 100.0,
+        "pf": 99.0,
+        "pf_ex_top1": 99.0,
+        "sum_r": 2.9736,
+        "avg_r": 0.9912,
+        "max_dd_r": 0.0,
+        "sharpe_per_trade": 4.0043,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          0.8157,
+          1.2743
+        ]
+      },
+      "unconstrained_signals_per_day": 14.2707,
+      "verdict": "NO-GO"
+    },
+    "G3_MACRO_BTC_35": {
+      "funnel_counts": {
+        "raw_triggers": 2889,
+        "post_macro": 2359,
+        "post_climax": 535,
+        "post_committee": 201
+      },
+      "is": {
+        "n": 47,
+        "trades_per_day": 2.337,
+        "wr_pct": 53.19,
+        "pf": 0.7349,
+        "pf_ex_top1": 0.6677,
+        "sum_r": -5.2072,
+        "avg_r": -0.1108,
+        "max_dd_r": 6.8785,
+        "sharpe_per_trade": -0.1363,
+        "dsr": 0.0128,
+        "bootstrap_ci95_avg_r": [
+          -0.3602,
+          0.1019
+        ]
+      },
+      "oos": {
+        "n": 55,
+        "trades_per_day": 2.7348,
+        "wr_pct": 60.0,
+        "pf": 0.9115,
+        "pf_ex_top1": 0.8496,
+        "sum_r": -2.0126,
+        "avg_r": -0.0366,
+        "max_dd_r": 7.5839,
+        "sharpe_per_trade": -0.0419,
+        "dsr": 0.1455,
+        "bootstrap_ci95_avg_r": [
+          -0.2782,
+          0.2042
+        ]
+      },
+      "oos_bear": {
+        "n": 51,
+        "trades_per_day": 2.6572,
+        "wr_pct": 58.82,
+        "pf": 0.883,
+        "pf_ex_top1": 0.8182,
+        "sum_r": -2.5401,
+        "avg_r": -0.0498,
+        "max_dd_r": 6.7039,
+        "sharpe_per_trade": -0.0564,
+        "dsr": 0.1317,
+        "bootstrap_ci95_avg_r": [
+          -0.285,
+          0.1902
+        ]
+      },
+      "oos_non_bear": {
+        "n": 4,
+        "trades_per_day": 4.3576,
+        "wr_pct": 75.0,
+        "pf": 1.5124,
+        "pf_ex_top1": 0.661,
+        "sum_r": 0.5275,
+        "avg_r": 0.1319,
+        "max_dd_r": 1.0296,
+        "sharpe_per_trade": 0.1582,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          -0.6327,
+          0.7172
+        ]
+      },
+      "unconstrained_signals_per_day": 4.9724,
+      "verdict": "NO-GO"
+    },
+    "G4_NO_MACRO_BTC": {
+      "funnel_counts": {
+        "raw_triggers": 2889,
+        "post_macro": 2889,
+        "post_climax": 612,
+        "post_committee": 206
+      },
+      "is": {
+        "n": 50,
+        "trades_per_day": 2.4862,
+        "wr_pct": 56.0,
+        "pf": 0.9051,
+        "pf_ex_top1": 0.8285,
+        "sum_r": -1.8637,
+        "avg_r": -0.0373,
+        "max_dd_r": 6.239,
+        "sharpe_per_trade": -0.0442,
+        "dsr": 0.0485,
+        "bootstrap_ci95_avg_r": [
+          -0.2579,
+          0.1911
+        ]
+      },
+      "oos": {
+        "n": 55,
+        "trades_per_day": 2.7348,
+        "wr_pct": 60.0,
+        "pf": 0.9115,
+        "pf_ex_top1": 0.8496,
+        "sum_r": -2.0126,
+        "avg_r": -0.0366,
+        "max_dd_r": 7.5839,
+        "sharpe_per_trade": -0.0419,
+        "dsr": 0.1455,
+        "bootstrap_ci95_avg_r": [
+          -0.2782,
+          0.2042
+        ]
+      },
+      "oos_bear": {
+        "n": 51,
+        "trades_per_day": 2.6572,
+        "wr_pct": 58.82,
+        "pf": 0.883,
+        "pf_ex_top1": 0.8182,
+        "sum_r": -2.5401,
+        "avg_r": -0.0498,
+        "max_dd_r": 6.7039,
+        "sharpe_per_trade": -0.0564,
+        "dsr": 0.1317,
+        "bootstrap_ci95_avg_r": [
+          -0.285,
+          0.1902
+        ]
+      },
+      "oos_non_bear": {
+        "n": 4,
+        "trades_per_day": 4.3576,
+        "wr_pct": 75.0,
+        "pf": 1.5124,
+        "pf_ex_top1": 0.661,
+        "sum_r": 0.5275,
+        "avg_r": 0.1319,
+        "max_dd_r": 1.0296,
+        "sharpe_per_trade": 0.1582,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          -0.6327,
+          0.7172
+        ]
+      },
+      "unconstrained_signals_per_day": 4.9724,
+      "verdict": "NO-GO"
+    },
+    "G5_RELAX_CLIMAX_MACRO35": {
+      "funnel_counts": {
+        "raw_triggers": 2889,
+        "post_macro": 2359,
+        "post_climax": 1215,
+        "post_committee": 478
+      },
+      "is": {
+        "n": 57,
+        "trades_per_day": 2.8343,
+        "wr_pct": 63.16,
+        "pf": 0.9388,
+        "pf_ex_top1": 0.8431,
+        "sum_r": -1.0844,
+        "avg_r": -0.019,
+        "max_dd_r": 6.0154,
+        "sharpe_per_trade": -0.0256,
+        "dsr": 0.051,
+        "bootstrap_ci95_avg_r": [
+          -0.2192,
+          0.1707
+        ]
+      },
+      "oos": {
+        "n": 59,
+        "trades_per_day": 2.9337,
+        "wr_pct": 62.71,
+        "pf": 0.9068,
+        "pf_ex_top1": 0.8334,
+        "sum_r": -2.1131,
+        "avg_r": -0.0358,
+        "max_dd_r": 7.1899,
+        "sharpe_per_trade": -0.0428,
+        "dsr": 0.1356,
+        "bootstrap_ci95_avg_r": [
+          -0.257,
+          0.1619
+        ]
+      },
+      "oos_bear": {
+        "n": 56,
+        "trades_per_day": 2.9177,
+        "wr_pct": 60.71,
+        "pf": 0.8331,
+        "pf_ex_top1": 0.7598,
+        "sum_r": -3.7828,
+        "avg_r": -0.0675,
+        "max_dd_r": 7.1899,
+        "sharpe_per_trade": -0.0798,
+        "dsr": 0.0895,
+        "bootstrap_ci95_avg_r": [
+          -0.2847,
+          0.1464
+        ]
+      },
+      "oos_non_bear": {
+        "n": 3,
+        "trades_per_day": 3.2682,
+        "wr_pct": 100.0,
+        "pf": 99.0,
+        "pf_ex_top1": 99.0,
+        "sum_r": 1.6697,
+        "avg_r": 0.5566,
+        "max_dd_r": 0.0,
+        "sharpe_per_trade": 1.7358,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          0.2353,
+          0.8766
+        ]
+      },
+      "unconstrained_signals_per_day": 9.9448,
+      "verdict": "NO-GO"
+    },
+    "G6_INTRADAY_COMMITTEE": {
+      "funnel_counts": {
+        "raw_triggers": 2889,
+        "post_macro": 1666,
+        "post_climax": 916,
+        "post_committee": 420
+      },
+      "is": {
+        "n": 51,
+        "trades_per_day": 2.5359,
+        "wr_pct": 64.71,
+        "pf": 0.9798,
+        "pf_ex_top1": 0.8938,
+        "sum_r": -0.3174,
+        "avg_r": -0.0062,
+        "max_dd_r": 4.6669,
+        "sharpe_per_trade": -0.0086,
+        "dsr": 0.0771,
+        "bootstrap_ci95_avg_r": [
+          -0.193,
+          0.1925
+        ]
+      },
+      "oos": {
+        "n": 59,
+        "trades_per_day": 2.9337,
+        "wr_pct": 62.71,
+        "pf": 0.9085,
+        "pf_ex_top1": 0.854,
+        "sum_r": -2.0401,
+        "avg_r": -0.0346,
+        "max_dd_r": 5.2546,
+        "sharpe_per_trade": -0.0425,
+        "dsr": 0.1356,
+        "bootstrap_ci95_avg_r": [
+          -0.2379,
+          0.1731
+        ]
+      },
+      "oos_bear": {
+        "n": 56,
+        "trades_per_day": 2.9177,
+        "wr_pct": 62.5,
+        "pf": 0.9198,
+        "pf_ex_top1": 0.8627,
+        "sum_r": -1.7032,
+        "avg_r": -0.0304,
+        "max_dd_r": 5.2546,
+        "sharpe_per_trade": -0.0371,
+        "dsr": 0.1513,
+        "bootstrap_ci95_avg_r": [
+          -0.235,
+          0.1943
+        ]
+      },
+      "oos_non_bear": {
+        "n": 3,
+        "trades_per_day": 3.2682,
+        "wr_pct": 66.67,
+        "pf": 0.6782,
+        "pf_ex_top1": 0.146,
+        "sum_r": -0.337,
+        "avg_r": -0.1123,
+        "max_dd_r": 1.0471,
+        "sharpe_per_trade": -0.1346,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          -1.0471,
+          0.5573
+        ]
+      },
+      "unconstrained_signals_per_day": 7.2597,
+      "verdict": "NO-GO"
+    },
+    "G7_EARLY_TRIGGER": {
+      "funnel_counts": {
+        "raw_triggers": 5803,
+        "post_macro": 3437,
+        "post_climax": 1265,
+        "post_committee": 553
+      },
+      "is": {
+        "n": 57,
+        "trades_per_day": 2.8343,
+        "wr_pct": 64.91,
+        "pf": 1.0201,
+        "pf_ex_top1": 0.9654,
+        "sum_r": 0.4025,
+        "avg_r": 0.0071,
+        "max_dd_r": 4.7261,
+        "sharpe_per_trade": 0.0088,
+        "dsr": 0.0849,
+        "bootstrap_ci95_avg_r": [
+          -0.1925,
+          0.2048
+        ]
+      },
+      "oos": {
+        "n": 60,
+        "trades_per_day": 2.9834,
+        "wr_pct": 66.67,
+        "pf": 1.0934,
+        "pf_ex_top1": 1.0362,
+        "sum_r": 1.9847,
+        "avg_r": 0.0331,
+        "max_dd_r": 5.3316,
+        "sharpe_per_trade": 0.0402,
+        "dsr": 0.3207,
+        "bootstrap_ci95_avg_r": [
+          -0.1799,
+          0.2337
+        ]
+      },
+      "oos_bear": {
+        "n": 57,
+        "trades_per_day": 2.9698,
+        "wr_pct": 64.91,
+        "pf": 0.9675,
+        "pf_ex_top1": 0.9104,
+        "sum_r": -0.6909,
+        "avg_r": -0.0121,
+        "max_dd_r": 5.3316,
+        "sharpe_per_trade": -0.0148,
+        "dsr": 0.1917,
+        "bootstrap_ci95_avg_r": [
+          -0.2365,
+          0.1976
+        ]
+      },
+      "oos_non_bear": {
+        "n": 3,
+        "trades_per_day": 3.2682,
+        "wr_pct": 100.0,
+        "pf": 99.0,
+        "pf_ex_top1": 99.0,
+        "sum_r": 2.6757,
+        "avg_r": 0.8919,
+        "max_dd_r": 0.0,
+        "sharpe_per_trade": 11.0547,
+        "dsr": 0.0,
+        "bootstrap_ci95_avg_r": [
+          0.8157,
+          0.9764
+        ]
+      },
+      "unconstrained_signals_per_day": 12.8785,
+      "verdict": "NO-GO"
+    }
+  }
+}
