@@ -15,11 +15,14 @@ Executa o ciclo contínuo de trading simulado com microestrutura institucional:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import sys
+import threading
 import time
+import urllib.request
 import warnings
 from logging.handlers import RotatingFileHandler
 
@@ -33,7 +36,7 @@ if "sklearn.utils.parallel" not in _pw:
 warnings.filterwarnings("ignore", message=r".*sklearn\.utils\.parallel.*", category=UserWarning)
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
@@ -66,6 +69,10 @@ from smart_trade import (PaperTradingEngine, NON_CLOSING_TRADE_ACTIONS, STRATEGY
                          FUNDING_INTERVAL_MS, DIRECTIONAL_BAR_MS, INTRADAY_BAR_MS,
                          SCALP_BAR_MS, GOLDEN_POT_BAR_MS)
 from leverage_policy import decide_leverage, MAX_LEVERAGE
+try:
+    from scripts.binance_ws_collector import BinanceFuturesWSCollector
+except ImportError:
+    from binance_ws_collector import BinanceFuturesWSCollector
 
 logger = logging.getLogger("ia_trader.paper_simulation")
 if not logger.handlers:
@@ -162,6 +169,141 @@ GP_LOW_LIQUIDITY_USD = 50_000_000.0  # volume 24h abaixo disso => alavancagem fo
 GP_EXCLUDED_BASE_ASSETS = NON_CRYPTO_BASE_EXCLUSIONS
 
 
+class RealtimePriceTracker:
+    """Rastreador real-time auto-contido para posições abertas via BinanceFuturesWSCollector + fallback REST."""
+
+    WS_BASE_URL = "wss://fstream.binance.com/market/stream"
+
+    def __init__(self, ws_base_url: str = WS_BASE_URL):
+        self.ws_base_url = ws_base_url
+        self._lock = threading.Lock()
+        self._collector: Optional[BinanceFuturesWSCollector] = None
+        self._active_symbols: Set[str] = set()
+        self._ticks: Dict[str, Dict[str, Any]] = {}
+
+    def _on_trade(self, sym: str, ts_ms: int, price: float, qty: float, is_buyer_maker: bool) -> None:
+        if price <= 0.0:
+            return
+        symbol = str(sym).upper()
+        now_mono = time.monotonic()
+        with self._lock:
+            entry = self._ticks.get(symbol)
+            if entry is None or not entry.get("has_unconsumed", False):
+                self._ticks[symbol] = {
+                    "last_px": float(price),
+                    "high_px": float(price),
+                    "low_px": float(price),
+                    "ts_ms": int(ts_ms),
+                    "mono_ts": now_mono,
+                    "has_unconsumed": True,
+                }
+            else:
+                px = float(price)
+                entry["last_px"] = px
+                if px > entry["high_px"]:
+                    entry["high_px"] = px
+                if px < entry["low_px"]:
+                    entry["low_px"] = px
+                entry["ts_ms"] = max(int(entry["ts_ms"]), int(ts_ms))
+                entry["mono_ts"] = now_mono
+
+    def sync_symbols(self, symbols: Iterable[str]) -> None:
+        wanted = {str(s).upper() for s in symbols if s}
+        to_stop: Optional[BinanceFuturesWSCollector] = None
+        with self._lock:
+            for k in list(self._ticks):
+                if k not in wanted:
+                    self._ticks.pop(k, None)
+            if not wanted:
+                if self._collector is not None:
+                    to_stop = self._collector
+                    self._collector = None
+                self._active_symbols = set()
+            else:
+                if self._collector is None or self._collector.stop_event.is_set():
+                    self._collector = BinanceFuturesWSCollector(
+                        symbols=wanted,
+                        on_trade=self._on_trade,
+                        ws_base_url=self.ws_base_url,
+                    )
+                    self._active_symbols = set(wanted)
+                    self._collector.start()
+                elif wanted != self._active_symbols:
+                    self._collector.update_symbols(wanted)
+                    self._active_symbols = set(wanted)
+        if to_stop is not None:
+            to_stop.stop(timeout=2.0)
+
+    def drain(self, symbol: str, max_age_s: float = 5.0) -> Optional[Tuple[float, float, float, int]]:
+        sym = str(symbol).upper()
+        now_mono = time.monotonic()
+        with self._lock:
+            entry = self._ticks.get(sym)
+            if entry is None or (now_mono - float(entry["mono_ts"])) > max_age_s:
+                return None
+            last_px = float(entry["last_px"])
+            high_px = float(entry["high_px"])
+            low_px = float(entry["low_px"])
+            ts_ms = int(entry["ts_ms"])
+            entry["high_px"] = last_px
+            entry["low_px"] = last_px
+            entry["has_unconsumed"] = False
+            return (last_px, high_px, low_px, ts_ms)
+
+    drain_symbol = drain
+
+    @staticmethod
+    def fetch_rest_price(symbol: str, timeout: float = 2.0) -> Optional[Tuple[float, int]]:
+        sym = str(symbol).upper()
+        headers = {"User-Agent": "ia-trader/1.0"}
+        # 1) Binance Futures REST leve
+        try:
+            req = urllib.request.Request(
+                f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={sym}",
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, dict):
+                px = float(data.get("price") or 0.0)
+                if px > 0.0:
+                    ts = int(data.get("time") or (time.time() * 1000))
+                    return (px, ts)
+        except Exception as exc:
+            logger.debug(f"REST ticker Binance falhou para {sym}: {exc}")
+
+        # 2) Fallback Bitget v2 USDT-FUTURES
+        try:
+            req = urllib.request.Request(
+                f"https://api.bitget.com/api/v2/mix/market/ticker?productType=USDT-FUTURES&symbol={sym}",
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, dict) and data.get("code") == "00000":
+                rows = data.get("data")
+                row = rows[0] if isinstance(rows, list) and rows else (rows if isinstance(rows, dict) else None)
+                if isinstance(row, dict):
+                    px = float(row.get("lastPr") or row.get("close") or 0.0)
+                    if px > 0.0:
+                        ts = int(row.get("ts") or (time.time() * 1000))
+                        return (px, ts)
+        except Exception as exc:
+            logger.debug(f"REST ticker Bitget falhou para {sym}: {exc}")
+        return None
+
+    def stop(self) -> None:
+        to_stop: Optional[BinanceFuturesWSCollector] = None
+        with self._lock:
+            if self._collector is not None:
+                to_stop = self._collector
+                self._collector = None
+            self._active_symbols = set()
+            self._ticks.clear()
+        if to_stop is not None:
+            to_stop.stop(timeout=2.0)
+
+
 class PaperTradingDaemon:
     """
     Daemon de execução contínua em Paper Trading.
@@ -181,6 +323,7 @@ class PaperTradingDaemon:
         use_scalp_squeeze_ml15: Optional[bool] = None,
         enforce_gp_btc_macro: Optional[bool] = None,
         directional_maker_entry: Optional[bool] = None,
+        enable_realtime_monitor: bool = True,
     ):
         self.poll_interval = poll_interval_seconds
         self.engine = engine or PaperTradingEngine()
@@ -227,6 +370,8 @@ class PaperTradingDaemon:
         self.use_scalp_squeeze_ml15: bool = (not is_fake_loader) if use_scalp_squeeze_ml15 is None else bool(use_scalp_squeeze_ml15)
         self.enforce_gp_btc_macro: bool = (not is_fake_loader) if enforce_gp_btc_macro is None else bool(enforce_gp_btc_macro)
         self.directional_maker_entry: bool = (not is_fake_loader) if directional_maker_entry is None else bool(directional_maker_entry)
+        self.enable_realtime_monitor: bool = bool(enable_realtime_monitor)
+        self.rt_tracker = RealtimePriceTracker()
         self._h1_dist_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
         self._scalp_ml15_signature: Tuple[Tuple[str, int, int], ...] = self._current_scalp_ml15_signature()
         self._scalp_ml15_models: List[Dict[str, Any]] = self._load_scalp_ml15_models()
@@ -513,6 +658,80 @@ class PaperTradingDaemon:
                 logger.debug(f"Aviso ao atualizar posições para {sym}: {e}")
 
         await asyncio.gather(*[_update_symbol(s) for s in symbols_to_update], return_exceptions=True)
+
+    async def _realtime_position_monitor_loop(self) -> None:
+        """Monitora posições abertas em tempo real (1.0s) via WebSocket aggTrade + fallback REST leve."""
+        last_funding_check_s: Dict[str, float] = {}
+        try:
+            while self.is_running:
+                t0 = time.monotonic()
+                try:
+                    with self.engine._lock:
+                        open_syms = sorted({
+                            p.symbol.upper()
+                            for p in self.engine.positions.values()
+                            if p.status == "OPEN" and p.side in ("LONG", "SHORT")
+                        })
+                    await asyncio.to_thread(self.rt_tracker.sync_symbols, open_syms)
+                    if open_syms:
+                        now_mono = time.monotonic()
+                        now_ms = int(time.time() * 1000)
+                        due_funding = [
+                            s for s in open_syms
+                            if (now_mono - last_funding_check_s.get(s, 0.0)) >= 300.0
+                        ]
+                        if due_funding:
+                            for s in due_funding:
+                                last_funding_check_s[s] = now_mono
+                            await self._refresh_funding_cache(due_funding, now_ms)
+                        for s in list(last_funding_check_s):
+                            if s not in open_syms:
+                                last_funding_check_s.pop(s, None)
+
+                        drained: Dict[str, Optional[Tuple[float, float, float, int]]] = {
+                            sym: self.rt_tracker.drain(sym, max_age_s=5.0) for sym in open_syms
+                        }
+                        missing_syms = [sym for sym, d in drained.items() if d is None]
+                        if missing_syms:
+                            rest_results = await asyncio.gather(
+                                *(asyncio.to_thread(self.rt_tracker.fetch_rest_price, s, 2.0) for s in missing_syms),
+                                return_exceptions=True,
+                            )
+                            for sym, res in zip(missing_syms, rest_results):
+                                if isinstance(res, tuple) and len(res) == 2 and res[0] > 0.0:
+                                    px, ts = res
+                                    drained[sym] = (px, px, px, ts)
+
+                        for sym in open_syms:
+                            tick = drained.get(sym)
+                            if tick is None:
+                                continue
+                            last_px, high_px, low_px, ts_ms = tick
+                            triggered = self.engine.update_realtime_price(
+                                symbol=sym,
+                                price=last_px,
+                                timestamp=ts_ms,
+                                high=high_px,
+                                low=low_px,
+                            )
+                            for t in triggered:
+                                logger.info(
+                                    f"[REALTIME] GATILHO SIMULADO: [{sym}] {t.action} "
+                                    f"@ ${t.price:,.4f} | PnL: ${t.pnl:+.2f}"
+                                )
+                    else:
+                        last_funding_check_s.clear()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug(f"Aviso no monitor real-time de posições: {exc}")
+
+                elapsed = time.monotonic() - t0
+                await asyncio.sleep(max(0.05, 1.0 - elapsed))
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await asyncio.to_thread(self.rt_tracker.stop)
 
     # ------------------------------------------------------------------
     # GOLDEN_POT v2 - helpers (ADDENDUM E5)
@@ -846,14 +1065,17 @@ class PaperTradingDaemon:
         f = tape.get("features") or {}
         prof = STRATEGY_PROFILES[strategy_type]
         sgn = 1.0 if direction == "BUY" else -1.0
+        tp1_log = (close + sgn * prof.tp1_atr_mult * atr) if prof.tp1_atr_mult > 0.0 else 0.0
+        tp2_log = (close + sgn * prof.tp2_atr_mult * atr) if prof.tp2_atr_mult > 0.0 else 0.0
+        tp3_log = (close + sgn * prof.tp3_atr_mult * atr) if prof.tp3_atr_mult > 0.0 else 0.0
         self.engine.log_flow_gate({
             "ts_ms": now_ms, "symbol": sym, "strategy_type": strategy_type, "direction": direction,
             "decision": decision, "tape_vote": tape.get("vote"), "tape_status": tape.get("status"),
             "tape_reason": tape.get("reason"), "taker_imb_5m": f.get("taker_imb_5m"),
             "book_imb_10": f.get("book_imb_10"), "microprice_dev": f.get("microprice_dev"),
             "spread_bps": f.get("spread_bps"), "entry_price": close, "stop_loss": sig.stop_loss,
-            "tp1": close + sgn * prof.tp1_atr_mult * atr, "tp2": close + sgn * prof.tp2_atr_mult * atr,
-            "tp3": close + sgn * prof.tp3_atr_mult * atr, "atr": atr, "confidence": sig.confidence,
+            "tp1": tp1_log, "tp2": tp2_log,
+            "tp3": tp3_log, "atr": atr, "confidence": sig.confidence,
             "consensus_score": sig.consensus_score, "leverage": lev,
         })
         passed = (decision != "BLOCKED")
@@ -937,11 +1159,13 @@ class PaperTradingDaemon:
             margin = min(self.engine.paper_lot_usd, self.engine.available_margin * 0.95, margin_cap)
         notional = margin * lev
         sgn = 1.0 if direction == "BUY" else -1.0
+        tp_mult = prof.tp3_atr_mult if prof.tp3_atr_mult > 0.0 else prof.tp2_atr_mult
+        tp_target = (close + sgn * tp_mult * atr) if tp_mult > 0.0 else 0.0
         sig = replace(
             committee,
             entry_price=close,
             stop_loss=close - sgn * sl_dist,
-            take_profit=close + sgn * prof.tp3_atr_mult * atr,
+            take_profit=tp_target,
             atr=atr,
             position_size=notional,
             risk_dollars=(notional / close) * sl_dist if close > 0 else 0.0,
@@ -1672,6 +1896,10 @@ class PaperTradingDaemon:
         logger.info(f"   Dashboard ao vivo em: http://localhost:5000")
         logger.info("================================================================================")
 
+        rt_task: Optional[asyncio.Task] = None
+        if max_cycles == 0 and self.enable_realtime_monitor and type(self.loader).__name__ != "FakeLoader":
+            rt_task = asyncio.create_task(self._realtime_position_monitor_loop())
+
         cycle = 0
         try:
             while self.is_running:
@@ -1685,8 +1913,10 @@ class PaperTradingDaemon:
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"Falha ao atualizar cache externo macro/on-chain: {exc}")
 
-                # 1. Atualiza posições abertas e testa gatilhos de saída (SL, TP1, TP2) em paralelo
-                await self.update_active_positions()
+                # 1. Atualiza posições abertas: quando o monitor real-time está ativo, executa
+                # update_active_positions() apenas no ciclo 1 para catch-up offline de velas fechadas.
+                if rt_task is None or rt_task.done() or cycle == 1:
+                    await self.update_active_positions()
 
                 # 2. Avalia novas oportunidades de Golden Pots (Cota separada e independente: máx 3/dia)
                 await self.evaluate_golden_pot_opportunities()
@@ -1738,6 +1968,10 @@ class PaperTradingDaemon:
             logger.info("Daemon de Paper Trading recebendo sinal de interrupção...")
         finally:
             self.is_running = False
+            if rt_task is not None:
+                rt_task.cancel()
+                await asyncio.gather(rt_task, return_exceptions=True)
+            await asyncio.to_thread(self.rt_tracker.stop)
             try:
                 self.engine.funnel_flush()  # funil de sinais: grava o buffer pendente no shutdown
             except Exception as e:  # noqa: BLE001

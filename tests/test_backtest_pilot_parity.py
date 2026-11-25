@@ -45,23 +45,43 @@ def test_profiles_are_imported_not_duplicated():
     src = inspect.getsource(backtesting)
     assert "STRATEGY_PROFILES" in src and "tp1_atr_mult=" not in src
     p = STRATEGY_PROFILES["DIRECTIONAL"]
-    assert (p.tp1_atr_mult, p.tp2_atr_mult, p.tp3_atr_mult, p.trail_atr_mult) == (1.5, 2.5, 4.0, 1.2)
+    assert (p.tp1_atr_mult, p.tp2_atr_mult, p.tp3_atr_mult, p.trail_atr_mult) == (1.5, 2.5, 0.0, 1.2)
 
 
 def test_full_ladder_tp1_tp2_tp3_fractions_fees_and_pnl():
-    res = run([FLAT, (100, TP1 + 0.1, 100.5, 101), (101, TP2 + 0.1, 101, 105), (105, TP3 + 1, 104, 108)])
+    # DIRECTIONAL: TP1 (40%) + TP2 (30%) + runner aberto (30%, sem teto TP3) saindo por TRAILING_STOP
+    res = run([
+        FLAT,
+        (100, TP1 + 0.1, 100.5, 101),
+        (101, TP2 + 0.1, 101, 105),
+        (105, TP3 + 1.0, 104, 108),       # ultrapassa antigo 4x ATR sem cap de TP3
+        (108, 108.2, 104.0, 105),         # stop trailing = (TP3 + 1.0) - 1.2 * ATR
+    ])
     t = res.trades[0]
-    assert t.exit_reason == "TAKE_PROFIT_3" and t.legs == 3 and t.leverage == 1.0
+    assert t.exit_reason == "TRAILING_STOP" and t.legs == 3 and t.leverage == 1.0
     qty = 100.0 / ENTRY
     q1, q2 = qty * EXIT_TP1_FRACTION, qty * EXIT_TP2_FRACTION
     q3 = qty - q1 - q2
-    px3 = TP3 * (1 - MSLIP)
+    trail_stop = (TP3 + 1.0) - 1.2 * ATR
+    px3 = trail_stop * (1 - SPOT)
     gross = q1 * (TP1 - ENTRY) + q2 * (TP2 - ENTRY) + q3 * (px3 - ENTRY)
-    fees = 100.0 * TAKER + MAKER * (q1 * TP1 + q2 * TP2 + q3 * px3)   # TP maker; entrada taker
+    fees = 100.0 * TAKER + MAKER * (q1 * TP1 + q2 * TP2) + TAKER * (q3 * px3)
     assert t.pnl_gross == pytest.approx(gross, rel=1e-9)
     assert t.fee_total == pytest.approx(fees, rel=1e-9)
     assert t.pnl_net == pytest.approx(gross - fees, rel=1e-9)
     assert res.final_capital == pytest.approx(10_000 + gross - fees, rel=1e-9)
+
+    # SCALP (trail_atr_mult == 0.0, tp3_atr_mult == 2.2): preserva saída TAKE_PROFIT_3 maker
+    entry_sc = 100.0 * (1 + MSLIP)
+    tp3_sc = entry_sc + 2.2 * ATR
+    res_sc = run([FLAT, (100, tp3_sc + 0.5, 99.5, 104)], strategy_type="SCALP", timeframe="15m")
+    tsc = res_sc.trades[0]
+    assert tsc.exit_reason == "TAKE_PROFIT_3" and tsc.legs == 1
+    qty_sc = 100.0 / entry_sc
+    px_sc = tp3_sc * (1 - MSLIP)
+    gross_sc = qty_sc * (px_sc - entry_sc)
+    fees_sc = 100.0 * MAKER + MAKER * (qty_sc * px_sc)
+    assert tsc.pnl_net == pytest.approx(gross_sc - fees_sc, rel=1e-9)
 
 
 def test_stop_has_priority_over_tp_in_same_bar():

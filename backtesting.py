@@ -773,7 +773,7 @@ class _PilotSimulator:
         tp2_frac = getattr(self.prof, "tp2_fraction", st.EXIT_TP2_FRACTION)
 
         if tp1_frac <= 0.0 and tp2_frac <= 0.0:
-            if reached(p.tp3):
+            if p.tp3 > 0.0 and reached(p.tp3):
                 return "TAKE_PROFIT_3", p.tp3
             if p.trail_active:
                 p.trail_bar = (h, l)
@@ -804,7 +804,7 @@ class _PilotSimulator:
                     p.trail_ref = p.tp2
                     p.trail_bar = None
                     self._ratchet(p, p.tp2, p.tp2)
-        if p.tp2_hit and reached(p.tp3):
+        if p.tp2_hit and p.tp3 > 0.0 and not (p.trail_active and p.trail_mult > 0.0) and reached(p.tp3):
             return "TAKE_PROFIT_3", p.tp3
         if p.trail_active:   # esta barra só vira stop quando a seguinte chegar
             p.trail_bar = (h, l)
@@ -873,9 +873,9 @@ class _PilotSimulator:
         p.qty0 = p.qty = qty
         p.notional, p.margin, p.lev = notional, margin, lev
         p.sl = sl
-        p.tp1 = exec_px + sgn * self.prof.tp1_atr_mult * atr
-        p.tp2 = exec_px + sgn * self.prof.tp2_atr_mult * atr
-        p.tp3 = exec_px + sgn * self.prof.tp3_atr_mult * atr
+        p.tp1 = (exec_px + sgn * self.prof.tp1_atr_mult * atr) if self.prof.tp1_atr_mult > 0.0 else 0.0
+        p.tp2 = (exec_px + sgn * self.prof.tp2_atr_mult * atr) if self.prof.tp2_atr_mult > 0.0 else 0.0
+        p.tp3 = (exec_px + sgn * self.prof.tp3_atr_mult * atr) if self.prof.tp3_atr_mult > 0.0 else 0.0
         p.tp1_hit = p.tp2_hit = p.trail_active = False
         p.trail_stop = 0.0
         p.trail_mult = self.prof.trail_atr_mult

@@ -154,7 +154,7 @@
                 <!-- Auto Refresh Toggle -->
                 <button id="btnAutoRefreshToggle" onclick="toggleAutoRefresh()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-dark-700 hover:bg-dark-600 border border-dark-600 text-xs text-slate-300 transition-all">
                     <span id="autoRefreshDot" class="h-2 w-2 rounded-full bg-emerald-400 pulse-dot"></span>
-                    <span id="autoRefreshText">Auto (5s)</span>
+                    <span id="autoRefreshText">Auto (1s Live)</span>
                 </button>
 
                 <!-- Settings / API Keys Modal Toggle -->
@@ -1679,7 +1679,12 @@
         let currentSymbol = "BTCUSDT";
         let currentTimeframe = "1h";
         let autoRefreshInterval = null;
+        let liveTickInterval = null;
         let isAutoRefreshActive = true;
+        window._liveTickInFlight = false;
+        window._refreshAllInFlight = false;
+        window._lastLiveTickTradeRowid = null;
+        window._lastLiveTickPosIds = null;
         let activeIndicators = {
             sma: true,
             ema: false,
@@ -1724,6 +1729,7 @@
             loadSimulationSettings();
             loadEducationalExplanation();
             startAutoRefresh();
+            startLiveTickLoop();
         });
 
         // ==========================================
@@ -1743,15 +1749,223 @@
         }
 
         // ==========================================
-        // AUTO REFRESH CONTROLLER
+        // AUTO REFRESH & 1S LIVE TICK CONTROLLER
         // ==========================================
+        function updateTickerHeader(ticker) {
+            if (!ticker) return;
+            const lp = Number(ticker.last_price);
+            if (!Number.isFinite(lp) || lp <= 0) return;
+            const priceEl = document.getElementById("tickerLastPrice");
+            const chgEl = document.getElementById("tickerChangePct");
+            const highEl = document.getElementById("tickerHigh");
+            const lowEl = document.getElementById("tickerLow");
+            const fmtHeaderPx = (v) => {
+                const n = Number(v);
+                if (!Number.isFinite(n) || v === undefined || v === null) return "--";
+                const dec = n > 0 && n < 0.01 ? 6 : (n > 0 && n < 0.1 ? 5 : (n > 0 && n < 1 ? 4 : 2));
+                return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+            };
+            if (priceEl) priceEl.innerText = fmtHeaderPx(lp);
+            const chgRaw = ticker.change_pct !== undefined ? ticker.change_pct : ticker.change_pct_24h;
+            if (chgEl && chgRaw !== undefined && Number.isFinite(Number(chgRaw))) {
+                const chg = Number(chgRaw);
+                chgEl.innerText = (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
+                chgEl.className = chg >= 0 ? "font-semibold text-emerald-400" : "font-semibold text-rose-400";
+            }
+            if (highEl && Number(ticker.high_24h) > 0) highEl.innerText = fmtHeaderPx(ticker.high_24h);
+            if (lowEl && Number(ticker.low_24h) > 0) lowEl.innerText = fmtHeaderPx(ticker.low_24h);
+        }
+
+        function fmtLiveCandleDt(tsSec) {
+            const d = new Date(tsSec * 1000);
+            const pad = (n) => String(n).padStart(2, "0");
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+
+        function _isCachedChartCurrent() {
+            const d = window._cachedChartData;
+            return Boolean(
+                d
+                && String(d.symbol || "").toUpperCase() === currentSymbol
+                && String(d.timeframe || "").toLowerCase() === currentTimeframe
+            );
+        }
+
+        function applyLiveCandleTick(candle, ticker) {
+            if (!candle || !window._tvCandleSeries || !_isCachedChartCurrent() || !window._cachedChartData.tv_data) return;
+            const cachedCandles = window._cachedChartData.tv_data.candles;
+            if (!Array.isArray(cachedCandles) || cachedCandles.length === 0) return;
+
+            const liveTime = Number(candle.time || (candle.timestamp ? Math.floor(Number(candle.timestamp) / 1000) : 0));
+            const o = Number(candle.open);
+            const h = Number(candle.high);
+            const l = Number(candle.low);
+            const cl = Number(candle.close);
+            const v = Number(candle.volume || 0);
+            const lastCachedCandle = cachedCandles[cachedCandles.length - 1];
+
+            if (!(liveTime > 0) || !Number.isFinite(cl) || cl <= 0 || !Number.isFinite(o) || o <= 0) return;
+            if (liveTime < lastCachedCandle.time) return;
+
+            const liveCandle = { time: liveTime, open: o, high: h, low: l, close: cl };
+            const liveVol = {
+                time: liveTime,
+                value: Number.isFinite(v) ? v : 0,
+                color: cl >= o ? "rgba(16, 185, 129, 0.45)" : "rgba(239, 68, 68, 0.45)"
+            };
+
+            try {
+                window._tvCandleSeries.update(liveCandle);
+                if (window._tvVolumeSeries) window._tvVolumeSeries.update(liveVol);
+            } catch (_) {
+                return;
+            }
+
+            const data = window._cachedChartData;
+            const tvVol = data.tv_data.volume || [];
+            const tsMs = Number(candle.timestamp || liveTime * 1000);
+            const dtStr = fmtLiveCandleDt(liveTime);
+
+            if (liveTime === lastCachedCandle.time) {
+                const idx = cachedCandles.length - 1;
+                cachedCandles[idx] = liveCandle;
+                if (tvVol.length > idx) tvVol[idx] = liveVol;
+                if (Array.isArray(data.timestamps) && data.timestamps.length > idx) data.timestamps[idx] = tsMs;
+                if (Array.isArray(data.open) && data.open.length > idx) data.open[idx] = o;
+                if (Array.isArray(data.high) && data.high.length > idx) data.high[idx] = h;
+                if (Array.isArray(data.low) && data.low.length > idx) data.low[idx] = l;
+                if (Array.isArray(data.close) && data.close.length > idx) data.close[idx] = cl;
+                if (Array.isArray(data.volume) && data.volume.length > idx) data.volume[idx] = liveVol.value;
+            } else {
+                cachedCandles.push(liveCandle);
+                tvVol.push(liveVol);
+                if (Array.isArray(data.timestamps)) data.timestamps.push(tsMs);
+                if (Array.isArray(data.datetimes)) data.datetimes.push(dtStr);
+                if (Array.isArray(data.open)) data.open.push(o);
+                if (Array.isArray(data.high)) data.high.push(h);
+                if (Array.isArray(data.low)) data.low.push(l);
+                if (Array.isArray(data.close)) data.close.push(cl);
+                if (Array.isArray(data.volume)) data.volume.push(liveVol.value);
+                data.count = cachedCandles.length;
+                if (window._tvTimeIndexMap) {
+                    window._tvTimeIndexMap.set(liveTime, cachedCandles.length - 1);
+                }
+            }
+            if (data.summary) {
+                data.summary.last_price = cl;
+                if (ticker && Number(ticker.high_24h) > 0) data.summary.high_24h = Number(ticker.high_24h);
+                if (ticker && Number(ticker.low_24h) > 0) data.summary.low_24h = Number(ticker.low_24h);
+                if (ticker && Number.isFinite(Number(ticker.change_pct_24h))) data.summary.change_pct = Number(ticker.change_pct_24h);
+            }
+            updateTvChartHud(data, null);
+            updateChartCandleCountdown();
+        }
+
+        async function pollLiveTick() {
+            if (!isAutoRefreshActive || window._liveTickInFlight) return;
+            window._liveTickInFlight = true;
+            const reqSym = currentSymbol;
+            const reqTf = currentTimeframe;
+            try {
+                const res = await fetch(`/api/live-tick?symbol=${encodeURIComponent(reqSym)}&timeframe=${encodeURIComponent(reqTf)}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                if (!data || reqSym !== currentSymbol || reqTf !== currentTimeframe) return;
+
+                if (data.ticker) {
+                    updateTickerHeader(data.ticker);
+                }
+                const lastUpdEl = document.getElementById("chartLastUpdated");
+                if (lastUpdEl) lastUpdEl.innerText = `Atualizado: ${new Date().toLocaleTimeString()}`;
+
+                if (data.candle && _isCachedChartCurrent()) {
+                    applyLiveCandleTick(data.candle, data.ticker);
+                }
+
+                // Protege cenários de teste com mocks de /positions/open quando /api/live-tick lê SQLite vazio
+                const isEmptySqliteFallback = (
+                    data.live_source === "sqlite"
+                    && Array.isArray(data.open_positions) && data.open_positions.length === 0
+                    && Number(data.last_trade_rowid || 0) === 0
+                    && Array.isArray(window._openPositions) && window._openPositions.length > 0
+                );
+
+                if (!isEmptySqliteFallback) {
+                    if (data.paper_status) {
+                        applyPaperStatusToDom(data.paper_status);
+                    }
+
+                    const newRowId = Number(data.last_trade_rowid || 0);
+                    let newPosList = null;
+                    let newPosIds = null;
+                    if (Array.isArray(data.open_positions)) {
+                        const seen = new Set();
+                        newPosList = data.open_positions.filter(p => {
+                            if (!p || String(p.status || "").toUpperCase() !== "OPEN") return false;
+                            if (seen.has(p.position_id)) return false;
+                            seen.add(p.position_id);
+                            return true;
+                        });
+                        newPosIds = newPosList.map(p => p.position_id).sort().join(",");
+                    }
+
+                    const rowIdChanged = (window._lastLiveTickTradeRowid !== null && newRowId !== window._lastLiveTickTradeRowid);
+                    const posIdsChanged = (window._lastLiveTickPosIds !== null && newPosIds !== null && newPosIds !== window._lastLiveTickPosIds);
+                    window._lastLiveTickTradeRowid = newRowId;
+                    if (newPosIds !== null) window._lastLiveTickPosIds = newPosIds;
+
+                    if (newPosList !== null) {
+                        window._openPositions = newPosList;
+                        if (data.open_summary) window._openSummary = data.open_summary;
+                        renderOpenPositionsTable();
+
+                        if (window._activeOrderOverlay && !window._activeOrderOverlay.isClosed) {
+                            const matched = newPosList.find(p => p.position_id === window._activeOrderOverlay.position_id);
+                            if (matched) {
+                                window._activeOrderOverlay = positionToOverlay(matched);
+                                updateOrderOverlayBanner();
+                            }
+                        }
+                    }
+
+                    if (_isCachedChartCurrent() && data.active_position !== undefined) {
+                        window._cachedChartData.active_position = data.active_position;
+                    }
+
+                    const ov = (window._activeOrderOverlay && window._activeOrderOverlay.symbol === currentSymbol)
+                        ? window._activeOrderOverlay
+                        : (data.active_position ? positionToOverlay(data.active_position) : null);
+                    if (window._tvCandleSeries && _isCachedChartCurrent()) {
+                        syncTvPriceLines(ov);
+                    }
+
+                    if (rowIdChanged || posIdsChanged) {
+                        loadPaperTradingData();
+                    }
+                }
+            } catch (_) {
+                // Silencioso em abort/erro de rede (sem spam de console.error)
+            } finally {
+                window._liveTickInFlight = false;
+            }
+        }
+
+        function startLiveTickLoop() {
+            if (liveTickInterval) clearInterval(liveTickInterval);
+            liveTickInterval = setInterval(() => {
+                if (isAutoRefreshActive) {
+                    pollLiveTick();
+                }
+            }, 1000);
+        }
+
         function startAutoRefresh() {
             if (autoRefreshInterval) clearInterval(autoRefreshInterval);
             autoRefreshInterval = setInterval(() => {
-                if (isAutoRefreshActive) {
+                if (isAutoRefreshActive && !window._refreshAllInFlight) {
                     refreshAllData(true);
                 }
-            }, 5000);
+            }, 15000);
         }
 
         function toggleAutoRefresh() {
@@ -1760,9 +1974,13 @@
             const text = document.getElementById("autoRefreshText");
             if (isAutoRefreshActive) {
                 dot.className = "h-2 w-2 rounded-full bg-emerald-400 pulse-dot";
-                text.innerText = "Auto (5s)";
-                showToast("Auto-atualização ativada (5s)", "info");
+                text.innerText = "Auto (1s Live)";
+                startAutoRefresh();
+                startLiveTickLoop();
+                showToast("Auto-atualização ativada (1s Live)", "info");
             } else {
+                if (autoRefreshInterval) { clearInterval(autoRefreshInterval); autoRefreshInterval = null; }
+                if (liveTickInterval) { clearInterval(liveTickInterval); liveTickInterval = null; }
                 dot.className = "h-2 w-2 rounded-full bg-slate-500";
                 text.innerText = "Pausado";
                 showToast("Auto-atualização pausada", "warning");
@@ -1917,6 +2135,8 @@
         document.addEventListener("DOMContentLoaded", initSignalFunnelControls);
 
         function refreshAllData(silent = false) {
+            if (silent && window._refreshAllInFlight) return;
+            window._refreshAllInFlight = true;
             const icon = document.getElementById("refreshIcon");
             if (icon) icon.classList.add("animate-spin");
             if (funnelProjectVisible()) loadSignalFunnel();
@@ -1931,6 +2151,7 @@
                 loadMarketRegime(),
                 loadEducationalExplanation()
             ]).finally(() => {
+                window._refreshAllInFlight = false;
                 setTimeout(() => {
                     if (icon) icon.classList.remove("animate-spin");
                 }, 400);
@@ -3457,25 +3678,7 @@
 
                 // Update Ticker Summary
                 if (data.summary) {
-                    const priceEl = document.getElementById("tickerLastPrice");
-                    const chgEl = document.getElementById("tickerChangePct");
-                    const highEl = document.getElementById("tickerHigh");
-                    const lowEl = document.getElementById("tickerLow");
-
-                    const fmtHeaderPx = (v) => {
-                        const n = Number(v);
-                        if (!Number.isFinite(n) || v === undefined || v === null) return "--";
-                        const dec = n > 0 && n < 0.01 ? 6 : (n > 0 && n < 0.1 ? 5 : (n > 0 && n < 1 ? 4 : 2));
-                        return n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
-                    };
-                    priceEl.innerText = fmtHeaderPx(data.summary.last_price);
-                    
-                    const chg = data.summary.change_pct;
-                    chgEl.innerText = (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
-                    chgEl.className = chg >= 0 ? "font-semibold text-emerald-400" : "font-semibold text-rose-400";
-
-                    highEl.innerText = fmtHeaderPx(data.summary.high_24h);
-                    lowEl.innerText = fmtHeaderPx(data.summary.low_24h);
+                    updateTickerHeader(data.summary);
                 }
 
                 // Update Footnotes & HUD
@@ -3636,6 +3839,7 @@
                 window._tvVolumeSeries = volSeries;
                 window._tvIndicatorSeries = indMap;
                 window._tvActivePriceLines = [];
+                window._tvNamedPriceLines = {};
             }
 
             // 2. Map timestamps to bar indices for HUD lookup
@@ -3705,128 +3909,10 @@
             }
 
             // 5. Smart Trade Exit Ladder Price Lines (Active Position or Manual Overlay)
-            if (window._tvActivePriceLines) {
-                window._tvActivePriceLines.forEach(pl => {
-                    try { window._tvCandleSeries.removePriceLine(pl); } catch (e) {}
-                });
-            }
-            window._tvActivePriceLines = [];
-
             const ov = (window._activeOrderOverlay && window._activeOrderOverlay.symbol === currentSymbol)
                 ? window._activeOrderOverlay
                 : (data.active_position ? positionToOverlay(data.active_position) : null);
-
-            if (ov && ov.symbol === currentSymbol) {
-                const fmtP = (v) => Number(v).toFixed(Number(v) < 0.1 ? 5 : (Number(v) < 1 ? 4 : 2));
-                const side = (ov.side || "LONG").toUpperCase();
-                const pnlTxt = (!ov.isClosed && Number.isFinite(ov.unrealizedPnl)) ? ` (${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)})` : "";
-
-                if (ov.entryPrice > 0) {
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.entryPrice,
-                        color: '#3B82F6',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Solid,
-                        axisLabelVisible: true,
-                        title: `ENTRY ${side} $${fmtP(ov.entryPrice)}${pnlTxt}`,
-                    }));
-                }
-
-                if (ov.stopLoss > 0) {
-                    const isBe = ov.tp1Hit;
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.stopLoss,
-                        color: isBe ? '#38BDF8' : '#EF4444',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        axisLabelVisible: true,
-                        title: isBe ? `BE: $${fmtP(ov.stopLoss)}` : `SL: $${fmtP(ov.stopLoss)}`,
-                    }));
-                }
-
-                if (ov.tp1Price > 0) {
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.tp1Price,
-                        color: '#34D399',
-                        lineWidth: ov.tp1Hit ? 1 : 2,
-                        lineStyle: ov.tp1Hit ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
-                        axisLabelVisible: true,
-                        title: `${ov.tp1Hit ? '✔ ' : ''}TP1: $${fmtP(ov.tp1Price)}`,
-                    }));
-                }
-
-                if (ov.tp2Price > 0) {
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.tp2Price,
-                        color: '#10B981',
-                        lineWidth: ov.tp2Hit ? 1 : 2,
-                        lineStyle: ov.tp2Hit ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
-                        axisLabelVisible: true,
-                        title: `${ov.tp2Hit ? '✔ ' : ''}TP2: $${fmtP(ov.tp2Price)}`,
-                    }));
-                }
-
-                if (ov.tp3Price > 0) {
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.tp3Price,
-                        color: '#A3E635',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Solid,
-                        axisLabelVisible: true,
-                        title: `TP3: $${fmtP(ov.tp3Price)}`,
-                    }));
-                }
-
-                if (ov.trailingStopPrice > 0) {
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.trailingStopPrice,
-                        color: ov.trailingActive ? '#F59E0B' : '#7C6A8A',
-                        lineWidth: ov.trailingActive ? 2 : 1,
-                        lineStyle: LightweightCharts.LineStyle.LargeDashed,
-                        axisLabelVisible: true,
-                        title: `TRAILING: $${fmtP(ov.trailingStopPrice)}${ov.trailingActive ? ' (ATV)' : ''}`,
-                    }));
-                }
-
-                if (ov.liquidationPrice > 0) {
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.liquidationPrice,
-                        color: '#F97316',
-                        lineWidth: 1.5,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        axisLabelVisible: true,
-                        title: `LIQ: $${fmtP(ov.liquidationPrice)}`,
-                    }));
-                }
-
-                if (ov.isClosed && ov.exitPrice > 0) {
-                    const netVal = Number.isFinite(ov.netPnl) ? ov.netPnl : 0;
-                    const netStr = ` (Total: ${netVal >= 0 ? "+" : ""}$${netVal.toFixed(2)})`;
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: ov.exitPrice,
-                        color: netVal >= 0 ? '#22C55E' : '#F43F5E',
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Solid,
-                        axisLabelVisible: true,
-                        title: `SAÍDA ${ov.closeActionLabel || ''}: $${fmtP(ov.exitPrice)}${netStr}`,
-                    }));
-                }
-            }
-
-            // 6. User Manual Horizontal S/R Lines
-            const manualLines = userHLinesBySymbol[currentSymbol] || [];
-            manualLines.forEach((pLvl, idx) => {
-                if (pLvl > 0) {
-                    window._tvActivePriceLines.push(window._tvCandleSeries.createPriceLine({
-                        price: pLvl,
-                        color: '#FACC15',
-                        lineWidth: 1.5,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        axisLabelVisible: true,
-                        title: `S/R #${idx + 1}: $${Number(pLvl).toFixed(2)}`,
-                    }));
-                }
-            });
+            syncTvPriceLines(ov);
 
             // 7. Auto-fit candles on initial load or symbol/timeframe switch
             const curKey = `${currentSymbol}_${currentTimeframe}`;
@@ -3837,6 +3923,155 @@
                 } catch (_) {}
                 window._tvChartInstance.timeScale().fitContent();
             }
+        }
+
+        function syncTvPriceLines(ov) {
+            if (!window._tvCandleSeries || !window.LightweightCharts || !_isCachedChartCurrent()) return;
+            if (!window._tvNamedPriceLines) window._tvNamedPriceLines = {};
+
+            const desired = {};
+            if (ov && ov.symbol === currentSymbol) {
+                const fmtP = (v) => Number(v).toFixed(Number(v) < 0.1 ? 5 : (Number(v) < 1 ? 4 : 2));
+                const side = (ov.side || "LONG").toUpperCase();
+                const pnlTxt = (!ov.isClosed && Number.isFinite(ov.unrealizedPnl)) ? ` (${ov.unrealizedPnl >= 0 ? "+" : ""}$${ov.unrealizedPnl.toFixed(2)})` : "";
+
+                if (ov.entryPrice > 0) {
+                    desired.entry = {
+                        price: ov.entryPrice,
+                        color: '#3B82F6',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: `ENTRY ${side} $${fmtP(ov.entryPrice)}${pnlTxt}`,
+                    };
+                }
+                if (ov.stopLoss > 0) {
+                    const isBe = ov.tp1Hit;
+                    desired.sl = {
+                        price: ov.stopLoss,
+                        color: isBe ? '#38BDF8' : '#EF4444',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: isBe ? `BE: $${fmtP(ov.stopLoss)}` : `SL: $${fmtP(ov.stopLoss)}`,
+                    };
+                }
+                if (ov.tp1Price > 0) {
+                    desired.tp1 = {
+                        price: ov.tp1Price,
+                        color: '#34D399',
+                        lineWidth: ov.tp1Hit ? 1 : 2,
+                        lineStyle: ov.tp1Hit ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `${ov.tp1Hit ? '✔ ' : ''}TP1: $${fmtP(ov.tp1Price)}`,
+                    };
+                }
+                if (ov.tp2Price > 0) {
+                    desired.tp2 = {
+                        price: ov.tp2Price,
+                        color: '#10B981',
+                        lineWidth: ov.tp2Hit ? 1 : 2,
+                        lineStyle: ov.tp2Hit ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `${ov.tp2Hit ? '✔ ' : ''}TP2: $${fmtP(ov.tp2Price)}`,
+                    };
+                }
+                if (ov.tp3Price > 0) {
+                    desired.tp3 = {
+                        price: ov.tp3Price,
+                        color: '#A3E635',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: `TP3: $${fmtP(ov.tp3Price)}`,
+                    };
+                }
+                if (ov.trailingStopPrice > 0) {
+                    desired.trailing = {
+                        price: ov.trailingStopPrice,
+                        color: ov.trailingActive ? '#F59E0B' : '#7C6A8A',
+                        lineWidth: ov.trailingActive ? 2 : 1,
+                        lineStyle: LightweightCharts.LineStyle.LargeDashed,
+                        axisLabelVisible: true,
+                        title: `TRAILING: $${fmtP(ov.trailingStopPrice)}${ov.trailingActive ? ' (ATV)' : ''}`,
+                    };
+                }
+                if (ov.liquidationPrice > 0) {
+                    desired.liq = {
+                        price: ov.liquidationPrice,
+                        color: '#F97316',
+                        lineWidth: 1.5,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `LIQ: $${fmtP(ov.liquidationPrice)}`,
+                    };
+                }
+                if (ov.isClosed && ov.exitPrice > 0) {
+                    const netVal = Number.isFinite(ov.netPnl) ? ov.netPnl : 0;
+                    const netStr = ` (Total: ${netVal >= 0 ? "+" : ""}$${netVal.toFixed(2)})`;
+                    desired.exit = {
+                        price: ov.exitPrice,
+                        color: netVal >= 0 ? '#22C55E' : '#F43F5E',
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: `SAÍDA ${ov.closeActionLabel || ''}: $${fmtP(ov.exitPrice)}${netStr}`,
+                    };
+                }
+            }
+
+            const manualLines = userHLinesBySymbol[currentSymbol] || [];
+            manualLines.forEach((pLvl, idx) => {
+                if (pLvl > 0) {
+                    desired[`manual_${idx}`] = {
+                        price: pLvl,
+                        color: '#FACC15',
+                        lineWidth: 1.5,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `S/R #${idx + 1}: $${Number(pLvl).toFixed(2)}`,
+                    };
+                }
+            });
+
+            // Remove linhas ausentes
+            Object.keys(window._tvNamedPriceLines).forEach(k => {
+                if (!(k in desired)) {
+                    try { window._tvCandleSeries.removePriceLine(window._tvNamedPriceLines[k].line); } catch (_) {}
+                    delete window._tvNamedPriceLines[k];
+                }
+            });
+
+            // Atualiza in-place via applyOptions ou cria novas linhas
+            Object.entries(desired).forEach(([k, spec]) => {
+                const existing = window._tvNamedPriceLines[k];
+                if (existing) {
+                    const prev = existing.spec;
+                    const geomSame = (
+                        prev.price === spec.price &&
+                        prev.color === spec.color &&
+                        prev.lineWidth === spec.lineWidth &&
+                        prev.lineStyle === spec.lineStyle &&
+                        prev.axisLabelVisible === spec.axisLabelVisible
+                    );
+                    if (geomSame) {
+                        if (prev.title !== spec.title) {
+                            try { existing.line.applyOptions({ title: spec.title }); } catch (_) {}
+                            existing.spec.title = spec.title;
+                        }
+                    } else {
+                        try { existing.line.applyOptions(spec); } catch (_) {}
+                        existing.spec = { ...spec };
+                    }
+                } else {
+                    try {
+                        const line = window._tvCandleSeries.createPriceLine(spec);
+                        window._tvNamedPriceLines[k] = { line, spec: { ...spec } };
+                    } catch (_) {}
+                }
+            });
+
+            window._tvActivePriceLines = Object.values(window._tvNamedPriceLines).map(e => e.line);
         }
 
         function renderPlotlyChart(data) {
@@ -4247,7 +4482,7 @@
                 tp1Price: Number(pos.tp1_price || pos.tp1 || 0),
                 tp2Price: Number(pos.tp2_price || pos.tp2 || 0),
                 tp3Price: Number(pos.tp3_price || pos.tp3 || 0),
-                ladder: Number(pos.tp3_price || pos.tp3 || 0) > 0 && Number(pos.tp1_price || pos.tp1 || 0) > 0,
+                ladder: Boolean(pos.exit_ladder) || (Number(pos.tp1_price || pos.tp1 || 0) > 0 && (Number(pos.tp2_price || pos.tp2 || 0) > 0 || Number(pos.tp3_price || pos.tp3 || 0) > 0)),
                 tp1Hit: !!pos.tp1_hit,
                 tp2Hit: !!pos.tp2_hit,
                 trailingActive: !!pos.trailing_active,
@@ -4656,7 +4891,12 @@
                                 ${cardKV("Restante", fracPct(pos.remaining_fraction) || "—")}
                                 ${cardKV("SL atual", fmtCurrentSL(pos), pos.trailing_active ? "Trailing Stop dinâmico ativo protegendo lucros do runner" : (pos.tp1_hit ? "Stop no Breakeven (risco zero)" : "Stop Loss inicial"))}
                                 ${cardKV("Trailing", escapeHtml(fmtTrailing(pos)))}
-                                ${cardKV("TP1 / TP2 / TP3", `${pos.tp1_hit ? "✔" : ""}${fmtPx(pos.tp1)} / ${pos.tp2_hit ? "✔" : ""}${fmtPx(pos.tp2)} / ${fmtPx(pos.tp3)}`)}
+                                ${Number(pos.tp3 || pos.tp3_price || 0) > 0
+                                    ? cardKV("TP1 / TP2 / TP3", `${pos.tp1_hit ? "✔" : ""}${fmtPx(pos.tp1)} / ${pos.tp2_hit ? "✔" : ""}${fmtPx(pos.tp2)} / ${fmtPx(pos.tp3)}`)
+                                    : (pos.exit_ladder
+                                        ? cardKV("TP1 / TP2 / Runner", `${pos.tp1_hit ? "✔" : ""}${fmtPx(pos.tp1)} / ${pos.tp2_hit ? "✔" : ""}${fmtPx(pos.tp2)} / <span class="inline-flex items-center px-1 rounded bg-amber-950/80 border border-amber-700/60 text-amber-300 text-[10px] font-semibold">Trailing ∞</span>`)
+                                        : cardKV("TP1 / TP2 / TP3", `${pos.tp1_hit ? "✔" : ""}${fmtPx(pos.tp1)} / ${pos.tp2_hit ? "✔" : ""}${fmtPx(pos.tp2)} / ${fmtPx(pos.tp3)}`)
+                                    )}
                                 ${hasRealized ? cardKV("Parcial Realizada", `<span class="${pctColor(recPnl)} font-semibold">${fmtUsdSigned(recPnl)}</span> (no saldo)`, "Lucro já garantido e creditado no saldo") : ""}
                                 ${hasRealized ? cardKV("PnL Total Operação", `<span class="${pctColor(totPnl)} font-bold">${fmtUsdSigned(totPnl)}</span>`, "Soma do lucro já garantido com o PnL flutuante") : ""}
                             </div>
@@ -4725,6 +4965,148 @@
             }).join("");
         }
 
+        function applyPaperStatusToDom(resStatus) {
+            if (!resStatus) return;
+            const count = Number(resStatus.daily_scalps_count || 0);
+            const minScalps = Number(resStatus.min_daily_scalps || 2);
+            const maxScalps = Number(resStatus.max_daily_scalps || 5);
+            const quotaRaw = String(resStatus.daily_scalps_quota_status || "BUSCANDO_MINIMO");
+
+            // 1. Contador em tempo real de Scalps Padrão
+            const elCounter = document.getElementById("scalpsCounterText");
+            if (elCounter) {
+                elCounter.innerText = `Scalps Padrão: ${count} / ${maxScalps} (Mín: ${minScalps})`;
+            }
+            const elTopScalp = document.getElementById("metricScalpQuotaToday");
+            if (elTopScalp) elTopScalp.innerText = `${count}/${maxScalps}`;
+
+            // 1.1 Contador Exclusivo e Independente de Golden Pots
+            const gpCount = Number(resStatus.daily_golden_pots_count || 0);
+            const gpMax = Number(resStatus.max_daily_golden_pots || 3);
+            const elGpCounter = document.getElementById("goldenPotsCounterText");
+            if (elGpCounter) {
+                elGpCounter.innerHTML = `<span>🌟 Golden Pots: ${gpCount} / ${gpMax}</span> <span class="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-medium">Cota Exclusiva</span>`;
+            }
+            const elTopPot = document.getElementById("metricPotQuotaToday");
+            if (elTopPot) elTopPot.innerText = `${gpCount}/${gpMax}`;
+
+            // 2. Status Quota Badge
+            let statusLabel = "ABAIXO DO MÍNIMO";
+            let badgeClass = "bg-amber-950/80 text-amber-300 border-amber-800/60";
+            let dotClass = "bg-amber-400 animate-pulse";
+
+            if (quotaRaw === "NA_FAIXA_IDEAL" || (count >= minScalps && count < maxScalps)) {
+                statusLabel = "NA FAIXA IDEAL";
+                badgeClass = "bg-emerald-950 text-emerald-300 border-emerald-800";
+                dotClass = "bg-emerald-400";
+            } else if (quotaRaw === "LIMITE_ATINGIDO" || count >= maxScalps) {
+                statusLabel = "LIMITE ATINGIDO";
+                badgeClass = "bg-cyan-950 text-cyan-300 border-cyan-800";
+                dotClass = "bg-cyan-400";
+            }
+
+            const elBadge = document.getElementById("scalpQuotaStatusBadge");
+            const elBadgeText = document.getElementById("scalpQuotaStatusText");
+            const elDot = document.getElementById("scalpQuotaDot");
+            if (elBadge && elBadgeText && elDot) {
+                elBadge.className = `inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${badgeClass}`;
+                elBadgeText.innerText = statusLabel;
+                elDot.className = `h-1.5 w-1.5 rounded-full ${dotClass}`;
+            }
+
+            // 3. Barra de progresso visual
+            const pct = Math.min(100, Math.max(0, Math.round((count / maxScalps) * 100)));
+            const elProgressBar = document.getElementById("scalpProgressBar");
+            const elProgressText = document.getElementById("scalpProgressPctText");
+            if (elProgressBar) elProgressBar.style.width = `${pct}%`;
+            if (elProgressText) elProgressText.innerText = `${pct}% (${count} de ${maxScalps})`;
+
+            // 4. Quick KPIs & Institutional Cards
+            const eqVal = Number(resStatus.current_equity || 10000.0);
+            const balVal = Number(resStatus.current_balance || 10000.0);
+            const netProfit = Number(resStatus.net_profit || 0.0);
+            const retPct = Number(resStatus.return_pct || 0.0);
+            const winRate = Number(resStatus.win_rate_pct || 0.0);
+            const openCount = Number(resStatus.open_positions_count || 0);
+            const totalTrades = Number(resStatus.total_trades_count || 0);
+            const totalFees = Number(resStatus.total_fees_paid || 0.0);
+            const marginUsed = Number(resStatus.margin_used || 0.0);
+            const maxPos = Number(resStatus.max_concurrent_positions || 5);
+            const marginPct = Number(resStatus.margin_utilization_pct || 0.0);
+
+            // Top Bar Quotas & Margin
+            const elTopOpenPos = document.getElementById("metricOpenPositionsToday");
+            if (elTopOpenPos) {
+                elTopOpenPos.innerText = `${openCount}/${maxPos}`;
+                elTopOpenPos.className = openCount >= maxPos ? "text-amber-400 font-bold num-font" : "text-cyan-400 num-font";
+            }
+            const elTopMarginAlloc = document.getElementById("metricMarginAllocToday");
+            if (elTopMarginAlloc) {
+                elTopMarginAlloc.innerText = `$${marginUsed.toLocaleString("en-US", { maximumFractionDigits: 0 })} (${marginPct.toFixed(0)}%)`;
+                elTopMarginAlloc.className = marginPct >= 80 ? "text-amber-400 font-bold num-font" : "text-emerald-400 num-font";
+            }
+
+            // Trading Card 1: Patrimônio & Saldo
+            const elTradingEq = document.getElementById("tradingCardEquity");
+            if (elTradingEq) elTradingEq.innerText = `$${eqVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const elTradingBal = document.getElementById("tradingCardBalance");
+            if (elTradingBal) elTradingBal.innerText = `$${balVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const elTradingReturn = document.getElementById("tradingCardReturnBadge");
+            if (elTradingReturn) {
+                const sign = retPct >= 0 ? "+" : "";
+                elTradingReturn.innerText = `${sign}${retPct.toFixed(2)}%`;
+                elTradingReturn.className = retPct >= 0 ? "text-xs font-medium text-emerald-400 num-font" : "text-xs font-medium text-rose-400 num-font";
+            }
+            const elTradingMarginAlloc = document.getElementById("tradingCardMarginAlloc");
+            if (elTradingMarginAlloc) elTradingMarginAlloc.innerText = `$${marginUsed.toFixed(2)}`;
+
+            // Trading Card 2: Resultado Líquido & Taxas
+            const elTradingNetPnL = document.getElementById("tradingCardNetPnL");
+            if (elTradingNetPnL) {
+                const sign = netProfit >= 0 ? "+" : "";
+                elTradingNetPnL.innerText = `${sign}$${netProfit.toFixed(2)}`;
+                elTradingNetPnL.className = netProfit >= 0 ? "text-xl font-bold text-emerald-400 num-font tracking-tight" : "text-xl font-bold text-rose-400 num-font tracking-tight";
+            }
+            const elTradingRealized = document.getElementById("tradingCardRealizedPnL");
+            if (elTradingRealized) {
+                const rVal = Number(resStatus.realized_pnl || 0.0);
+                const sign = rVal >= 0 ? "+" : "";
+                elTradingRealized.innerText = `${sign}$${rVal.toFixed(2)}`;
+                elTradingRealized.className = rVal >= 0 ? "text-emerald-400 font-medium num-font" : "text-rose-400 font-medium num-font";
+            }
+            const elTradingFees = document.getElementById("tradingCardFees");
+            if (elTradingFees) elTradingFees.innerText = `$${totalFees.toFixed(2)}`;
+
+            // Trading Card 3: Win Rate & Trades
+            const elTradingWinRate = document.getElementById("tradingCardWinRate");
+            if (elTradingWinRate) elTradingWinRate.innerText = `${winRate.toFixed(1)}%`;
+            const elTradingTrades = document.getElementById("tradingCardTrades");
+            if (elTradingTrades) elTradingTrades.innerText = `${totalTrades} executados`;
+
+            // Bottom Scalper Sub-cards
+            const elEq = document.getElementById("scalpMetricEquity");
+            if (elEq) elEq.innerText = `$${eqVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+            const elProfit = document.getElementById("scalpMetricNetProfit");
+            if (elProfit) {
+                const sign = netProfit >= 0 ? "+" : "";
+                elProfit.innerText = `${sign}$${netProfit.toFixed(2)} (${sign}${retPct.toFixed(1)}%)`;
+                elProfit.className = netProfit >= 0 ? "text-xs sm:text-sm font-bold text-emerald-400 num-font" : "text-xs sm:text-sm font-bold text-rose-400 num-font";
+            }
+
+            const elWin = document.getElementById("scalpMetricWinRate");
+            if (elWin) elWin.innerText = `${winRate.toFixed(1)}%`;
+
+            const elOpen = document.getElementById("scalpMetricOpenPos");
+            if (elOpen) elOpen.innerText = `${openCount} Abertas`;
+
+            const badgePos = document.getElementById("badgeOpenPositionsCount");
+            if (badgePos) badgePos.innerText = openCount;
+
+            const badgeTr = document.getElementById("badgeTotalTradesCount");
+            if (badgeTr) badgeTr.innerText = totalTrades;
+        }
+
         async function loadPaperTradingData() {
             try {
                 const [resStatus, resPositions, resClosed] = await Promise.all([
@@ -4734,145 +5116,7 @@
                 ]);
 
                 if (resStatus) {
-                    const count = Number(resStatus.daily_scalps_count || 0);
-                    const minScalps = Number(resStatus.min_daily_scalps || 2);
-                    const maxScalps = Number(resStatus.max_daily_scalps || 5);
-                    const quotaRaw = String(resStatus.daily_scalps_quota_status || "BUSCANDO_MINIMO");
-
-                    // 1. Contador em tempo real de Scalps Padrão
-                    const elCounter = document.getElementById("scalpsCounterText");
-                    if (elCounter) {
-                        elCounter.innerText = `Scalps Padrão: ${count} / ${maxScalps} (Mín: ${minScalps})`;
-                    }
-                    const elTopScalp = document.getElementById("metricScalpQuotaToday");
-                    if (elTopScalp) elTopScalp.innerText = `${count}/${maxScalps}`;
-
-                    // 1.1 Contador Exclusivo e Independente de Golden Pots
-                    const gpCount = Number(resStatus.daily_golden_pots_count || 0);
-                    const gpMax = Number(resStatus.max_daily_golden_pots || 3);
-                    const elGpCounter = document.getElementById("goldenPotsCounterText");
-                    if (elGpCounter) {
-                        elGpCounter.innerHTML = `<span>🌟 Golden Pots: ${gpCount} / ${gpMax}</span> <span class="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-medium">Cota Exclusiva</span>`;
-                    }
-                    const elTopPot = document.getElementById("metricPotQuotaToday");
-                    if (elTopPot) elTopPot.innerText = `${gpCount}/${gpMax}`;
-
-                    // 2. Status Quota Badge
-                    let statusLabel = "ABAIXO DO MÍNIMO";
-                    let badgeClass = "bg-amber-950/80 text-amber-300 border-amber-800/60";
-                    let dotClass = "bg-amber-400 animate-pulse";
-
-                    if (quotaRaw === "NA_FAIXA_IDEAL" || (count >= minScalps && count < maxScalps)) {
-                        statusLabel = "NA FAIXA IDEAL";
-                        badgeClass = "bg-emerald-950 text-emerald-300 border-emerald-800";
-                        dotClass = "bg-emerald-400";
-                    } else if (quotaRaw === "LIMITE_ATINGIDO" || count >= maxScalps) {
-                        statusLabel = "LIMITE ATINGIDO";
-                        badgeClass = "bg-cyan-950 text-cyan-300 border-cyan-800";
-                        dotClass = "bg-cyan-400";
-                    }
-
-                    const elBadge = document.getElementById("scalpQuotaStatusBadge");
-                    const elBadgeText = document.getElementById("scalpQuotaStatusText");
-                    const elDot = document.getElementById("scalpQuotaDot");
-                    if (elBadge && elBadgeText && elDot) {
-                        elBadge.className = `inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${badgeClass}`;
-                        elBadgeText.innerText = statusLabel;
-                        elDot.className = `h-1.5 w-1.5 rounded-full ${dotClass}`;
-                    }
-
-                    // 3. Barra de progresso visual
-                    const pct = Math.min(100, Math.max(0, Math.round((count / maxScalps) * 100)));
-                    const elProgressBar = document.getElementById("scalpProgressBar");
-                    const elProgressText = document.getElementById("scalpProgressPctText");
-                    if (elProgressBar) elProgressBar.style.width = `${pct}%`;
-                    if (elProgressText) elProgressText.innerText = `${pct}% (${count} de ${maxScalps})`;
-
-                    // 4. Quick KPIs & Institutional Cards
-                    const eqVal = Number(resStatus.current_equity || 10000.0);
-                    const balVal = Number(resStatus.current_balance || 10000.0);
-                    const netProfit = Number(resStatus.net_profit || 0.0);
-                    const retPct = Number(resStatus.return_pct || 0.0);
-                    const winRate = Number(resStatus.win_rate_pct || 0.0);
-                    const openCount = Number(resStatus.open_positions_count || 0);
-                    const totalTrades = Number(resStatus.total_trades_count || 0);
-                    const totalFees = Number(resStatus.total_fees_paid || 0.0);
-                    const marginUsed = Number(resStatus.margin_used || 0.0);
-                    const marginFree = Number(resStatus.available_margin || 0.0);
-                    const maxPos = Number(resStatus.max_concurrent_positions || 5);
-                    const marginPct = Number(resStatus.margin_utilization_pct || 0.0);
-
-                    // Top Bar Quotas & Margin
-                    const elTopOpenPos = document.getElementById("metricOpenPositionsToday");
-                    if (elTopOpenPos) {
-                        elTopOpenPos.innerText = `${openCount}/${maxPos}`;
-                        elTopOpenPos.className = openCount >= maxPos ? "text-amber-400 font-bold num-font" : "text-cyan-400 num-font";
-                    }
-                    const elTopMarginAlloc = document.getElementById("metricMarginAllocToday");
-                    if (elTopMarginAlloc) {
-                        elTopMarginAlloc.innerText = `$${marginUsed.toLocaleString("en-US", { maximumFractionDigits: 0 })} (${marginPct.toFixed(0)}%)`;
-                        elTopMarginAlloc.className = marginPct >= 80 ? "text-amber-400 font-bold num-font" : "text-emerald-400 num-font";
-                    }
-
-                    // Trading Card 1: Patrimônio & Saldo
-                    const elTradingEq = document.getElementById("tradingCardEquity");
-                    if (elTradingEq) elTradingEq.innerText = `$${eqVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                    const elTradingBal = document.getElementById("tradingCardBalance");
-                    if (elTradingBal) elTradingBal.innerText = `$${balVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                    const elTradingReturn = document.getElementById("tradingCardReturnBadge");
-                    if (elTradingReturn) {
-                        const sign = retPct >= 0 ? "+" : "";
-                        elTradingReturn.innerText = `${sign}${retPct.toFixed(2)}%`;
-                        elTradingReturn.className = retPct >= 0 ? "text-xs font-medium text-emerald-400 num-font" : "text-xs font-medium text-rose-400 num-font";
-                    }
-                    const elTradingMarginAlloc = document.getElementById("tradingCardMarginAlloc");
-                    if (elTradingMarginAlloc) elTradingMarginAlloc.innerText = `$${marginUsed.toFixed(2)}`;
-
-                    // Trading Card 2: Resultado Líquido & Taxas
-                    const elTradingNetPnL = document.getElementById("tradingCardNetPnL");
-                    if (elTradingNetPnL) {
-                        const sign = netProfit >= 0 ? "+" : "";
-                        elTradingNetPnL.innerText = `${sign}$${netProfit.toFixed(2)}`;
-                        elTradingNetPnL.className = netProfit >= 0 ? "text-xl font-bold text-emerald-400 num-font tracking-tight" : "text-xl font-bold text-rose-400 num-font tracking-tight";
-                    }
-                    const elTradingRealized = document.getElementById("tradingCardRealizedPnL");
-                    if (elTradingRealized) {
-                        const rVal = Number(resStatus.realized_pnl || 0.0);
-                        const sign = rVal >= 0 ? "+" : "";
-                        elTradingRealized.innerText = `${sign}$${rVal.toFixed(2)}`;
-                        elTradingRealized.className = rVal >= 0 ? "text-emerald-400 font-medium num-font" : "text-rose-400 font-medium num-font";
-                    }
-                    const elTradingFees = document.getElementById("tradingCardFees");
-                    if (elTradingFees) elTradingFees.innerText = `$${totalFees.toFixed(2)}`;
-
-                    // Trading Card 3: Win Rate & Trades
-                    const elTradingWinRate = document.getElementById("tradingCardWinRate");
-                    if (elTradingWinRate) elTradingWinRate.innerText = `${winRate.toFixed(1)}%`;
-                    const elTradingTrades = document.getElementById("tradingCardTrades");
-                    if (elTradingTrades) elTradingTrades.innerText = `${totalTrades} executados`;
-
-                    // Bottom Scalper Sub-cards
-                    const elEq = document.getElementById("scalpMetricEquity");
-                    if (elEq) elEq.innerText = `$${eqVal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-                    const elProfit = document.getElementById("scalpMetricNetProfit");
-                    if (elProfit) {
-                        const sign = netProfit >= 0 ? "+" : "";
-                        elProfit.innerText = `${sign}$${netProfit.toFixed(2)} (${sign}${retPct.toFixed(1)}%)`;
-                        elProfit.className = netProfit >= 0 ? "text-xs sm:text-sm font-bold text-emerald-400 num-font" : "text-xs sm:text-sm font-bold text-rose-400 num-font";
-                    }
-
-                    const elWin = document.getElementById("scalpMetricWinRate");
-                    if (elWin) elWin.innerText = `${winRate.toFixed(1)}%`;
-
-                    const elOpen = document.getElementById("scalpMetricOpenPos");
-                    if (elOpen) elOpen.innerText = `${openCount} Abertas`;
-
-                    const badgePos = document.getElementById("badgeOpenPositionsCount");
-                    if (badgePos) badgePos.innerText = openCount;
-
-                    const badgeTr = document.getElementById("badgeTotalTradesCount");
-                    if (badgeTr) badgeTr.innerText = totalTrades;
+                    applyPaperStatusToDom(resStatus);
                 }
 
                 // Render Posições (somente status OPEN, uma linha por position_id; estado atual de paper_positions)
@@ -4886,6 +5130,7 @@
                         seen.add(p.position_id);
                         return true;
                     });
+                    window._lastLiveTickPosIds = window._openPositions.map(p => p.position_id).sort().join(",");
                     renderOpenPositionsTable();
                     syncOverlayWithOpenPositions();
                 }

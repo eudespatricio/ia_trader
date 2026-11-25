@@ -138,11 +138,11 @@ STRATEGY_PROFILES: Dict[str, StrategyProfile] = {
         bar_ms=SCALP_BAR_MS, max_holding_bars=SCALP_MAX_HOLDING_BARS,
         tp1_fraction=0.0, tp2_fraction=0.0,
     ),
-    # day trade 1h (SL efetivo = o do comitê/SignalGenerator; sl_atr_mult é o fallback) - R:R: TP1 1.5x, TP2 2.5x, TP3 4.0x
-    "DIRECTIONAL": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=4.0, trail_atr_mult=1.2,
+    # day trade 1h (SL efetivo = o do comitê/SignalGenerator; sl_atr_mult é o fallback) - R:R: TP1 1.5x, TP2 2.5x, runner aberto via trailing 1.2x
+    "DIRECTIONAL": StrategyProfile(sl_atr_mult=1.0, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=0.0, trail_atr_mult=1.2,
                                    bar_ms=DIRECTIONAL_BAR_MS, max_holding_bars=DIRECTIONAL_MAX_HOLDING_BARS),
-    # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails) - R:R: TP1 1.5x (1.0R BE), TP2 2.5x (1.67R), TP3 6.0x (4.0R)
-    "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.5, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=6.0, trail_atr_mult=1.5,
+    # maior potencial: momentum em altcoins extraordinárias (5m; SL 1.5xATR alinhado ao trail 1.5xATR para fat-tails) - TP1 1.5x, TP2 2.5x, runner aberto via trailing 1.5x
+    "GOLDEN_POT": StrategyProfile(sl_atr_mult=1.5, tp1_atr_mult=1.5, tp2_atr_mult=2.5, tp3_atr_mult=0.0, trail_atr_mult=1.5,
                                   bar_ms=GOLDEN_POT_BAR_MS, max_holding_bars=GOLDEN_POT_MAX_HOLDING_BARS),
     # swing trend-following 4h (Donchian40 / ExitCh10): sem parciais (TP1/2/3 = 0), trailing puro 3.5xATR, timeout 120 barras (20d)
     "SWING_4H": StrategyProfile(
@@ -352,6 +352,7 @@ class PaperTradingEngine:
         self._last_snapshot_time: float = 0.0
         self._last_snapshot_equity: float = -1.0
         self._last_snapshot_open_count: int = -1
+        self._last_mtm_save_ts: Dict[str, float] = {}
 
         # Telemetria & Circuit Breakers (Fase 7) & Aprendizado Adaptativo & OMS (P0)
         try:
@@ -558,6 +559,7 @@ class PaperTradingEngine:
             self.daily_scalps_count = 0
             self.daily_golden_pots_count = 0
             self.current_day_utc = ""
+            self._last_mtm_save_ts = {}
             logger.warning("[MANUAL_RESET] Estado de paper trading reiniciado intencionalmente.")
 
     def restore_state(self) -> Dict[str, Any]:
@@ -664,6 +666,19 @@ class PaperTradingEngine:
             self.trade_history = history
             self.positions = open_pos
             self.closed_positions = closed_pos
+
+            # Migração de posições OPEN para perfis de runner aberto (tp3_atr_mult == 0.0 + trailing > 0)
+            for pos in open_pos.values():
+                prof = STRATEGY_PROFILES.get(pos.strategy_type)
+                if (
+                    prof is not None
+                    and prof.tp3_atr_mult == 0.0
+                    and pos.trailing_atr_mult > 0.0
+                    and pos.tp3_price > 0.0
+                ):
+                    pos.tp3_price = 0.0
+                    pos.take_profit = pos.tp2_price
+                    self._save_position(pos)
 
             # Cotas diárias: conta aberturas do dia UTC corrente (ou do último trade se não houver relógio futuro), após o marco de reset
             self.daily_scalps_count = 0
@@ -1319,9 +1334,9 @@ class PaperTradingEngine:
                 initial_trailing_active = True
                 trail_ref_extreme = exec_price
             else:
-                tp1_p = exec_price + sgn * m_tp1 * atr
-                tp2_p = exec_price + sgn * m_tp2 * atr
-                tp3_p = exec_price + sgn * m_tp3 * atr
+                tp1_p = (exec_price + sgn * m_tp1 * atr) if m_tp1 > 0.0 else 0.0
+                tp2_p = (exec_price + sgn * m_tp2 * atr) if m_tp2 > 0.0 else 0.0
+                tp3_p = (exec_price + sgn * m_tp3 * atr) if m_tp3 > 0.0 else 0.0
                 initial_trailing_active = False
                 trail_ref_extreme = 0.0
 
@@ -1412,7 +1427,7 @@ class PaperTradingEngine:
 
             pos = PaperPosition(
                 position_id=pos_id, symbol=symbol, side=side, entry_price=exec_price, current_price=exec_price,
-                quantity=qty, notional=notional, stop_loss=sl_price, take_profit=tp3_p,
+                quantity=qty, notional=notional, stop_loss=sl_price, take_profit=(tp3_p if tp3_p > 0.0 else tp2_p),
                 highest_price=exec_price, lowest_price=exec_price, fees_paid=fee, entry_timestamp=timestamp,
                 strategy_type=strategy_type, status="OPEN",
                 tp1_price=tp1_p, tp1_hit=False, tp2_price=tp2_p, initial_quantity=qty, leverage=lev,
@@ -1912,7 +1927,7 @@ class PaperTradingEngine:
 
         label = {"GOLDEN_POT": "Golden Pot", "SCALP": "Scalp", "SWING_4H": "Swing 4h"}.get(pos.strategy_type, "Direcional")
         if pos.tp1_fraction <= 0.0 and pos.tp2_fraction <= 0.0:
-            if reached(pos.tp3_price):
+            if pos.tp3_price > 0.0 and reached(pos.tp3_price):
                 t = self.close_position(pos.position_id, pos.tp3_price, timestamp, reason="TAKE_PROFIT_3")
                 if t:
                     triggered.append(t)
@@ -1936,7 +1951,12 @@ class PaperTradingEngine:
                     return
 
             if pos.tp1_hit and not pos.tp2_hit and reached(pos.tp2_price):
-                if pos.tp3_price <= 0.0:   # posição legada (pré-E7): TP2 encerra o restante
+                is_legacy_tp2_close = (
+                    pos.tp3_price <= 0.0
+                    and pos.trailing_atr_mult <= 0.0
+                    and pos.tp2_fraction <= 0.0
+                )
+                if is_legacy_tp2_close:   # posição legada (pré-E7): TP2 encerra o restante
                     t = self.close_position(pos.position_id, pos.tp2_price, timestamp, reason="TAKE_PROFIT_2")
                     if t:
                         triggered.append(t)
@@ -1951,7 +1971,12 @@ class PaperTradingEngine:
                     self._ratchet_trailing(pos, pos.tp2_price, pos.tp2_price)
                 pos.unrealized_pnl = sgn * (close - pos.entry_price) * pos.quantity
 
-            if pos.tp2_hit and reached(pos.tp3_price):
+            if (
+                pos.tp2_hit
+                and pos.tp3_price > 0.0
+                and not (pos.trailing_active and pos.trailing_atr_mult > 0.0)
+                and reached(pos.tp3_price)
+            ):
                 t = self.close_position(pos.position_id, pos.tp3_price, timestamp, reason="TAKE_PROFIT_3")
                 if t:
                     triggered.append(t)
@@ -2018,18 +2043,251 @@ class PaperTradingEngine:
         if settle <= now_ms:                    # gap enorme (dados faltantes): descarta o excedente
             pos.funding_cursor_ms = now_ms
 
-    def mark_to_market(self, symbol: str, price: float) -> None:
-        """Marca a mercado (UI) com o preço da barra em formação SEM disparar SL/TP/trailing/funding/timeout
-        (gatilhos só em barras FECHADAS - paridade com o backtest)."""
+    def mark_to_market(self, symbol: str, price: float, persist: bool = False) -> None:
+        """Marca a mercado (UI) com o preço corrente SEM disparar SL/TP/trailing/funding/timeout."""
         if not price or price <= 0.0:
             return
         with self._lock:
+            updates: List[Tuple[float, float, str]] = []
             for pos in self.positions.values():
                 if pos.symbol != symbol or pos.status != "OPEN" or pos.side not in ("LONG", "SHORT"):
                     continue
                 sgn = 1.0 if pos.side == "LONG" else -1.0
-                pos.current_price = price
-                pos.unrealized_pnl = sgn * (price - pos.entry_price) * pos.quantity
+                pos.current_price = float(price)
+                pos.unrealized_pnl = sgn * (pos.current_price - pos.entry_price) * pos.quantity
+                if persist:
+                    updates.append((pos.current_price, pos.unrealized_pnl, pos.position_id))
+            if persist and updates:
+                con = self._get_connection()
+                try:
+                    con.executemany(
+                        "UPDATE paper_positions SET current_price=?, unrealized_pnl=? WHERE position_id=? AND status='OPEN'",
+                        updates,
+                    )
+                    con.commit()
+                finally:
+                    con.close()
+
+    def update_realtime_price(
+        self,
+        symbol: str,
+        price: float,
+        timestamp: int,
+        high: Optional[float] = None,
+        low: Optional[float] = None,
+    ) -> List[PaperTrade]:
+        """
+        Atualiza posições abertas de `symbol` em tempo real (tick WebSocket / REST) com execução causal:
+        1) Funding e timeout de horizonte;
+        2) Liquidação;
+        3) Stop vigente ANTES deste tick (sem lookahead intra-tick);
+        4) Alvos limit (TP1 -> BE, TP2 -> trailing no runner aberto, ou TP3 quando sem trailing);
+        5) Ratchet causal do trailing APÓS checagem de stop, efetivo a partir do próximo tick.
+        """
+        if not price or price <= 0.0:
+            return []
+        px = float(price)
+        ts_ms = int(self._ts_ms(timestamp))
+        tick_high = max(px, float(high)) if (high is not None and high > 0.0) else px
+        tick_low = min(px, float(low)) if (low is not None and low > 0.0) else px
+
+        with self._lock:
+            if not hasattr(self, "_last_mtm_save_ts"):
+                self._last_mtm_save_ts = {}
+            triggered_trades: List[PaperTrade] = []
+            stop_changed_any = False
+            touched_any = False
+            open_pos_ids = list(self.positions.keys())
+
+            for pos_id in open_pos_ids:
+                pos = self.positions.get(pos_id)
+                if pos is None or pos.symbol != symbol or pos.status != "OPEN":
+                    continue
+
+                entry_ms = int(self._ts_ms(pos.entry_timestamp))
+                if ts_ms < entry_ms:
+                    continue
+
+                touched_any = True
+                prev_sl = pos.stop_loss
+                prev_trail_stop = pos.trailing_stop_price
+                prev_trail_active = pos.trailing_active
+                prev_tp1_hit = pos.tp1_hit
+                prev_tp2_hit = pos.tp2_hit
+                prev_fund_cursor = pos.funding_cursor_ms
+                prev_trig_count = len(triggered_trades)
+
+                pos.current_price = px
+                pos.highest_price = max(pos.highest_price, tick_high)
+                pos.lowest_price = min(pos.lowest_price, tick_low) if pos.lowest_price > 0.0 else tick_low
+
+                if pos.side in ("LONG", "SHORT"):
+                    self._apply_funding(pos, ts_ms, px, triggered_trades)
+                    prof = STRATEGY_PROFILES.get(pos.strategy_type)
+                    if (
+                        prof is not None
+                        and prof.max_holding_bars > 0
+                        and ts_ms >= entry_ms + prof.max_holding_bars * prof.bar_ms
+                    ):
+                        t = self.close_position(pos_id, px, ts_ms, reason="HORIZON_TIMEOUT")
+                        if t:
+                            triggered_trades.append(t)
+                        self._last_mtm_save_ts.pop(pos_id, None)
+                        continue
+
+                liq = pos.liquidation_price
+                if liq > 0.0:
+                    if (pos.side == "LONG" and tick_low <= liq and (pos.stop_loss <= 0.0 or liq >= pos.stop_loss)) or (
+                        pos.side == "SHORT" and tick_high >= liq and (pos.stop_loss <= 0.0 or liq <= pos.stop_loss)
+                    ):
+                        t = self.close_position(pos_id, liq, ts_ms, reason="LIQUIDATION")
+                        if t:
+                            triggered_trades.append(t)
+                        self._last_mtm_save_ts.pop(pos_id, None)
+                        continue
+
+                if self._uses_ladder(pos):
+                    long = pos.side == "LONG"
+                    sgn = 1.0 if long else -1.0
+                    pos.unrealized_pnl = sgn * (px - pos.entry_price) * pos.quantity
+
+                    def stop_hit() -> bool:
+                        return (tick_low <= pos.stop_loss) if long else (tick_high >= pos.stop_loss)
+
+                    def reached(level: float) -> bool:
+                        return level > 0.0 and ((tick_high >= level) if long else (tick_low <= level))
+
+                    # 2) Checa stop vigente ANTES deste tick
+                    if pos.stop_loss > 0.0 and stop_hit():
+                        self._close_ladder_on_stop(
+                            pos, tick_high, tick_low, ts_ms, triggered_trades, open_price=None
+                        )
+                        self._last_mtm_save_ts.pop(pos_id, None)
+                        continue
+
+                    label = {"GOLDEN_POT": "Golden Pot", "SCALP": "Scalp", "SWING_4H": "Swing 4h"}.get(
+                        pos.strategy_type, "Direcional"
+                    )
+                    # 3) Alvo único sem parciais (ex.: SCALP) ou trailing puro (SWING_4H)
+                    if pos.tp1_fraction <= 0.0 and pos.tp2_fraction <= 0.0:
+                        if pos.tp3_price > 0.0 and reached(pos.tp3_price):
+                            t = self.close_position(pos_id, pos.tp3_price, ts_ms, reason="TAKE_PROFIT_3")
+                            if t:
+                                triggered_trades.append(t)
+                            self._last_mtm_save_ts.pop(pos_id, None)
+                            continue
+                    # 4) Ladder com parciais (TP1 -> BE, TP2 -> trailing / runner aberto)
+                    else:
+                        if not pos.tp1_hit and reached(pos.tp1_price):
+                            pos.tp1_hit = True
+                            be = pos.entry_price * (1.0 + sgn * BREAKEVEN_FEE_BUFFER_PCT)
+                            pos.stop_loss = max(pos.stop_loss, be) if long else min(pos.stop_loss, be)
+                            self._ladder_partial(
+                                pos, pos.tp1_price, pos.tp1_fraction, "TP1_PARTIAL", ts_ms,
+                                f"TP1 {label}", "SL elevado para Breakeven", triggered_trades,
+                            )
+                            pos.unrealized_pnl = sgn * (px - pos.entry_price) * pos.quantity
+                            stop_hit_on_price = (px <= pos.stop_loss) if long else (px >= pos.stop_loss)
+                            if stop_hit_on_price:
+                                t = self.close_position(pos_id, pos.stop_loss, ts_ms, reason="BREAKEVEN_STOP")
+                                if t:
+                                    triggered_trades.append(t)
+                                self._last_mtm_save_ts.pop(pos_id, None)
+                                continue
+
+                        if pos.tp1_hit and not pos.tp2_hit and reached(pos.tp2_price):
+                            is_legacy_tp2_close = (
+                                pos.tp3_price <= 0.0
+                                and pos.trailing_atr_mult <= 0.0
+                                and pos.tp2_fraction <= 0.0
+                            )
+                            if is_legacy_tp2_close:
+                                t = self.close_position(pos_id, pos.tp2_price, ts_ms, reason="TAKE_PROFIT_2")
+                                if t:
+                                    triggered_trades.append(t)
+                                self._last_mtm_save_ts.pop(pos_id, None)
+                                continue
+                            pos.tp2_hit = True
+                            self._ladder_partial(
+                                pos, pos.tp2_price, pos.tp2_fraction, "TP2_PARTIAL", ts_ms,
+                                f"TP2 {label}", "trailing stop ativado no runner", triggered_trades,
+                            )
+                            if pos.trailing_atr_mult > 0.0 and pos.entry_atr > 0.0:
+                                pos.trailing_active = True
+                                pos.trail_ref_extreme = pos.tp2_price
+                                pos.trail_bar_ts = 0.0
+                                self._ratchet_trailing(pos, pos.tp2_price, pos.tp2_price)
+                            pos.unrealized_pnl = sgn * (px - pos.entry_price) * pos.quantity
+
+                        if (
+                            pos.tp2_hit
+                            and pos.tp3_price > 0.0
+                            and not (pos.trailing_active and pos.trailing_atr_mult > 0.0)
+                            and reached(pos.tp3_price)
+                        ):
+                            t = self.close_position(pos_id, pos.tp3_price, ts_ms, reason="TAKE_PROFIT_3")
+                            if t:
+                                triggered_trades.append(t)
+                            self._last_mtm_save_ts.pop(pos_id, None)
+                            continue
+
+                    # 5) APÓS checar stop: atualiza trailing causalmente para valer no PRÓXIMO tick
+                    if pos.trailing_active and pos.trailing_atr_mult > 0.0 and pos.entry_atr > 0.0:
+                        self._ratchet_trailing(pos, tick_high, tick_low)
+
+                elif pos.side == "LONG":
+                    pos.unrealized_pnl = (px - pos.entry_price) * pos.quantity
+                    if pos.stop_loss > 0.0 and tick_low <= pos.stop_loss:
+                        t = self.close_position(pos_id, pos.stop_loss, ts_ms, reason="STOP_LOSS")
+                        if t:
+                            triggered_trades.append(t)
+                        self._last_mtm_save_ts.pop(pos_id, None)
+                        continue
+                    elif pos.take_profit > 0.0 and tick_high >= pos.take_profit:
+                        t = self.close_position(pos_id, pos.take_profit, ts_ms, reason="TAKE_PROFIT")
+                        if t:
+                            triggered_trades.append(t)
+                        self._last_mtm_save_ts.pop(pos_id, None)
+                        continue
+
+                elif pos.side == "SHORT":
+                    pos.unrealized_pnl = (pos.entry_price - px) * pos.quantity
+                    if pos.stop_loss > 0.0 and tick_high >= pos.stop_loss:
+                        t = self.close_position(pos_id, pos.stop_loss, ts_ms, reason="STOP_LOSS")
+                        if t:
+                            triggered_trades.append(t)
+                        self._last_mtm_save_ts.pop(pos_id, None)
+                        continue
+                    elif pos.take_profit > 0.0 and tick_low <= pos.take_profit:
+                        t = self.close_position(pos_id, pos.take_profit, ts_ms, reason="TAKE_PROFIT")
+                        if t:
+                            triggered_trades.append(t)
+                        self._last_mtm_save_ts.pop(pos_id, None)
+                        continue
+
+                pos_changed = (
+                    pos.stop_loss != prev_sl
+                    or pos.trailing_stop_price != prev_trail_stop
+                    or pos.trailing_active != prev_trail_active
+                    or pos.tp1_hit != prev_tp1_hit
+                    or pos.tp2_hit != prev_tp2_hit
+                    or pos.funding_cursor_ms != prev_fund_cursor
+                    or len(triggered_trades) > prev_trig_count
+                )
+                now_mono = time.monotonic()
+                if pos_changed:
+                    stop_changed_any = True
+                    self._save_position(pos)
+                    self._last_mtm_save_ts[pos_id] = now_mono
+                else:
+                    last_save = self._last_mtm_save_ts.get(pos_id)
+                    if last_save is None or (now_mono - last_save) >= 1.0:
+                        self._save_position(pos)
+                        self._last_mtm_save_ts[pos_id] = now_mono
+
+            if touched_any or triggered_trades:
+                self._record_portfolio_snapshot(ts_ms, force=bool(triggered_trades or stop_changed_any))
+            return triggered_trades
 
     def update_market_tick(
         self,
@@ -2306,7 +2564,8 @@ class PaperTradingEngine:
         self._last_snapshot_equity = curr_equity
         self._last_snapshot_open_count = open_count
 
-        with self._get_connection() as con:
+        con = self._get_connection()
+        try:
             con.execute("""
                 INSERT OR REPLACE INTO paper_portfolio (
                     timestamp, equity, balance, margin_used, unrealized_pnl,
@@ -2318,6 +2577,8 @@ class PaperTradingEngine:
                 self.total_realized_pnl, self.total_fees_paid, open_count
             ))
             con.commit()
+        finally:
+            con.close()
 
         # Telemetria institucional (performance_snapshots): no máx. 1 a cada 5 min (tempo do relógio de simulação)
         pt = getattr(self, "performance_tracker", None)

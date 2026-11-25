@@ -85,7 +85,7 @@ def non_open(e, pos):
 @pytest.mark.parametrize("side", ["BUY", "SELL"])
 def test_ladder_tp1_tp2_tp3_sequence_and_breakeven(temp_db, side):
     e = make_engine(temp_db)
-    pos = open_scalp(e, side)
+    pos = open_scalp(e, side, trail_atr_mult=0.0)
     sgn = 1.0 if side == "BUY" else -1.0
     init = pos.quantity
     assert pos.tp3_price == pytest.approx(pos.entry_price + sgn * 3.0)
@@ -101,7 +101,7 @@ def test_ladder_tp1_tp2_tp3_sequence_and_breakeven(temp_db, side):
 
     t = tick(e, side, 2, hi=102.1, lo=101.2)
     assert [x.action for x in t] == ["TP2_PARTIAL"]
-    assert pos.tp2_hit and pos.trailing_active and pos.quantity == pytest.approx(init * 0.3)
+    assert pos.tp2_hit and not pos.trailing_active and pos.quantity == pytest.approx(init * 0.3)
     assert pos.remaining_fraction == pytest.approx(0.3)
 
     t = tick(e, side, 3, hi=103.5, lo=102.0)
@@ -111,7 +111,7 @@ def test_ladder_tp1_tp2_tp3_sequence_and_breakeven(temp_db, side):
 
 def test_ladder_all_three_in_one_strong_bar_long(temp_db):
     e = make_engine(temp_db)
-    open_scalp(e, "BUY")
+    open_scalp(e, "BUY", trail_atr_mult=0.0)
     t = tick(e, "BUY", 1, hi=103.5, lo=100.5)
     assert [x.action for x in t] == ["TP1_PARTIAL", "TP2_PARTIAL", "TAKE_PROFIT_3"]
 
@@ -218,7 +218,7 @@ def test_fees_maker_for_tps_and_taker_for_stops(temp_db):
     assert _rate(by["TRAILING_STOP"]) == pytest.approx(e.taker_fee)
 
     e2 = make_engine(tempfile.mktemp(suffix=".db"))
-    p2 = open_scalp(e2, "BUY")
+    p2 = open_scalp(e2, "BUY", trail_atr_mult=0.0)
     t3 = tick(e2, "BUY", 1, hi=103.5, lo=100.5)[-1]
     assert t3.action == "TAKE_PROFIT_3" and _rate(t3) == pytest.approx(e2.maker_fee)
 
@@ -335,13 +335,14 @@ def test_profiles_single_source_and_ordering():
     assert set(STRATEGY_PROFILES) == {"SCALP", "DIRECTIONAL", "GOLDEN_POT", "SWING_4H"}
     sc, dt, gp = (STRATEGY_PROFILES[k] for k in ("SCALP", "DIRECTIONAL", "GOLDEN_POT"))
     sw4 = STRATEGY_PROFILES["SWING_4H"]
-    assert sc.tp3_atr_mult < dt.tp3_atr_mult < gp.tp3_atr_mult           # alvos curtos < médios < maiores
+    assert sc.tp3_atr_mult == pytest.approx(2.2) and dt.tp3_atr_mult == 0.0 and gp.tp3_atr_mult == 0.0
     assert sc.trail_atr_mult < dt.trail_atr_mult < gp.trail_atr_mult < sw4.trail_atr_mult
-    for p in (sc, dt, gp):
-        assert p.tp1_atr_mult < p.tp2_atr_mult < p.tp3_atr_mult and p.min_committee_confidence == 0.70
+    assert sc.tp1_atr_mult < sc.tp2_atr_mult < sc.tp3_atr_mult and sc.min_committee_confidence == 0.70
+    for p in (dt, gp):
+        assert p.tp1_atr_mult < p.tp2_atr_mult and p.tp3_atr_mult == 0.0 and p.min_committee_confidence == 0.70
     assert sw4.sl_atr_mult == 2.5 and sw4.trail_atr_mult == 3.5
     assert sw4.tp1_atr_mult == sw4.tp2_atr_mult == sw4.tp3_atr_mult == 0.0
-    assert rps.GP_TP3_ATR_MULT == gp.tp3_atr_mult and rps.SCALP_MIN_COMMITTEE_CONFIDENCE == 0.70
+    assert rps.GP_TP3_ATR_MULT == gp.tp3_atr_mult == 0.0 and rps.SCALP_MIN_COMMITTEE_CONFIDENCE == 0.70
 
 
 @pytest.mark.parametrize("kind,strategy", [("scalp", "SCALP"), ("gp", "GOLDEN_POT"), ("dir", "DIRECTIONAL")])
@@ -353,7 +354,12 @@ def test_every_strategy_uses_its_profile_ladder(temp_db, kind, strategy):
     assert pos.strategy_type == strategy
     assert pos.tp1_price - pos.entry_price == pytest.approx(pr.tp1_atr_mult)
     assert pos.tp2_price - pos.entry_price == pytest.approx(pr.tp2_atr_mult)
-    assert pos.tp3_price - pos.entry_price == pytest.approx(pr.tp3_atr_mult)
+    if pr.tp3_atr_mult > 0.0:
+        assert pos.tp3_price - pos.entry_price == pytest.approx(pr.tp3_atr_mult)
+        assert pos.take_profit == pytest.approx(pos.tp3_price)
+    else:
+        assert pos.tp3_price == 0.0
+        assert pos.take_profit == pytest.approx(pos.tp2_price)
     assert pos.trailing_atr_mult == pr.trail_atr_mult and pos.entry_atr == pytest.approx(1.0)
 
 
@@ -486,7 +492,9 @@ def test_swing_day_trade_enters_with_ladder(temp_db):
     d = _swing_daemon(temp_db, "BUY", 0.8)
     run(d.evaluate_swing_opportunities())
     pos = next(iter(d.engine.positions.values()))
-    assert pos.strategy_type == "DIRECTIONAL" and pos.tp3_price > pos.tp2_price > pos.tp1_price > pos.entry_price
+    assert pos.strategy_type == "DIRECTIONAL"
+    assert pos.tp3_price == 0.0 and pos.tp2_price > pos.tp1_price > pos.entry_price
+    assert pos.take_profit == pytest.approx(pos.tp2_price)
     assert pos.stop_loss < pos.entry_price and pos.trailing_atr_mult == STRATEGY_PROFILES["DIRECTIONAL"].trail_atr_mult
 
 
@@ -631,7 +639,7 @@ def test_gp_enters_with_real_values_ladder_and_profile(temp_db):
     assert (sig.confidence, sig.consensus_score) == (0.83, 0.52)
     assert "Golden Pot v3" in sig.rationale and "momentum BUY" in sig.rationale
     pos = next(iter(d.engine.positions.values()))
-    assert pos.tp3_price - pos.entry_price == pytest.approx(STRATEGY_PROFILES["GOLDEN_POT"].tp3_atr_mult * 1.0)
+    assert pos.tp3_price == 0.0 and pos.take_profit == pytest.approx(pos.tp2_price)
 
 
 def test_gp_old_vwap_rsi_fade_no_longer_triggers_daemon(temp_db):

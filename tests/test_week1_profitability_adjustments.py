@@ -15,27 +15,37 @@ from smart_trade import (
 
 
 def test_strict_mathematical_asymmetry_profiles():
-    """Valida assimetria matemática: TP1 < TP2 < TP3 e R:R mínimo por tipo de saída."""
+    """Valida assimetria matemática: TP1 < TP2 (runner aberto via trailing) ou alvo único TP3 (SCALP)."""
     for name, prof in STRATEGY_PROFILES.items():
         if prof.tp1_fraction == 0.0 and prof.tp2_fraction == 0.0 and prof.tp3_atr_mult == 0.0 and prof.trail_atr_mult > 0.0:
             # Trailing puro (SWING_4H): sem parciais/alvos fixos e trail >= stop loss inicial
             assert prof.tp1_atr_mult == 0.0 and prof.tp2_atr_mult == 0.0
             assert prof.trail_atr_mult >= prof.sl_atr_mult
             continue
-        assert prof.tp1_atr_mult < prof.tp2_atr_mult < prof.tp3_atr_mult
-        rr_tp2 = prof.tp2_atr_mult / prof.sl_atr_mult
-        rr_tp3 = prof.tp3_atr_mult / prof.sl_atr_mult
         if prof.tp1_fraction > 0.0 or prof.tp2_fraction > 0.0:
-            # Ladder 3 estágios: TP2 e TP3 devem remunerar favoravelmente o risco
+            # Ladder com parciais (DIRECTIONAL / GOLDEN_POT): TP1 < TP2 e runner aberto via trailing (tp3=0.0)
+            assert prof.tp1_atr_mult < prof.tp2_atr_mult
+            rr_tp2 = prof.tp2_atr_mult / prof.sl_atr_mult
             assert rr_tp2 >= 1.6, f"{name}: TP2 R:R {rr_tp2:.2f} deve ser >= 1.6"
-            assert rr_tp3 >= 3.0, f"{name}: TP3 R:R {rr_tp3:.2f} deve ser >= 3.0"
+            if prof.tp3_atr_mult == 0.0:
+                assert prof.trail_atr_mult > 0.0, f"{name}: runner aberto sem TP3 exige trail_atr_mult > 0"
+            else:
+                assert prof.tp2_atr_mult < prof.tp3_atr_mult
+                rr_tp3 = prof.tp3_atr_mult / prof.sl_atr_mult
+                assert rr_tp3 >= 3.0, f"{name}: TP3 R:R {rr_tp3:.2f} deve ser >= 3.0"
         else:
-            # Alvo único limpo (SCALP S4.2, sem BE precoce): TP3 >= 1.5R
+            # Alvo único limpo (SCALP S4.2, sem BE precoce): TP3 >= 1.5R e trail == 0.0
+            assert prof.tp1_atr_mult < prof.tp2_atr_mult < prof.tp3_atr_mult
+            rr_tp3 = prof.tp3_atr_mult / prof.sl_atr_mult
             assert rr_tp3 >= 1.5, f"{name}: TP3 R:R {rr_tp3:.2f} deve ser >= 1.5"
+            assert prof.trail_atr_mult == 0.0
 
-    # Golden Pot alinhado para capturar fat-tails com TP3 >= 6.0 ATR
+    # Golden Pot e Directional alinhados para capturar fat-tails com runner aberto guiado por trailing
     assert STRATEGY_PROFILES["GOLDEN_POT"].tp1_atr_mult >= 1.5
-    assert STRATEGY_PROFILES["GOLDEN_POT"].tp3_atr_mult >= 6.0
+    assert STRATEGY_PROFILES["GOLDEN_POT"].tp3_atr_mult == 0.0
+    assert STRATEGY_PROFILES["GOLDEN_POT"].trail_atr_mult >= 1.5
+    assert STRATEGY_PROFILES["DIRECTIONAL"].tp3_atr_mult == 0.0
+    assert STRATEGY_PROFILES["DIRECTIONAL"].trail_atr_mult >= 1.2
 
 
 def test_maker_first_entry_in_scalp_and_golden_pot():

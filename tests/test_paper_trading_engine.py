@@ -191,10 +191,12 @@ class TestIntraBarSimulationAndTriggers:
             risk_dollars=100.0,
             rationale="Compra",
         )
-        engine.execute_directional_signal(sig, current_price=60000.0, timestamp=1700000000000)
+        pos = engine.execute_directional_signal(sig, current_price=60000.0, timestamp=1700000000000)
+        assert pos.tp3_price == 0.0
+        assert pos.take_profit == pytest.approx(pos.tp2_price)
 
-        # E7: DIRECTIONAL usa a ladder comum (TP1 1.5xATR, TP2 2.5xATR, TP3 4.0xATR; o take_profit
-        # único do sinal não é mais o alvo). Vela forte (low acima do breakeven) percorre TP1->TP2->TP3.
+        # DIRECTIONAL usa runner aberto (TP1 1.5xATR, TP2 2.5xATR, tp3=0.0 + trailing 1.2xATR).
+        # Vela forte realiza TP1 e TP2 parciais e ativa trailing sem cap artificial de TP3.
         triggered = engine.update_market_tick(
             symbol="BTCUSDT",
             high=64500.0,
@@ -202,9 +204,38 @@ class TestIntraBarSimulationAndTriggers:
             close=64100.0,
             timestamp=1700003600000,
         )
-        assert [t.action for t in triggered] == ["TP1_PARTIAL", "TP2_PARTIAL", "TAKE_PROFIT_3"]
-        assert len(engine.positions) == 0
+        assert [t.action for t in triggered] == ["TP1_PARTIAL", "TP2_PARTIAL"]
+        assert len(engine.positions) == 1
+        assert pos.trailing_active is True
         assert engine.total_realized_pnl > 0.0
+
+        # SCALP (tp3=2.2xATR, trail=0.0) preserva saída integral em TAKE_PROFIT_3
+        sig_sc = TradeSignal(
+            signal_id="sig-sc-tp3",
+            timestamp=1700000000000,
+            symbol="ETHUSDT",
+            direction="BUY",
+            entry_price=2000.0,
+            stop_loss=1950.0,
+            take_profit=2100.0,
+            atr=20.0,
+            confidence=0.80,
+            consensus_score=0.70,
+            position_size=1000.0,
+            risk_dollars=50.0,
+            rationale="Scalp TP3",
+        )
+        pos_sc = engine.execute_scalp_signal(sig_sc, current_price=2000.0, timestamp=1700000000000)
+        assert pos_sc.tp3_price > pos_sc.entry_price
+        trig_sc = engine.update_market_tick(
+            symbol="ETHUSDT",
+            high=pos_sc.tp3_price + 5.0,
+            low=1995.0,
+            close=pos_sc.tp3_price + 2.0,
+            timestamp=1700000900000,
+        )
+        assert [t.action for t in trig_sc] == ["TAKE_PROFIT_3"]
+        assert pos_sc.position_id not in engine.positions
 
     def test_carry_funding_rate_accrual(self, engine):
         engine.execute_carry_allocation(
@@ -856,6 +887,193 @@ class TestPaperTradingConcurrencyAndIntegrityStress:
         with sqlite3.connect(temp_db) as con:
             count = con.execute("SELECT COUNT(*) FROM paper_portfolio").fetchone()[0]
             assert count == 2
+
+    def test_restore_state_migrates_open_runner_tp3_and_mark_to_market_persist(self, engine, temp_db):
+        """Valida migração de tp3_price>0 em restore_state p/ DIRECTIONAL e persistência em mark_to_market."""
+        ts = 1700000000000
+        sig = TradeSignal(
+            signal_id="mig-01",
+            timestamp=ts,
+            symbol="BTCUSDT",
+            direction="BUY",
+            entry_price=100.0,
+            stop_loss=98.0,
+            take_profit=105.0,
+            atr=1.0,
+            confidence=0.80,
+            consensus_score=0.70,
+            position_size=1000.0,
+            risk_dollars=20.0,
+            rationale="Migrate open runner",
+        )
+        pos = engine.execute_directional_signal(sig, current_price=100.0, timestamp=ts)
+        assert pos is not None and pos.tp3_price == 0.0
+        # Simula registro pré-migração no SQLite com tp3_price = 104.0
+        con = sqlite3.connect(temp_db)
+        try:
+            con.execute(
+                "UPDATE paper_positions SET tp3_price=104.0, take_profit=104.0 WHERE position_id=?",
+                (pos.position_id,),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        eng2 = PaperTradingEngine(initial_capital=10000.0, db_path=temp_db, restore=True)
+        restored = eng2.positions[pos.position_id]
+        assert restored.tp3_price == 0.0
+        assert restored.take_profit == pytest.approx(restored.tp2_price)
+        con = sqlite3.connect(temp_db)
+        try:
+            row = con.execute(
+                "SELECT tp3_price, take_profit FROM paper_positions WHERE position_id=?",
+                (pos.position_id,),
+            ).fetchone()
+            assert row[0] == 0.0 and row[1] == pytest.approx(restored.tp2_price)
+        finally:
+            con.close()
+
+        # mark_to_market(persist=True) persiste current_price/unrealized_pnl sem disparar stop
+        eng2.mark_to_market("BTCUSDT", restored.stop_loss - 5.0, persist=True)
+        assert restored.position_id in eng2.positions
+        con = sqlite3.connect(temp_db)
+        try:
+            cp, upnl = con.execute(
+                "SELECT current_price, unrealized_pnl FROM paper_positions WHERE position_id=?",
+                (pos.position_id,),
+            ).fetchone()
+            assert cp == pytest.approx(restored.stop_loss - 5.0)
+            assert upnl < 0.0
+        finally:
+            con.close()
+
+    def test_update_realtime_price_causal_ladder_and_mtm_throttle(self, engine, temp_db):
+        """Valida execução causal em update_realtime_price (TP1->BE, TP2->runner trailing, sem lookahead intra-tick)."""
+        ts = 1700000000000
+        sig = TradeSignal(
+            signal_id="rt-01",
+            timestamp=ts,
+            symbol="SOLUSDT",
+            direction="BUY",
+            entry_price=100.0,
+            stop_loss=98.5,
+            take_profit=105.0,
+            atr=1.0,
+            confidence=0.85,
+            consensus_score=0.75,
+            position_size=1000.0,
+            risk_dollars=20.0,
+            rationale="RT causal test",
+        )
+        pos = engine.execute_golden_pot_signal(sig, current_price=100.0, timestamp=ts)
+        assert pos is not None
+        t_entry = pos.entry_timestamp
+
+        # Pré-entrada ignorada
+        assert engine.update_realtime_price("SOLUSDT", 90.0, t_entry - 1000) == []
+        assert pos.position_id in engine.positions
+
+        # 1º tick MTM persiste imediatamente; 2º tick < 1s é throttled no SQLite mas atualiza memória
+        assert engine.update_realtime_price("SOLUSDT", 100.4, t_entry + 1000) == []
+        assert engine.update_realtime_price("SOLUSDT", 100.6, t_entry + 1500) == []
+        assert pos.current_price == pytest.approx(100.6)
+
+        # Tick atinge TP1 e TP2, ativa trailing (sem fechar runner no antigo TP3 106.0)
+        tr_tp = engine.update_realtime_price("SOLUSDT", 107.0, t_entry + 2000, high=107.5, low=101.0)
+        assert [t.action for t in tr_tp] == ["TP1_PARTIAL", "TP2_PARTIAL"]
+        assert pos.position_id in engine.positions
+        assert pos.trailing_active is True
+        expected_trail = 107.5 - 1.5 * 1.0
+        assert pos.trailing_stop_price == pytest.approx(expected_trail)
+        assert pos.stop_loss == pytest.approx(expected_trail)
+
+        # Próximo tick cai abaixo do trailing_stop -> fecha TRAILING_STOP causalmente
+        tr_stop = engine.update_realtime_price("SOLUSDT", 105.8, t_entry + 3000, high=106.5, low=105.8)
+        assert [t.action for t in tr_stop] == ["TRAILING_STOP"]
+        assert pos.position_id not in engine.positions
+
+    def test_daemon_realtime_price_tracker_and_monitor_loop(self, engine):
+        """Valida RealtimePriceTracker (WS fresh drain + fallback REST >5s) e _realtime_position_monitor_loop sem abrir sockets reais."""
+        import asyncio
+        from unittest import mock
+        from scripts.run_paper_simulation import PaperTradingDaemon, RealtimePriceTracker
+
+        tracker = RealtimePriceTracker()
+        # Agrega extremos intra-segundo de múltiplos aggTrades
+        tracker._on_trade("BTCUSDT", 1700000010000, 60000.0, 0.1, False)
+        tracker._on_trade("BTCUSDT", 1700000010200, 60500.0, 0.2, False)
+        tracker._on_trade("BTCUSDT", 1700000010400, 59800.0, 0.1, True)
+        tracker._on_trade("BTCUSDT", 1700000010600, 60200.0, 0.1, False)
+        drained = tracker.drain("BTCUSDT", max_age_s=5.0)
+        assert drained is not None
+        last_px, high_px, low_px, ts_drained = drained
+        assert (last_px, high_px, low_px) == pytest.approx((60200.0, 60500.0, 59800.0))
+        assert ts_drained == 1700000010600  # preserva ts_ms real do trade (sem sobrescrever com now_ms)
+        # Drain subsequente dentro de 5s sem novos trades não repete pavio antigo
+        drained2 = tracker.drain("BTCUSDT", max_age_s=5.0)
+        assert drained2 is not None and drained2[:3] == pytest.approx((60200.0, 60200.0, 60200.0))
+        # Após > 5s expira e retorna None para acionar fallback REST
+        tracker._ticks["BTCUSDT"]["mono_ts"] -= 10.0
+        assert tracker.drain("BTCUSDT", max_age_s=5.0) is None
+
+        # Loop de monitoramento real-time fecha SCALP em TP3 via fallback REST mockado
+        ts = 1700000000000
+        sig = TradeSignal(
+            signal_id="rt-daemon-01",
+            timestamp=ts,
+            symbol="BTCUSDT",
+            direction="BUY",
+            entry_price=60000.0,
+            stop_loss=59000.0,
+            take_profit=62000.0,
+            atr=500.0,
+            confidence=0.85,
+            consensus_score=0.75,
+            position_size=1000.0,
+            risk_dollars=50.0,
+            rationale="Daemon RT loop",
+        )
+        pos = engine.execute_scalp_signal(sig, current_price=60000.0, timestamp=ts)
+        assert pos is not None
+
+        class DummyLoader:
+            async def get_funding_history(self, *a, **kw):
+                return []
+
+            async def close(self):
+                pass
+
+        class DummyScanner:
+            async def close(self):
+                pass
+
+        daemon = PaperTradingDaemon(
+            poll_interval_seconds=1,
+            engine=engine,
+            loader=DummyLoader(),
+            golden_pot_agent=DummyScanner(),
+            enable_realtime_monitor=True,
+        )
+        assert daemon.enable_realtime_monitor is True
+
+        async def _run_one_rt_iteration():
+            daemon.is_running = True
+            with mock.patch.object(daemon.rt_tracker, "sync_symbols", lambda syms: None), \
+                 mock.patch.object(daemon.rt_tracker, "stop", lambda: None), \
+                 mock.patch.object(
+                     daemon.rt_tracker,
+                     "fetch_rest_price",
+                     lambda sym, timeout=2.0: (pos.tp3_price + 10.0, pos.entry_timestamp + 5000),
+                 ):
+                task = asyncio.create_task(daemon._realtime_position_monitor_loop())
+                await asyncio.sleep(0.15)
+                daemon.is_running = False
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        asyncio.run(_run_one_rt_iteration())
+        assert pos.position_id not in engine.positions
+        assert engine.trade_history[-1].action == "TAKE_PROFIT_3"
 
 
 

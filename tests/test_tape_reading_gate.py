@@ -222,7 +222,14 @@ def test_gate_sell_targets_below_and_agent_error_failopen(tmp_path):
     s.__dict__.update(direction="SELL", confidence=0.7, consensus_score=-0.4, stop_loss=101.0)
     assert d._flow_gate("GOLDEN_POT", "PEPEUSDT", "SELL", s, 2.0, 100.0, 1.0) is True
     r = rows(d)[0]
-    assert r["decision"] == "UNAVAILABLE_PASSED" and r["tp1"] < 100.0 and r["tp3"] < r["tp1"]
+    assert r["decision"] == "UNAVAILABLE_PASSED" and r["tp1"] < 100.0 and r["tp2"] < r["tp1"] and r["tp3"] == 0.0
+    # Preserva cobertura de tp3 < tp1 em SELL via SCALP (tp3_atr_mult=2.2 > 0)
+    sc_dir = tmp_path / "scalp_sell"
+    sc_dir.mkdir()
+    d_sc = daemon(sc_dir, FixedTape("SELL"))
+    assert d_sc._flow_gate("SCALP", "BTCUSDT", "SELL", s, 2.0, 100.0, 1.0) is True
+    r_sc = rows(d_sc)[0]
+    assert r_sc["tp1"] < 100.0 and r_sc["tp3"] < r_sc["tp1"]
 
 
 def test_every_signal_logged(tmp_path):

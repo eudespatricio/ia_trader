@@ -35,7 +35,7 @@ def test_strategy_profiles_exact_live_invariants():
     assert directional.sl_atr_mult == pytest.approx(1.0)
     assert directional.tp1_atr_mult == pytest.approx(1.5)
     assert directional.tp2_atr_mult == pytest.approx(2.5)
-    assert directional.tp3_atr_mult == pytest.approx(4.0)
+    assert directional.tp3_atr_mult == pytest.approx(0.0)
     assert directional.trail_atr_mult == pytest.approx(1.2)
     assert directional.bar_ms == 3_600_000
     assert directional.max_holding_bars == 48
@@ -44,7 +44,7 @@ def test_strategy_profiles_exact_live_invariants():
     assert gp.sl_atr_mult == pytest.approx(1.5)
     assert gp.tp1_atr_mult == pytest.approx(1.5)
     assert gp.tp2_atr_mult == pytest.approx(2.5)
-    assert gp.tp3_atr_mult == pytest.approx(6.0)
+    assert gp.tp3_atr_mult == pytest.approx(0.0)
     assert gp.trail_atr_mult == pytest.approx(1.5)
     assert gp.bar_ms == 300_000
     assert gp.max_holding_bars == 36

@@ -15,6 +15,7 @@ import time
 import urllib.request
 import sqlite3
 from db_conn import connect as _closing_connect
+from live_price_hub import LIVE_PRICE_HUB
 import asyncio
 import logging
 import json
@@ -996,8 +997,18 @@ _TICKER_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _OPEN_CANDLE_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, Any]]] = {}
 
 def get_realtime_ticker(symbol: str) -> Dict[str, Any]:
-    """Obtém ticker 24h real com lastPrice, high24h, low24h, change24h da Binance (com cache de 2.5s)."""
+    """Obtém ticker 24h real com lastPrice, high24h, low24h, change24h (Hub WS primeiro, fallback REST/SQLite)."""
     sym = symbol.upper()
+    hub_ticker = LIVE_PRICE_HUB.get_ticker(sym)
+    if hub_ticker and float(hub_ticker.get("last_price", 0.0)) > 0:
+        return {
+            "last_price": float(hub_ticker["last_price"]),
+            "change_pct_24h": round(float(hub_ticker.get("change_pct_24h", 0.0)), 2),
+            "high_24h": float(hub_ticker.get("high_24h", hub_ticker["last_price"])),
+            "low_24h": float(hub_ticker.get("low_24h", hub_ticker["last_price"])),
+            "volume_24h": float(hub_ticker.get("volume_24h", 0.0)),
+        }
+
     now = time.time()
     if sym in _TICKER_CACHE:
         ts_cached, val = _TICKER_CACHE[sym]
@@ -1056,8 +1067,16 @@ def get_realtime_ticker(symbol: str) -> Dict[str, Any]:
 
 
 def fetch_binance_open_candle(symbol: str, timeframe: str) -> Optional[Dict[str, Any]]:
-    """Busca a vela corrente em formação (não fechada) diretamente da Binance REST."""
-    key = (symbol.upper(), timeframe.lower())
+    """Busca a vela corrente em formação (Hub WS primeiro se ativo/injetado, fallback Binance REST)."""
+    sym = symbol.upper()
+    tf = timeframe.lower()
+    if LIVE_PRICE_HUB.is_running:
+        LIVE_PRICE_HUB.watch_kline(sym, tf)
+    hub_candle = LIVE_PRICE_HUB.get_open_candle(sym, tf)
+    if hub_candle:
+        return hub_candle
+
+    key = (sym, tf)
     now = time.time()
     if key in _OPEN_CANDLE_CACHE:
         ts_cached, val = _OPEN_CANDLE_CACHE[key]
@@ -1334,6 +1353,14 @@ def api_chart(symbol: str, timeframe: str):
     high_24h = ticker["high_24h"] if ticker.get("high_24h", 0.0) > 0 else max(highs)
     low_24h = ticker["low_24h"] if ticker.get("low_24h", 0.0) > 0 else min(lows)
     volume_24h = ticker["volume_24h"] if ticker.get("volume_24h", 0.0) > 0 else round(sum(volumes), 2)
+
+    # Sincroniza active_position com o last_price exato em tempo real (apenas LONG/SHORT)
+    if active_position and last_price > 0 and str(active_position.get("side") or "").upper() in ("LONG", "SHORT"):
+        entry = float(active_position.get("entry_price") or 0.0)
+        qty = float(active_position.get("quantity") or 0.0)
+        sign = _side_sign(active_position.get("side"))
+        active_position["current_price"] = last_price
+        active_position["unrealized_pnl"] = round(sign * (last_price - entry) * qty, 4)
 
     # Sincroniza a vela em formação corrente com o last_price exato do ticker em tempo real
     if live_bar and len(closes) > 0 and last_price > 0:
@@ -1702,10 +1729,68 @@ def api_update_simulation_settings():
 # ROTAS DE TELEMETRIA DO MOTOR DE PAPER TRADING (FASE 6)
 # ============================================================================
 
-@app.route("/api/paper-trading/status", methods=["GET"])
-def api_paper_trading_status():
-    """Retorna métricas agregadas da conta de simulação e curva de equity."""
-    default_resp = {
+def _get_live_price_map(symbols: Any, force_live: bool = False) -> Dict[str, float]:
+    """Resolve preços ao vivo para símbolos abertos sem afetar testes offline sem hub/injeção."""
+    syms = list(dict.fromkeys(str(s or "").strip().upper() for s in (symbols or []) if str(s or "").strip()))
+    if not syms:
+        return {}
+    hub_running = LIVE_PRICE_HUB.is_running
+    has_injected = any(LIVE_PRICE_HUB.has_fresh_price(s) for s in syms)
+    if not hub_running and not force_live and not has_injected:
+        return {}
+    if hub_running or force_live:
+        if hub_running:
+            LIVE_PRICE_HUB.watch_symbols(syms)
+        return LIVE_PRICE_HUB.get_prices(syms, allow_rest_fallback=True)
+    return LIVE_PRICE_HUB.get_prices(syms, allow_rest_fallback=False)
+
+
+def _apply_live_price_to_position(pos: Dict[str, Any], live_px: float) -> Dict[str, Any]:
+    """Re-marca posição OPEN com preço ao vivo mantendo fórmulas idênticas a _enrich_position."""
+    try:
+        px = float(live_px)
+    except (TypeError, ValueError):
+        return pos
+    if px <= 0.0 or str(pos.get("status") or "").upper() != "OPEN":
+        return pos
+    if str(pos.get("side") or "").upper() not in ("LONG", "SHORT"):
+        return pos
+    entry = float(pos.get("entry_price") or 0.0)
+    qty = float(pos.get("quantity") or 0.0)
+    sign = _side_sign(pos.get("side"))
+    try:
+        lev = float(pos.get("leverage_effective") or pos.get("leverage") or 1.0)
+    except (TypeError, ValueError):
+        lev = 1.0
+    if lev < 1.0:
+        lev = 1.0
+    margin_initial = float(pos.get("margin_effective") or 0.0)
+    if margin_initial <= 0.0:
+        try:
+            margin_raw = float(pos.get("margin")) if pos.get("margin") not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            margin_raw = 0.0
+        init_qty = float(pos.get("initial_quantity") or 0.0) or qty
+        init_notional = init_qty * entry if entry > 0 else float(pos.get("notional") or 0.0)
+        margin_initial = margin_raw if margin_raw > 0 else init_notional / lev
+    remaining_margin = (qty * entry / lev) if entry > 0 else margin_initial
+    unreal = round(sign * (px - entry) * qty, 4) if entry > 0 else float(pos.get("unrealized_pnl") or 0.0)
+    rec = float(pos.get("realized_pnl") or 0.0)
+    tot_pnl = unreal + rec
+    pos["current_price"] = px
+    pos["unrealized_pnl"] = unreal
+    pos["price_change_pct"] = round(sign * (px - entry) / entry * 100.0, 4) if entry > 0 else 0.0
+    pos["roi_pct"] = round(unreal / remaining_margin * 100.0, 4) if remaining_margin > 0 else 0.0
+    pos["roi_total_pct"] = round(tot_pnl / margin_initial * 100.0, 4) if margin_initial > 0 else 0.0
+    return pos
+
+
+def _compute_paper_trading_status(
+    include_equity_curve: bool = True,
+    live_prices: Optional[Dict[str, float]] = None,
+) -> Tuple[Dict[str, Any], int]:
+    """Calcula métricas agregadas de simulação (+ last_trade_rowid) em conexão RO única."""
+    default_resp: Dict[str, Any] = {
         "simulation_mode": True,
         "initial_capital": 10000.0,
         "current_balance": 10000.0,
@@ -1724,11 +1809,13 @@ def api_paper_trading_status():
         "daily_scalps_target_reached": False,
         "daily_scalps_limit_reached": False,
         "daily_scalps_quota_status": "BUSCANDO_MINIMO",
-        "equity_curve": [],
     }
+    if include_equity_curve:
+        default_resp["equity_curve"] = []
+    last_trade_rowid = 0
 
     if not os.path.exists(DB_PATH):
-        return jsonify(default_resp)
+        return default_resp, last_trade_rowid
 
     try:
         uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
@@ -1755,82 +1842,124 @@ def api_paper_trading_status():
                 except Exception:
                     trade_epoch = 0
 
-            # Posições abertas e Margem Comprometida
-            cur.execute("SELECT COUNT(*), SUM(unrealized_pnl), SUM(notional / COALESCE(NULLIF(leverage, 0), 1.0)) FROM paper_positions WHERE status='OPEN'")
-            row_pos = cur.fetchone()
-            open_count = int(row_pos[0] or 0)
-            unrealized = float(row_pos[1] or 0.0)
-            margin_used_val = float(row_pos[2] or 0.0)
+            # Posições abertas e Margem Comprometida (com suporte a live repricing)
+            open_rows = []
+            try:
+                cur.execute(
+                    "SELECT symbol, side, entry_price, quantity, unrealized_pnl, notional, leverage "
+                    "FROM paper_positions WHERE UPPER(status)='OPEN'"
+                )
+                open_rows = [dict(r) for r in cur.fetchall()]
+            except sqlite3.OperationalError:
+                open_rows = []
+
+            open_count = len(open_rows)
+            margin_used_val = sum(
+                float(r.get("notional") or 0.0) / (float(r.get("leverage") or 1.0) or 1.0)
+                for r in open_rows
+            )
+            price_map = live_prices if live_prices is not None else (
+                _get_live_price_map([r.get("symbol") for r in open_rows]) if open_rows else {}
+            )
+            if price_map:
+                unrealized = 0.0
+                for r in open_rows:
+                    sym_u = str(r.get("symbol") or "").upper()
+                    live_px = price_map.get(sym_u)
+                    entry = float(r.get("entry_price") or 0.0)
+                    qty = float(r.get("quantity") or 0.0)
+                    if live_px and live_px > 0 and entry > 0 and str(r.get("side") or "").upper() in ("LONG", "SHORT"):
+                        unrealized += _side_sign(r.get("side")) * (live_px - entry) * qty
+                    else:
+                        unrealized += float(r.get("unrealized_pnl") or 0.0)
+            else:
+                unrealized = sum(float(r.get("unrealized_pnl") or 0.0) for r in open_rows)
 
             # Trades e PnL Realizado respeitando o epoch do reset da sprint
-            if trade_epoch > 0:
-                cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades WHERE rowid > ?", (trade_epoch,))
-            else:
-                cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades")
-            row_tr = cur.fetchone()
-            realized = float(row_tr[1] or 0.0) if row_tr else 0.0
-            fees = float(row_tr[2] or 0.0) if row_tr else 0.0
+            realized, fees = 0.0, 0.0
+            closed_trades_count, win_count = 0, 0
+            daily_scalps_today, daily_golden_pots_today = 0, 0
+            try:
+                row_max = cur.execute("SELECT COALESCE(MAX(rowid), 0) FROM paper_trades").fetchone()
+                last_trade_rowid = int(row_max[0] or 0) if row_max else 0
 
-            # Trades fechados e Win Rate por posição (position_id):
-            # TP1_PARTIAL, TP2_PARTIAL e saída final pertencem ao mesmo trade (position_id).
-            epoch_clause = "WHERE rowid > ?" if trade_epoch > 0 else ""
-            epoch_params = (trade_epoch,) if trade_epoch > 0 else ()
-            cur.execute(f"""
-                SELECT COUNT(*), 
-                       SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END)
-                FROM (
-                    SELECT position_id, SUM(pnl) as net_pnl 
+                if trade_epoch > 0:
+                    cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades WHERE rowid > ?", (trade_epoch,))
+                else:
+                    cur.execute("SELECT COUNT(*), SUM(pnl), SUM(fee) FROM paper_trades")
+                row_tr = cur.fetchone()
+                realized = float(row_tr[1] or 0.0) if row_tr else 0.0
+                fees = float(row_tr[2] or 0.0) if row_tr else 0.0
+
+                epoch_clause = "WHERE rowid > ?" if trade_epoch > 0 else ""
+                epoch_params = (trade_epoch,) if trade_epoch > 0 else ()
+                cur.execute(f"""
+                    SELECT COUNT(*), 
+                           SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END)
+                    FROM (
+                        SELECT position_id, SUM(pnl) as net_pnl 
+                        FROM paper_trades 
+                        {epoch_clause}
+                        GROUP BY position_id
+                        HAVING position_id NOT IN (SELECT position_id FROM paper_positions WHERE status = 'OPEN')
+                           AND MAX(CASE WHEN action NOT LIKE 'OPEN_%' THEN 1 ELSE 0 END) = 1
+                    )
+                """, epoch_params)
+                row_closed = cur.fetchone()
+                closed_trades_count = int(row_closed[0] or 0) if row_closed else 0
+                win_count = int(row_closed[1] or 0) if row_closed else 0
+
+                today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                epoch_today_clause = "AND rowid > ?" if trade_epoch > 0 else ""
+                epoch_today_params = (today_utc, trade_epoch) if trade_epoch > 0 else (today_utc,)
+                cur.execute(f"""
+                    SELECT COUNT(*), 
+                           SUM(CASE WHEN action LIKE 'OPEN_SCALP%' THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN action LIKE 'OPEN_GOLDEN_POT%' THEN 1 ELSE 0 END)
                     FROM paper_trades 
-                    {epoch_clause}
-                    GROUP BY position_id
-                    HAVING position_id NOT IN (SELECT position_id FROM paper_positions WHERE status = 'OPEN')
-                       AND MAX(CASE WHEN action NOT LIKE 'OPEN_%' THEN 1 ELSE 0 END) = 1
-                )
-            """, epoch_params)
-            row_closed = cur.fetchone()
-            closed_trades_count = int(row_closed[0] or 0) if row_closed else 0
-            win_count = int(row_closed[1] or 0) if row_closed else 0
+                    WHERE date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') = ?
+                      {epoch_today_clause}
+                """, epoch_today_params)
+                row_cotas = cur.fetchone()
+                daily_scalps_today = int(row_cotas[1] or 0) if row_cotas else 0
+                daily_golden_pots_today = int(row_cotas[2] or 0) if row_cotas else 0
+            except sqlite3.OperationalError:
+                pass
+
             win_rate = (win_count / closed_trades_count * 100.0) if closed_trades_count > 0 else 0.0
             total_trades = closed_trades_count
 
-            # Cota de Scalps de Hoje (UTC)
-            today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            epoch_today_clause = "AND rowid > ?" if trade_epoch > 0 else ""
-            epoch_today_params = (today_utc, trade_epoch) if trade_epoch > 0 else (today_utc,)
-            cur.execute(f"""
-                SELECT COUNT(*), 
-                       SUM(CASE WHEN action LIKE 'OPEN_SCALP%' THEN 1 ELSE 0 END),
-                       SUM(CASE WHEN action LIKE 'OPEN_GOLDEN_POT%' THEN 1 ELSE 0 END)
-                FROM paper_trades 
-                WHERE date(CASE WHEN timestamp > 100000000000 THEN timestamp/1000 ELSE timestamp END, 'unixepoch') = ?
-                  {epoch_today_clause}
-            """, epoch_today_params)
-            row_cotas = cur.fetchone()
-            daily_scalps_today = int(row_cotas[1] or 0) if row_cotas else 0
-            daily_golden_pots_today = int(row_cotas[2] or 0) if row_cotas else 0
-
             # Saldo e Equity oficiais a partir de paper_portfolio
-            cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio ORDER BY timestamp DESC LIMIT 1")
-            last_port = cur.fetchone()
-            if last_port:
-                equity_val = float(last_port["equity"])
-                balance_val = float(last_port["balance"])
-            else:
-                equity_val = 10000.0 + realized + unrealized
-                balance_val = 10000.0 + realized - fees
+            last_port = None
+            try:
+                cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio ORDER BY timestamp DESC LIMIT 1")
+                last_port = cur.fetchone()
+            except sqlite3.OperationalError:
+                last_port = None
 
-            # Histórico de equity recente
-            if trade_epoch > 0:
-                cur.execute("SELECT timestamp FROM paper_trades WHERE rowid > ? ORDER BY timestamp ASC LIMIT 1", (trade_epoch,))
-                first_tr = cur.fetchone()
-                if first_tr and first_tr[0]:
-                    cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT 100", (first_tr[0],))
-                    eq_rows = [dict(r) for r in cur.fetchall()]
-                else:
-                    eq_rows = [dict(last_port)] if last_port else []
+            if last_port:
+                balance_val = float(last_port["balance"])
+                equity_val = (balance_val + unrealized) if price_map else float(last_port["equity"])
             else:
-                cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio ORDER BY timestamp DESC LIMIT 100")
-                eq_rows = [dict(r) for r in cur.fetchall()]
+                balance_val = 10000.0 + realized - fees
+                equity_val = (balance_val + unrealized) if price_map else (10000.0 + realized + unrealized)
+
+            eq_rows = []
+            if include_equity_curve:
+                try:
+                    if trade_epoch > 0:
+                        cur.execute("SELECT timestamp FROM paper_trades WHERE rowid > ? ORDER BY timestamp ASC LIMIT 1", (trade_epoch,))
+                        first_tr = cur.fetchone()
+                        if first_tr and first_tr[0]:
+                            cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT 100", (first_tr[0],))
+                            eq_rows = [dict(r) for r in cur.fetchall()]
+                        else:
+                            eq_rows = [dict(last_port)] if last_port else []
+                    else:
+                        cur.execute("SELECT timestamp, equity, balance, margin_used FROM paper_portfolio ORDER BY timestamp DESC LIMIT 100")
+                        eq_rows = [dict(r) for r in cur.fetchall()]
+                except sqlite3.OperationalError:
+                    eq_rows = []
 
             # Lê limites dinâmicos da tabela simulation_settings
             max_scalps_dyn = 5
@@ -1887,13 +2016,20 @@ def api_paper_trading_status():
                 "daily_golden_pots_quota_status": (
                     "LIMITE_ATINGIDO" if daily_golden_pots_today >= max_pots_dyn else "DISPONIVEL"
                 ),
-                "equity_curve": eq_rows[::-1],
             })
+            if include_equity_curve:
+                default_resp["equity_curve"] = eq_rows[::-1]
     except Exception as e:
         default_resp["error"] = str(e)
 
+    return default_resp, last_trade_rowid
 
-    return jsonify(default_resp)
+
+@app.route("/api/paper-trading/status", methods=["GET"])
+def api_paper_trading_status():
+    """Retorna métricas agregadas da conta de simulação e curva de equity."""
+    resp, _ = _compute_paper_trading_status(include_equity_curve=True)
+    return jsonify(resp)
 
 
 PAPER_INITIAL_CAPITAL = 10000.0
@@ -2005,7 +2141,7 @@ def _enrich_position(pos: Dict[str, Any], close_info: Optional[Dict[str, Any]], 
     return pos
 
 
-def _query_paper_positions(which: str, with_summary: bool = False):
+def _query_paper_positions(which: str, with_summary: bool = False, live_prices: Optional[Dict[str, float]] = None):
     """Lê paper_positions (estado atual do engine, NÃO o ledger de eventos). which: open|closed|all.
 
     Retorna lista (e, com with_summary, (lista, resumo)). Resumo cobre TODAS as linhas do filtro
@@ -2046,15 +2182,27 @@ def _query_paper_positions(which: str, with_summary: bool = False):
                 except sqlite3.OperationalError:
                     close_map, events_map = {}, {}
 
+                if live_prices is not None:
+                    price_map = live_prices
+                elif which in ("open", "all"):
+                    open_syms = [r.get("symbol") for r in rows if str(r.get("status") or "").upper() == "OPEN"]
+                    price_map = _get_live_price_map(open_syms) if open_syms else {}
+                else:
+                    price_map = {}
+
                 now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                 for r in rows:
                     _enrich_position(r, close_map.get(r.get("position_id")), now_ms)
+                    st_open = str(r.get("status") or "").upper() == "OPEN"
+                    if st_open and price_map:
+                        live_px = price_map.get(str(r.get("symbol") or "").upper())
+                        if live_px and live_px > 0:
+                            _apply_live_price_to_position(r, live_px)
                     r["events"] = events_map.get(r.get("position_id"), [])
                     ci = close_map.get(r.get("position_id")) or {}
-                    if str(r.get("status") or "").upper() != "OPEN" and ci.get("action"):
+                    if not st_open and ci.get("action"):
                         r["close_action"] = ci["action"]
                         r["close_action_label"] = _ledger_label(ci["action"])
-                    st_open = str(r.get("status") or "").upper() == "OPEN"
                     pnl = float(r.get("unrealized_pnl") or 0.0) if st_open else float(r.get("net_pnl") or 0.0)
                     summary["total_pnl"] += pnl
                     summary["wins" if pnl > 0 else "losses"] += 1
@@ -2098,6 +2246,181 @@ def api_paper_trading_positions():
     if which not in ("open", "closed", "all"):
         which = "open"
     return _positions_response(which)
+
+
+def _read_latest_sqlite_candle(sym: str, tf: str) -> Optional[Dict[str, Any]]:
+    """Lê a última vela local em SQLite (RO, sem rede) para fallback offline/testes."""
+    if not os.path.exists(DB_PATH):
+        return None
+    try:
+        uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
+        with _closing_connect(uri, uri=True, timeout=3.0) as con:
+            con.row_factory = sqlite3.Row
+            cur = con.cursor()
+            cur.execute(
+                "SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume "
+                "FROM candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT 1",
+                (sym, tf),
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.execute(
+                    "SELECT symbol, timeframe, timestamp, open, high, low, close, volume, quote_volume "
+                    "FROM candles WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+                    (sym,),
+                )
+                row = cur.fetchone()
+            if row:
+                ts = int(row["timestamp"] or 0)
+                return {
+                    "symbol": str(row["symbol"] or sym).upper(),
+                    "timeframe": str(row["timeframe"] or tf).lower(),
+                    "timestamp": ts,
+                    "time": int(ts // 1000) if ts > 0 else 0,
+                    "open": float(row["open"] or 0.0),
+                    "high": float(row["high"] or 0.0),
+                    "low": float(row["low"] or 0.0),
+                    "close": float(row["close"] or 0.0),
+                    "volume": float(row["volume"] or 0.0),
+                    "quote_volume": float(row["quote_volume"] or 0.0),
+                }
+    except Exception:
+        pass
+    return None
+
+
+@app.route("/api/live-tick", methods=["GET"])
+def api_live_tick():
+    """Endpoint leve de 1s: ticker, vela corrente, posições re-marcadas e KPIs sem recalcular indicadores."""
+    sym = (request.args.get("symbol") or "BTCUSDT").strip().upper()
+    tf = (request.args.get("timeframe") or "5m").strip().lower()
+    ts_ms = int(time.time() * 1000)
+
+    ticker: Optional[Dict[str, Any]] = None
+    candle: Optional[Dict[str, Any]] = None
+    live_source = "sqlite"
+
+    if LIVE_PRICE_HUB.is_running:
+        LIVE_PRICE_HUB.watch_kline(sym, tf)
+        hub_ticker = LIVE_PRICE_HUB.get_ticker(sym)
+        hub_candle = LIVE_PRICE_HUB.get_open_candle(sym, tf)
+        if hub_ticker:
+            ticker = {
+                "last_price": float(hub_ticker["last_price"]),
+                "change_pct_24h": round(float(hub_ticker.get("change_pct_24h", 0.0)), 2),
+                "high_24h": float(hub_ticker.get("high_24h", hub_ticker["last_price"])),
+                "low_24h": float(hub_ticker.get("low_24h", hub_ticker["last_price"])),
+                "volume_24h": float(hub_ticker.get("volume_24h", 0.0)),
+            }
+            live_source = "ws"
+        if hub_candle:
+            candle = dict(hub_candle)
+            candle["time"] = int(int(candle.get("timestamp") or 0) // 1000)
+            live_source = "ws"
+        if ticker is None:
+            rest_prices = LIVE_PRICE_HUB.get_prices([sym], allow_rest_fallback=True)
+            lp = rest_prices.get(sym, 0.0)
+            if lp > 0:
+                ticker = {"last_price": lp, "change_pct_24h": 0.0, "high_24h": lp, "low_24h": lp, "volume_24h": 0.0}
+                if live_source == "sqlite":
+                    live_source = "rest"
+        if candle is None:
+            candle = _read_latest_sqlite_candle(sym, tf)
+        if ticker is None and candle and float(candle.get("close", 0.0)) > 0:
+            lp = float(candle["close"])
+            ticker = {
+                "last_price": lp, "change_pct_24h": 0.0,
+                "high_24h": float(candle.get("high", lp)), "low_24h": float(candle.get("low", lp)),
+                "volume_24h": float(candle.get("volume", 0.0)),
+            }
+    else:
+        # Modo offline / unit tests / run_test_server.py: ZERO chamadas de rede externas
+        hub_ticker = LIVE_PRICE_HUB.get_ticker(sym)
+        hub_candle = LIVE_PRICE_HUB.get_open_candle(sym, tf)
+        if hub_ticker or hub_candle:
+            live_source = "hub"
+        if hub_ticker:
+            ticker = {
+                "last_price": float(hub_ticker["last_price"]),
+                "change_pct_24h": round(float(hub_ticker.get("change_pct_24h", 0.0)), 2),
+                "high_24h": float(hub_ticker.get("high_24h", hub_ticker["last_price"])),
+                "low_24h": float(hub_ticker.get("low_24h", hub_ticker["last_price"])),
+                "volume_24h": float(hub_ticker.get("volume_24h", 0.0)),
+            }
+        if hub_candle:
+            candle = dict(hub_candle)
+            candle["time"] = int(int(candle.get("timestamp") or 0) // 1000)
+        if candle is None or ticker is None:
+            sql_candle = _read_latest_sqlite_candle(sym, tf)
+            if candle is None and sql_candle is not None:
+                candle = sql_candle
+            if ticker is None and sql_candle is not None and float(sql_candle.get("close", 0.0)) > 0:
+                lp = float(sql_candle["close"])
+                ticker = {
+                    "last_price": lp, "change_pct_24h": 0.0,
+                    "high_24h": float(sql_candle.get("high", lp)), "low_24h": float(sql_candle.get("low", lp)),
+                    "volume_24h": float(sql_candle.get("volume", 0.0)),
+                }
+
+    if ticker is None:
+        lp = float(candle["close"]) if (candle and float(candle.get("close", 0.0)) > 0) else 0.0
+        ticker = {"last_price": lp, "change_pct_24h": 0.0, "high_24h": lp, "low_24h": lp, "volume_24h": 0.0}
+
+    # Sincroniza close/high/low da vela aberta com o last_price exato do ticker
+    lp = float(ticker.get("last_price") or 0.0)
+    if candle is not None:
+        if "time" not in candle or not candle["time"]:
+            candle["time"] = int(int(candle.get("timestamp") or 0) // 1000)
+        if lp > 0:
+            candle["close"] = lp
+            if lp > float(candle.get("high") or 0.0):
+                candle["high"] = lp
+            if float(candle.get("low") or 0.0) <= 0 or lp < float(candle["low"]):
+                candle["low"] = lp
+        elif float(candle.get("close") or 0.0) > 0:
+            ticker["last_price"] = float(candle["close"])
+            lp = ticker["last_price"]
+
+    # Coleta símbolos das posições abertas e resolve mapa de preços sem rede quando hub parado
+    open_syms: List[str] = [sym]
+    if os.path.exists(DB_PATH):
+        try:
+            uri = f"file:{os.path.abspath(DB_PATH)}?mode=ro"
+            with _closing_connect(uri, uri=True, timeout=3.0) as con:
+                cur = con.cursor()
+                cur.execute("SELECT DISTINCT symbol FROM paper_positions WHERE UPPER(status) = 'OPEN' AND quantity > 0")
+                open_syms.extend(str(r[0]).upper() for r in cur.fetchall() if r and r[0])
+        except sqlite3.OperationalError:
+            pass
+
+    price_map = _get_live_price_map(open_syms)
+    if lp > 0 and live_source in ("ws", "rest", "hub") and sym not in price_map:
+        price_map[sym] = lp
+
+    open_positions, open_summary = _query_paper_positions("open", with_summary=True, live_prices=price_map)
+    paper_status, last_trade_rowid = _compute_paper_trading_status(include_equity_curve=False, live_prices=price_map)
+
+    active_pos_raw = next((p for p in open_positions if str(p.get("symbol") or "").upper() == sym), None)
+    active_position = dict(active_pos_raw) if active_pos_raw is not None else None
+    if active_position and lp > 0 and str(active_position.get("side") or "").upper() in ("LONG", "SHORT"):
+        entry = float(active_position.get("entry_price") or 0.0)
+        qty = float(active_position.get("quantity") or 0.0)
+        active_position["current_price"] = lp
+        active_position["unrealized_pnl"] = round(_side_sign(active_position.get("side")) * (lp - entry) * qty, 4)
+
+    return jsonify({
+        "ts_ms": ts_ms,
+        "symbol": sym,
+        "timeframe": tf,
+        "live_source": live_source,
+        "ticker": ticker,
+        "candle": candle,
+        "active_position": active_position,
+        "paper_status": paper_status,
+        "open_positions": open_positions,
+        "open_summary": open_summary,
+        "last_trade_rowid": last_trade_rowid,
+    })
 
 
 @app.route("/api/paper-trading/trades", methods=["GET"])
@@ -2671,6 +2994,8 @@ def protected():
 # ============================================================================
 
 if __name__ == "__main__":
+    from live_price_hub import start_live_price_hub
+    start_live_price_hub()
     port = int(os.getenv("PORT", 5000))
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
@@ -2679,4 +3004,4 @@ if __name__ == "__main__":
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() in ("true", "1")
     print(f"🚀 Iniciando IA Trader Dashboard em http://{host}:{port}")
     print(f"🔒 Modo READ-ONLY: Ativo. Banco de dados: {DB_PATH}")
-    app.run(host=host, port=port, debug=debug_mode)
+    app.run(host=host, port=port, debug=debug_mode, threaded=True)

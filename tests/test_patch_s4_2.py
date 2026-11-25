@@ -78,19 +78,22 @@ def test_backtest_same_bar_be_closed_safe_parity():
         {"timestamp": base_ts + 0 * SWING_BAR_MS, "open": 99.8, "high": 100.2, "low": 99.7, "close": 100.0, "atr_14": 1.0},
         # Barra 1: atinge TP1 (+1.5 ATR ~101.52), pavio inicial toca 99.8 (< BE ~100.06, > SL ~99.02) e fecha salvo a 100.60
         {"timestamp": base_ts + 1 * SWING_BAR_MS, "open": 100.0, "high": 101.8, "low": 99.8, "close": 100.6, "atr_14": 1.0},
-        # Barras 2..4: expansão até TP3 (+4.0 ATR ~104.02)
+        # Barras 2..4: expansão até TP2 (+2.5 ATR ~102.52) e runner aberto acima do antigo TP3 (+4.0 ATR)
         {"timestamp": base_ts + 2 * SWING_BAR_MS, "open": 100.6, "high": 102.8, "low": 100.5, "close": 102.6, "atr_14": 1.0},
         {"timestamp": base_ts + 3 * SWING_BAR_MS, "open": 102.6, "high": 104.5, "low": 102.4, "close": 104.2, "atr_14": 1.0},
         {"timestamp": base_ts + 4 * SWING_BAR_MS, "open": 104.2, "high": 104.6, "low": 103.8, "close": 104.3, "atr_14": 1.0},
+        # Barra 5: pullback aciona TRAILING_STOP (104.6 - 1.2 * ATR = 103.4) no runner aberto
+        {"timestamp": base_ts + 5 * SWING_BAR_MS, "open": 104.3, "high": 104.4, "low": 103.0, "close": 103.2, "atr_14": 1.0},
     ]
     df = pd.DataFrame(rows)
-    sigs = np.array([1, 0, 0, 0, 0], dtype=np.int32)
+    sigs = np.array([1, 0, 0, 0, 0, 0], dtype=np.int32)
     eng = BacktestEngine(initial_capital=10_000.0, timeframe="1h", pilot_parity=True, risk_per_trade=None)
     res = eng.run(df, sigs, atr_col="atr_14")
     assert len(res.trades) == 1
     tr = res.trades[0]
     assert tr.exit_reason != "BREAKEVEN_STOP"
-    assert tr.exit_reason == "TAKE_PROFIT_3"
+    assert tr.exit_reason == "TRAILING_STOP"
+    assert tr.legs == 3
     assert tr.exit_timestamp > int(df["timestamp"].iloc[1])
 
 
