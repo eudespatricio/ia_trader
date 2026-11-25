@@ -638,11 +638,31 @@ class PaperTradingDaemon:
                 if df.empty:
                     return
                 closed = self._drop_forming_candle(df, tf_ms, now_ts)
-                min_entry_ts = min((p.entry_timestamp for p in open_sym_positions), default=0)
-                last_seen = max(self._last_tick_bar_ts.get(sym, 0), min_entry_ts - 1)
+                if len(closed) >= 2 and tf_ms > 0:
+                    ts_vals = [int(x) for x in closed["timestamp"].tolist()]
+                    on_tf_grid = (
+                        (len(ts_vals) >= 3 and (ts_vals[-1] - ts_vals[-2]) <= 2 * tf_ms)
+                        or abs(now_ts - ts_vals[-1]) <= 3 * tf_ms
+                    )
+                    if on_tf_grid:
+                        cut_idx = 0
+                        for idx in range(len(ts_vals) - 1, 0, -1):
+                            if (ts_vals[idx] - ts_vals[idx - 1]) > 12 * tf_ms:
+                                cut_idx = idx
+                                break
+                        if cut_idx > 0:
+                            closed = closed.iloc[cut_idx:]
+                min_floor_ts = min(
+                    (
+                        max(int(self.engine._ts_ms(p.entry_timestamp)), int(getattr(p, "last_event_ts_ms", 0.0) or 0))
+                        for p in open_sym_positions
+                    ),
+                    default=0,
+                )
+                last_seen = max(self._last_tick_bar_ts.get(sym, 0), min_floor_ts - 1)
                 for _, bar in closed.iterrows():
                     bts = int(bar["timestamp"])
-                    if bts <= last_seen or bts < min_entry_ts:
+                    if bts <= last_seen or bts < min_floor_ts:
                         continue
                     triggered = self.engine.update_market_tick(
                         symbol=sym, high=float(bar["high"]), low=float(bar["low"]), close=float(bar["close"]),
@@ -1896,9 +1916,12 @@ class PaperTradingDaemon:
         logger.info(f"   Dashboard ao vivo em: http://localhost:5000")
         logger.info("================================================================================")
 
+        want_rt = (
+            max_cycles == 0
+            and self.enable_realtime_monitor
+            and type(self.loader).__name__ != "FakeLoader"
+        )
         rt_task: Optional[asyncio.Task] = None
-        if max_cycles == 0 and self.enable_realtime_monitor and type(self.loader).__name__ != "FakeLoader":
-            rt_task = asyncio.create_task(self._realtime_position_monitor_loop())
 
         cycle = 0
         try:
@@ -1913,10 +1936,12 @@ class PaperTradingDaemon:
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"Falha ao atualizar cache externo macro/on-chain: {exc}")
 
-                # 1. Atualiza posições abertas: quando o monitor real-time está ativo, executa
-                # update_active_positions() apenas no ciclo 1 para catch-up offline de velas fechadas.
-                if rt_task is None or rt_task.done() or cycle == 1:
+                # 1. Atualiza posições abertas: no ciclo 1 roda catch-up offline ANTES de iniciar rt_task
+                # para evitar corrida entre tick live e velas fechadas; nos ciclos seguintes só roda se rt_task cair.
+                if rt_task is None or rt_task.done():
                     await self.update_active_positions()
+                if want_rt and (rt_task is None or rt_task.done()):
+                    rt_task = asyncio.create_task(self._realtime_position_monitor_loop())
 
                 # 2. Avalia novas oportunidades de Golden Pots (Cota separada e independente: máx 3/dia)
                 await self.evaluate_golden_pot_opportunities()

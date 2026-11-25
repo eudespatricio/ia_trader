@@ -4,6 +4,17 @@ Patch S6 Onda 2 (`v1.0.13`, `2026-11-24`) resolve o deadlock matemático pré-S5
 
 ---
 
+## 0-s6-3-hotfix. Hotfix P0 Pós-Restart (`v1.0.15`, `2026-11-25`) **[RESOLVED]**
+
+1. **P0 Stop Fantasma em Catch-up Pós-Restart (`9995d8a3 SOLUSDT`, `06:43 BRT`) [RESOLVED]:**
+   - **Causa:** `drop_open_candles()` descartava a vela em formação e `_load_candles_from_db(..., limit=10)` completava a janela com vela antiga do cache SQLite (`01:25 UTC`, 8h antes), avaliada antes do `TP1_PARTIAL` (`07:36:50 UTC`) contra `BREAKEVEN` pós-TP1; adicionalmente `rt_task` iniciava antes do catch-up de `cycle == 1`.
+   - **Correção:** [`data/data_loader.py`](file:///home/eudespatricio/ia_trader/data/data_loader.py) busca `limit + 1` dentro do teto de 1 requisição (`< 1000` Binance / `< 500` Bitget); [`smart_trade.py`](file:///home/eudespatricio/ia_trader/smart_trade.py) rastreia monotonicidade causal via `last_event_ts_ms` exclusivamente para `PARTIAL_TRADE_ACTIONS` (`TP1/TP2`, preservando replay de barras em `t0 + k*8h` pós-`FUNDING`); [`scripts/run_paper_simulation.py`](file:///home/eudespatricio/ia_trader/scripts/run_paper_simulation.py) corta gaps desconexos (`> 12 * tf_ms`), normaliza `entry_timestamp` em ms e inicia `rt_task` somente após concluir `update_active_positions()` no ciclo 1.
+2. **Dashboard `close_map` & Race `-wal` TOCTOU (`flask_interface.py`) [RESOLVED]:**
+   - `_query_paper_positions()` passa a ignorar `TP1_PARTIAL`, `TP2_PARTIAL` e `FUNDING` em `close_map` (evitando exibir `TP1` como saída quando o evento de fechamento teve timestamp anterior) com ordenação `ORDER BY timestamp ASC, rowid ASC`; `get_sqlite_metrics()` trata `FileNotFoundError` em `os.path.getsize(wal_path)`.
+   - **Validação & Notas P2/P3 (`hotfix-reviewer` — `APPROVE`, `0×P0/P1`, `910 passed`):** Notas residuais P2/P3 não bloqueantes: filtro `on_tf_grid` via `abs(now_ts - ts[-1]) <= 3*tf_ms`, janela `<=` vs `<` entre barra e tick residual em `update_realtime_price`, e ordenação SQL de `paper_trades` assumindo unidades uniformes.
+
+---
+
 ## 0-s6-3. Auditoria Zero Scalps/GP & Ablações OOS (`2026-11-25`) — Pré-Onda S6.3
 
 1. **Ablações OOS `SCALP 15m` & `GOLDEN_POT 5m` (`TRIAL_0176..0191`) [TODOS `NO-GO`]:**

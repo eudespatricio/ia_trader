@@ -207,6 +207,7 @@ class PaperPosition:
     # estado em memória de funding/timeout (P4/P5); reconstruído em restore_state
     funding_cursor_ms: float = 0.0    # última liquidação de funding já aplicada (0 = usa entry_timestamp)
     last_bar_close: float = 0.0       # close da última barra FECHADA processada (== open da seguinte em 24/7)
+    last_event_ts_ms: float = 0.0     # timestamp do último evento causal (TP1/TP2) aplicado à posição
 
     @property
     def runner_fraction(self) -> float:
@@ -239,7 +240,7 @@ class PaperPosition:
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         for k in ("trail_ref_extreme", "trail_bar_ts", "trail_bar_high", "trail_bar_low",
-                  "funding_cursor_ms", "last_bar_close"):
+                  "funding_cursor_ms", "last_bar_close", "last_event_ts_ms"):
             d.pop(k, None)   # estado interno de barras, não é contrato público
         d["margin"] = self.margin
         d["liquidation_price"] = self.liquidation_price
@@ -655,10 +656,16 @@ class PaperTradingEngine:
                     closed_pos.append(pos)
 
             # P5: cursor de funding = último FUNDING já lançado no ledger (não reaplica após restart)
+            # Monotonicidade causal: last_event_ts_ms = último evento parcial (TP1/TP2) já aplicado à posição.
             for h in history:
-                if h.action == "FUNDING" and h.position_id in open_pos:
-                    pp = open_pos[h.position_id]
-                    pp.funding_cursor_ms = max(pp.funding_cursor_ms, self._ts_ms(h.timestamp))
+                if h.position_id not in open_pos:
+                    continue
+                pp = open_pos[h.position_id]
+                h_ts = self._ts_ms(h.timestamp)
+                if h.action == "FUNDING":
+                    pp.funding_cursor_ms = max(pp.funding_cursor_ms, h_ts)
+                if h.action in PARTIAL_TRADE_ACTIONS:
+                    pp.last_event_ts_ms = max(pp.last_event_ts_ms, h_ts)
 
             self.balance = balance
             self.total_fees_paid = fees
@@ -1835,6 +1842,7 @@ class PaperTradingEngine:
         self.balance += net                     # net já deduz a taxa da parcial
         self.total_fees_paid += fee
         self.total_realized_pnl += net
+        pos.last_event_ts_ms = max(pos.last_event_ts_ms, self._ts_ms(timestamp))
         trade = PaperTrade(
             trade_id=str(uuid.uuid4())[:8], position_id=pos.position_id, symbol=pos.symbol, action=action,
             price=price, quantity=qty, fee=fee, pnl=net, timestamp=timestamp,
@@ -2107,6 +2115,8 @@ class PaperTradingEngine:
                 entry_ms = int(self._ts_ms(pos.entry_timestamp))
                 if ts_ms < entry_ms:
                     continue
+                if pos.last_event_ts_ms > 0.0 and ts_ms < int(pos.last_event_ts_ms):
+                    continue
 
                 touched_any = True
                 prev_sl = pos.stop_loss
@@ -2345,6 +2355,10 @@ class PaperTradingEngine:
             prof_bar_ms = int(prof_obj.bar_ms) if prof_obj is not None else 0
             ts_ms = self._ts_ms(timestamp)
             entry_ms = self._ts_ms(pos.entry_timestamp)
+            # Monotonicidade causal: barra cujo timestamp <= último evento já aplicado (TP1/TP2)
+            # pertence ao passado do estado atual (ex.: nunca testar vela pré-TP1 contra Breakeven pós-TP1).
+            if pos.last_event_ts_ms > 0.0 and ts_ms <= pos.last_event_ts_ms:
+                continue
             pre_entry = ts_ms < entry_ms
             retroactive_bar = pre_entry and (open_price is not None or ts_ms <= (entry_ms - prof_bar_ms))
             if retroactive_bar:

@@ -224,14 +224,19 @@ class DataLoader:
         ex = exchange.lower()
 
         if force_refresh or True:
+            # Pede limit+1 dentro do teto de 1 requisição (Binance <1000, Bitget <500) para compensar
+            # o descarte da vela em formação (drop_open_candles) sem puxar vela antiga do cache nem disparar
+            # paginação extra no futuro.
+            req_max = 1000 if ex == "binance" else 500
+            fetch_limit = (int(limit) + 1) if (0 < int(limit) < req_max) else limit
             try:
                 if ex == "binance":
                     remote_candles = await self.manager.binance.get_klines(
-                        symbol=sym, timeframe=tf, limit=limit, market_type="futures"
+                        symbol=sym, timeframe=tf, limit=fetch_limit, market_type="futures"
                     )
                 else:
                     remote_candles = await self.manager.bitget.get_candles(
-                        symbol=sym, timeframe=tf, limit=limit, product_type="USDT-FUTURES"
+                        symbol=sym, timeframe=tf, limit=fetch_limit, product_type="USDT-FUTURES"
                     )
                 if remote_candles:
                     # V7: nunca persistir candle em formação (conectores já filtram; defesa em profundidade)

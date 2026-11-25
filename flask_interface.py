@@ -226,7 +226,10 @@ def get_sqlite_metrics() -> Dict[str, Any]:
 
     size_bytes = os.path.getsize(DB_PATH)
     wal_path = f"{DB_PATH}-wal"
-    wal_size = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+    try:
+        wal_size = os.path.getsize(wal_path)
+    except FileNotFoundError:
+        wal_size = 0
 
     metrics: Dict[str, Any] = {
         "status": "ONLINE",
@@ -2169,14 +2172,15 @@ def _query_paper_positions(which: str, with_summary: bool = False, live_prices: 
                 close_map: Dict[str, Dict[str, Any]] = {}
                 events_map: Dict[str, list] = {}
                 try:
-                    cur.execute("SELECT position_id, action, price, timestamp FROM paper_trades ORDER BY timestamp ASC")
+                    _NON_CLOSING = frozenset({"TP1_PARTIAL", "TP2_PARTIAL", "FUNDING"})
+                    cur.execute("SELECT position_id, action, price, timestamp FROM paper_trades ORDER BY timestamp ASC, rowid ASC")
                     for t in cur.fetchall():
                         act = str(t["action"] or "").upper()
                         events_map.setdefault(t["position_id"], []).append(
                             {"action": act, "label": _ledger_label(act), "price": t["price"], "timestamp_ms": _to_ms(t["timestamp"])})
-                        if act.startswith("OPEN"):
+                        if act.startswith("OPEN") or act in _NON_CLOSING:
                             continue
-                        # Eventos parciais (TP1/TP2) não encerram a posição: só o último evento define o fechamento.
+                        # Eventos parciais (TP1/TP2) e FUNDING não encerram a posição: só eventos de fechamento definem close_map.
                         close_map[t["position_id"]] = {"closed_at_ms": _to_ms(t["timestamp"]), "exit_price": t["price"],
                                                        "action": act}
                 except sqlite3.OperationalError:
