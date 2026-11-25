@@ -4,6 +4,27 @@ Patch S6 Onda 2 (`v1.0.13`, `2026-11-24`) resolve o deadlock matemático pré-S5
 
 ---
 
+## 0-s6-3. Auditoria Zero Scalps/GP & Ablações OOS (`2026-11-25`) — Pré-Onda S6.3
+
+1. **Ablações OOS `SCALP 15m` & `GOLDEN_POT 5m` (`TRIAL_0176..0191`) [TODOS `NO-GO`]:**
+   - `SCALP` (`S0..S7`, `119,1d` OOS, [eval_scalp_s6_oos.py](file:///home/eudespatricio/ia_trader/scripts/eval_scalp_s6_oos.py)): nenhuma variante passou (`S1_NO_ML15` `PF 1,47` / `IS PF 0,74`, `S0` `n=11`, `S6_MOM20` `PF 0,57`); trava de mesmo par com `DIRECTIONAL` (`4,30 t/d`) corta `~53%–73%` dos scalps.
+   - `GOLDEN_POT` (`G0..G7`, `220` altcoins após exclusão de `54` TradFi, `20,1d` OOS sendo `19,2d` Bear, [eval_golden_pot_s6_oos.py](file:///home/eudespatricio/ia_trader/scripts/eval_golden_pot_s6_oos.py)): nenhuma passou (`G0` `PF 1,01`, `G1` `PF 1,01`, `G7` `PF 1,09`, `Bear PF 0,88–0,97`).
+   - **Notas P2 da Revisão (`leakage-auditor`, `26 passed`):** nos scripts de pesquisa, alinhar pequenas diferenças entre as duas sims `DIRECTIONAL` (janela contexto `60` vs `400`, offset de `1` barra no cooldown, saída BE na mesma barra, fill de gap no open), adicionar piso `SCALP_MIN_ATR_PCT` em `S6_MOM20` se retestado, e registrar que `5m` no DB tem viés de chunks pós-seleção (~400 barras).
+2. **`P1/P2` Lacuna do Fallback REST & Cobertura L2 no `GOLDEN_POT` (`80,5% UNAVAILABLE`) [RESOLVED — Onda S6.3 Frente B]:**
+   - Em [agents/tape_reading_agent.py](file:///home/eudespatricio/ia_trader/agents/tape_reading_agent.py), `_evaluate_live_binance_fallback()` (`LIVE_FALLBACK_TIMEOUT_S=2.5s`, cache OK `10s`, cooldown erro `15s`) agora é acionado com `con` SQLite RO fechado antes da rede para `book_stale`, `tick_stale`, `tick_insufficient` (`n_min`/`n_trades`/`sat_ratio > 0.50`) e `tick_zero_volume` apenas quando `is_live_call=True` (zero rede em backtest determinístico).
+   - Em [scripts/microstructure_collector.py](file:///home/eudespatricio/ia_trader/scripts/microstructure_collector.py), `get_active_golden_pot_symbols(top_n=6)` (`DEFAULT_GP_TOP_N = 6`, `MAX_ACTIVE_SYMBOLS = 16`, deduplicação, filtro `NON_CRYPTO_BASE_EXCLUSIONS` com `log.error` explícito em falha de import) alinhado a `GP_MAX_CANDIDATES = 6`. Suíte independente: `96 passed` (`tests/test_tape_reading_gate.py` + `tests/test_patch_s6_onda3_tape_fallback.py`).
+3. **`T11` Expansão de Majors (`3 → 8` Pares) [BACKFILL CONCLUÍDO / PROMOÇÃO `NO-GO` HOLD — Onda S6.3 Frente A]:**
+   - Ingestão idempotente via [scripts/backfill_candidate_majors.py](file:///home/eudespatricio/ia_trader/scripts/backfill_candidate_majors.py) concluída com backup online prévio + `--dedup` (`52.828` velas `1h`, `40.338` velas `15m`, `6.604` `funding_rates` para `XRPUSDT`, `NEARUSDT`, `DOGEUSDT`, `LINKUSDT`, `AAVEUSDT`; `30` duplicatas Bitget `NEARUSDT:15m` removidas; `audit_and_dedup_candles.py --check` limpo; `pilot_start_utc` e posições abertas preservados).
+   - Validação OOS zero-leakage ([scripts/majors_s6_sim.py](file:///home/eudespatricio/ia_trader/scripts/majors_s6_sim.py), [scripts/eval_majors_expansion_s6_oos.py](file:///home/eudespatricio/ia_trader/scripts/eval_majors_expansion_s6_oos.py), [s6_majors_expansion_oos.json](file:///home/eudespatricio/ia_trader/datasets/reports/s6_majors_expansion_oos.json), `TRIAL_0196..0202`, paridade `0.00e+00`, `79 passed` em `test_patch_s6_onda3_majors.py` + `test_patch_s6_onda3_pnl_core.py`):
+     - `DIRECTIONAL 1h` (`M1 PF 0.855, MaxDD 94.93%, DSR 0.0000`) e `SWING_4H 4h` (`M1 MaxDD 21.75%, DSR 0.6497`, paridade 12m `PF 1.078`) fecharam **`NO-GO`**.
+     - `SCALP 15m` standalone fechou **`NO-GO`** (`n=33, PF 1.891, DSR 0.9174 < 0.95`; `XRP PF 0.582`, `AAVE PF 0.760`). Embora `scalp_15m_dirlock` (`TRIAL_0199`) tenha marcado `GO` (`n=18, PF 6.159, DSR 0.9619`), é contrafactual porque `DIRECTIONAL 1h` permanece em `BTC/ETH/SOL`; `M3 (NEAR/DOGE/LINK)` é estritamente exploratório (`n=20`); `ML pooled8` degradou `M0` em `SCALP`. Produção mantida intacta em `BTC/ETH/SOL`.
+4. **Notas `P2/P3` da Revisão Cross-Model Onda S6.3 (`Claude Opus 5.5` — `APPROVE`, `0×P0/P1`):**
+   - **P2 `var_trials` correlacionada:** `var_trials` derivada apenas da grade interna de caps (`corr_cap × risk`) com `n_trials = prior + 42` infla DSR quando a variância da grade é estreita (`SCALP dirlock 0.9619`); aplicar piso pela variância de Sharpe do `trial_log.csv` em estudos futuros.
+   - **P2 Auditoria `DIRECTIONAL 1h` M0:** `M0_BASE_3` marcou `PF 0.798 (-406.34R)` no sim sem `_flow_gate` nem calibração de regime; investigar separadamente em Onda futura se o comportamento reflete apenas ausência dos gates live.
+   - **P2 Métricas/Higiene:** (a) DD de `DIR`/`SCALP` é medido apenas no fechamento de trades (vs MTM diário em `SWING_4H`); (b) fallback REST `aggTrades limit=500` cobre poucos segundos em majors de alto volume vs janela de 5m; (c) `create_online_backup` em DB vivo pode reiniciar páginas e deixar arquivo parcial em erro; (d) `G8_ATR_EXP_CAP_3X` estourou orçamento de `30s` na R1 (`28.05s`, após registrar `n=55, sumR=-2.0126` idêntico a `G0` na Run 1); (e) `TRIAL_0199` marcado como `CANDIDATE` no `trial_log.csv` porém mantido em hold `NO-GO` por dependência contrafactual do `dirlock`.
+
+---
+
 ## 0-s6-2. Auditoria Pós-S5 (`2026-11-24 13:43 BRT`) — Patch S6 Onda 2 (`v1.0.13`)
 
 1. **`S6-3` Deadlock Auto-Travante de Calibração em `BEAR_TREND` (`learning_tracker.py`) [RESOLVED]:**

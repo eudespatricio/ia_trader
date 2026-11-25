@@ -1,7 +1,7 @@
 # Plano Evolutivo S6 — Pacote Evolutivo Contínuo
 
 **Data de abertura:** `2026-11-23`  
-**Status:** **Onda S6.2 (`v1.0.13`) IMPLEMENTADA (2026-11-24)** — Onda S6.1 (`v1.0.12`) em produção  
+**Status:** **Onda S6.3 (`v1.0.14`, `2026-11-25`) — Frente B ATIVA em produção (`microstructure_collector` + `paper_trading_daemon` reiniciados) & Frente A `T11` Backfill/OOS concluída (`NO-GO` Prudent Hold)**  
 **Regra Mandatória:** *Toda alteração de lógica ou filtro exige prova empírica zero-leakage em OOS (custos estresse + embargo) antes de ir para produção, testes independentes em janela limpa e revisão cross-model.*
 
 ---
@@ -65,12 +65,43 @@
   - Trades isolados em extremo (`RSI > 75` acima da SMA200 / `RSI < 25` abaixo da SMA200): IS `n=5.337, PF 0.928, -238.0R` | **OOS `n=2.143, WR 39.6%, PF 0.730, -395.6R` (`-0.1846R`/trade)**.
   - Relaxar o teto `25..75` para `20..80`, `15..85` ou `0..100` degradou o OOS de `-3.894,3R` para `-4.072,7R` / `-4.103,0R` / `-4.076,2R`. Trava mantida intacta.
 
+### Item `S6-5a` — Ablação OOS `SCALP 15m` (`S0..S7`, `TRIAL_0176..0183`) **[NO-GO]**
+
+- **Escopo ([eval_scalp_s6_oos.py](file:///home/eudespatricio/ia_trader/scripts/eval_scalp_s6_oos.py), [s6_scalp_oos_ablation.json](file:///home/eudespatricio/ia_trader/datasets/reports/s6_scalp_oos_ablation.json)):** `119,1d` OOS (`2026-07-29..11-25`, `BTC/ETH/SOL`, entrada **taker**, modelos `15m`/`1h` purgados pré-split, `learning_tracker=None`) vs `DIRECTIONAL 1h` (`4,30` trades/dia, `n=512`, WR `39,1%`, PF `0,80`, `-74,96R`).
+- **Resultados:** Todas as 8 variantes fecharam **`NO-GO`** (`DSR ≈ 0`): `S0_PROD` (`n=11, 0,09/d, PF 3,39` -> `n<15`), `S1_NO_ML15` (`n=37, 0,31/d, PF 1,47, +9,17R`, `IS PF 0,74`), `S2_ML15_DIR_ONLY`/`S3_ML15_THR38` (`n=28, 0,24/d, PF 1,62`, `IS PF 0,99`), `S4_SQZ1B_NO_ML15` (`n=43, 0,36/d, PF 1,57`, `IS PF 0,68`), `S5_SQZ2B_RELAX_VOL_NATR` (`n=51, 0,43/d, PF 1,32`, `IS PF 0,78`), `S6_MOM20_H1_NO_ML15` (`n=191, 1,60/d, PF 0,57, -68,51R`), `S7_META_LABEL_SQZ` (`n=13, 0,11/d, PF 1,96, IS PF 1,24` -> `n<15`). A trava live de mesmo par com `DIRECTIONAL` corta `~53%–73%` dos scalps (`S1: 37→13`).
+
+### Item `S6-5b` — Ablação OOS `GOLDEN_POT 5m` (`G0..G7`, `TRIAL_0184..0191`) **[NO-GO]**
+
+- **Escopo ([eval_golden_pot_s6_oos.py](file:///home/eudespatricio/ia_trader/scripts/eval_golden_pot_s6_oos.py), [s6_golden_pot_oos_ablation.json](file:///home/eudespatricio/ia_trader/datasets/reports/s6_golden_pot_oos_ablation.json)):** `220` altcoins cripto puras (excluídas `54` TradFi: `32` canônicas + `22` extras de `/exchangeInfo`), `597` segmentos contíguos (`359.465` barras), `20,1d` OOS (`2026-11-05..11-25`, sendo `19,19d` em `OOS_BEAR`) vs `DIRECTIONAL 1h` (`4,77` trades/dia, `n=96`, WR `50,0%`, PF `1,49`, `+26,20R`).
+- **Resultados:** Todas as 8 variantes fecharam **`NO-GO`**: `G0_PROD` (`n=54, 2,69/d [4,62 uncap], PF 1,01, IS PF 0,78`), `G1_RELAX_CLIMAX` (`n=59, 2,93/d [9,40 uncap], PF 1,01`), `G2_NO_CLIMAX` (`PF 0,85, -3,60R`), `G3_MACRO_BTC_35`/`G4_NO_MACRO_BTC`/`G5`/`G6_INTRADAY` (`PF 0,91`), `G7_EARLY_TRIGGER` (`n=60, 2,98/d [12,88 uncap], WR 66,7%, PF 1,09, +1,98R`, mas `Bear PF 0,97 < 1,25`). **Caveat:** chunks `5m` de ~400 barras pós-seleção do scanner no DB + ausência do cap Top-6 e `_flow_gate`.
+
 ---
 
 ## 3. Backlog Evolutivo S6 (Próximas Ondas — Aguardando Coleta / Execução Dedicada)
 
+### Onda S6.3 Executada (`2026-11-25`) — Frente B `[IMPLEMENTADA / GO]` & Frente A `T11` `[BACKFILL OK / PROMOÇÃO NO-GO HOLD]`
+
+- **Frente B (`TapeReadingAgent` Fallback REST + Cobertura L2 GP `top_n=6`):**
+  - [agents/tape_reading_agent.py](file:///home/eudespatricio/ia_trader/agents/tape_reading_agent.py): adicionados `LIVE_FALLBACK_TIMEOUT_S = 2.5`, `LIVE_FALLBACK_CACHE_TTL_MS = 10_000` e `LIVE_FALLBACK_ERR_COOLDOWN_MS = 15_000`; fechamento explícito da conexão SQLite RO antes da chamada REST; acionamento de `_evaluate_live_binance_fallback()` apenas quando `is_live_call=True` em `book_stale`, `tick_stale`, `tick_insufficient` (`n_min`/`n_trades`/`sat_ratio > 0.50`) e `tick_zero_volume` (mantendo zero rede em backtest determinístico).
+  - [scripts/microstructure_collector.py](file:///home/eudespatricio/ia_trader/scripts/microstructure_collector.py): `DEFAULT_GP_TOP_N = 6` e `MAX_ACTIVE_SYMBOLS = 16`, deduplicação case-insensitive e união com `NON_CRYPTO_BASE_EXCLUSIONS` (`log.error` explícito se falhar import).
+  - **Validação Frente B:** `96 passed` ([test_tape_reading_gate.py](file:///home/eudespatricio/ia_trader/tests/test_tape_reading_gate.py) + [test_patch_s6_onda3_tape_fallback.py](file:///home/eudespatricio/ia_trader/tests/test_patch_s6_onda3_tape_fallback.py)).
+- **Frente A (`T11` Expansão Majors `3 -> 8`: Backfill + Validação OOS Zero-Leakage, `TRIAL_0196..TRIAL_0202`):**
+  - **Backfill A1 ([backfill_candidate_majors.py](file:///home/eudespatricio/ia_trader/scripts/backfill_candidate_majors.py)):** `52.828` velas `1h` (`2020-11-15..2026-11-25`), `40.338` velas `15m` (`2025-10-01..2026-11-25`) e `6.604` `funding_rates` para `XRPUSDT, NEARUSDT, DOGEUSDT, LINKUSDT, AAVEUSDT`, após backup online + `--dedup` (`30` duplicatas `NEARUSDT:15m` Bitget removidas, `0` gaps, `PRAGMA quick_check = ok`).
+  - **OOS Zero-Leakage ([majors_s6_sim.py](file:///home/eudespatricio/ia_trader/scripts/majors_s6_sim.py), [eval_majors_expansion_s6_oos.py](file:///home/eudespatricio/ia_trader/scripts/eval_majors_expansion_s6_oos.py), [s6_majors_expansion_oos.json](file:///home/eudespatricio/ia_trader/datasets/reports/s6_majors_expansion_oos.json)):** zero `.joblib`, paridade causal `enricher=0.0` / `ensemble=0.0` (`n=25`), `corr_oos` vs BTC `0.639..0.836`, `beta_30d` `1.00..1.81`:
+
+| Estratégia / Janela | `M0_BASE_3` (`BTC/ETH/SOL`) | `M1_TIER1_8` Melhor Config | Veredicto Gate A3 |
+|---|---|---|---|
+| `DIRECTIONAL 1h` (`>= 2025-01-08`) | `n=2844, PF 0.798, -406.34R, DD 99.02%` | `base3_cc2_nr2_beta`: `n=2583, PF 0.855, -255.51R, DD 94.93%, DSR 0.000` | **`NO-GO`** (`TRIAL_0197`) |
+| `SWING_4H` Primária (`>= 2025-01-08`) | `n=190, PF 1.478, +35.98R, DD 12.06%` | `cc4_nrnone_unit`: `n=381, PF 1.340, +54.26R, DD 21.75%, DSR 0.650` | **`NO-GO`** (`TRIAL_0201`, `cc3_nr3_beta +35.51R`) |
+| `SWING_4H` Paridade (`>= 2025-11-20`) | `n=99, PF 1.220, +9.67R, DD 11.76%` | `cc4_nrnone_unit`: `n=207, PF 1.078, +7.42R, DD 21.75%, DSR 0.310` | **`NO-GO`** (`XRP/DOGE/LINK/AAVE < 1.0`) |
+| `SCALP 15m` Standalone (`>= 2026-07-29`) | `n=11, PF 3.393, +8.09R, DSR 0.954` | `base3_cc2_nrnone`: `n=33, PF 1.891, +13.61R, DD 3.68%, DSR 0.917` | **`NO-GO`** (`TRIAL_0202`, `XRP 0.58 / AAVE 0.76`) |
+| `SCALP 15m` com `dirlock` (`>= 2026-07-29`) | `n=6, PF 6.414, +5.98R, DSR 0.516` | `base3_cc2_nrnone`: `n=18, PF 6.159, +18.08R, DD 1.24%, DSR 0.962` | **Hold `NO-GO`** (`TRIAL_0199` contrafactual sem `DIR` nos 5 pares) |
+
+  - **Notas Complementares:** `ML pooled8` degradou `M0` em `SCALP` (`PF 3.393 -> 2.491`), `M3 (NEAR/DOGE/LINK)` (`n=20, PF 3.770, DSR 0.995`) fica em observação exploratória, `G8_ATR_EXP_CAP_3X` fechou neutro (`n=55, sumR=-2.0126` na Run 1), e código de produção das estratégias permanece **inalterado** em `BTC/ETH/SOL` (revisão cross-model `Claude Opus 5.5` — `APPROVE`).
+
+### Itens Diferidos
 1. **`S6-3` / `S5-5` Ativação Controlada (`shadow -> active`):** Avaliar promoção de `Swing4HMetaSizer` (`LogReg-L2` + `EWMA_VolTarget`) após amostra limpa de trades `SWING_4H` em produção.
 2. **`T2` Carry Treasury:** Reavaliar ativação apenas quando funding anualizado OOS superar custo + hurdle institucional (hoje `STANDBY`).
-3. **`T11` Expansão de Universo (`Top 15–20 Perps Líquidos`) + Sleeve Beta-Neutro (`XSMOM/Carry`):** Ondas futuras após ingestão multi-ano `2021–2026` sem viés de sobrevivência.
+3. **Expansão Complementar (`T11` Sleeve Beta-Neutro `XSMOM/Carry`):** Após consolidar a expansão `3 -> 8` majors.
 4. **Wave P4b (`~dez/2026–jan/2027`):** Estudo OOS zero-leakage com `30–60` dias limpos de `liquidations` WS + `tick_agg` (`sat=0`).
 5. **Meta-Labeling ML sobre Sinais Filtrados:** Pesquisar meta-rotulagem binária `P[win | sinal]` especificamente sobre candidatos já filtrados (ex.: `SCALP` e `DAY_TRADE`) quando houver série estendida.

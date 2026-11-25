@@ -32,10 +32,19 @@ if ROOT not in sys.path:
 from db_conn import connect as _db_connect
 from scripts.binance_ws_collector import BinanceFuturesWSCollector
 
+log = logging.getLogger("collector")
+try:
+    from agents.golden_pot_agent import NON_CRYPTO_BASE_EXCLUSIONS
+except Exception as exc:  # noqa: BLE001
+    log.error("Failed to import NON_CRYPTO_BASE_EXCLUSIONS: %s", exc)
+    NON_CRYPTO_BASE_EXCLUSIONS = frozenset()
+
 DB_PATH = os.path.join(ROOT, "datasets", "microstructure.db")
 CACHE_DB = os.path.join(ROOT, "datasets", "market_cache.db")
 BASE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 SYMBOLS = list(BASE_SYMBOLS)
+DEFAULT_GP_TOP_N = 6
+MAX_ACTIVE_SYMBOLS = 16
 BITGET = "https://api.bitget.com/api/v2/mix/market"
 BINANCE = "https://fapi.binance.com/futures/data"
 BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
@@ -56,6 +65,7 @@ EXCLUDED_GP_BASES = frozenset({
     "COIN", "MSTR", "HOOD", "PLTR", "BABA", "TSM", "SPY", "QQQ", "IWM", "GLD", "SLV", "USO",
     "SNXX", "SNDK", "UNITREE", "OPENAI", "SPACEX", "ANTHROPIC", "STRIPE", "FIGMA",
 })
+_ALL_EXCLUDED_GP_BASES = EXCLUDED_GP_BASES | NON_CRYPTO_BASE_EXCLUSIONS
 BOOK_EVERY = 15.0
 FILLS_EVERY = 6.0
 DERIV_EVERY = 60.0
@@ -71,7 +81,6 @@ BINANCE_KINDS = {
     "openInterestHist": "oi",
 }
 
-log = logging.getLogger("collector")
 STOP = threading.Event()
 
 SCHEMA = """
@@ -105,37 +114,46 @@ def _is_excluded_gp(sym: str) -> bool:
         if s.endswith(suf) and len(s) > len(suf):
             s = s[:-len(suf)]
             break
-    return s in EXCLUDED_GP_BASES
+    return s in _ALL_EXCLUDED_GP_BASES
 
 
-def get_active_golden_pot_symbols(top_n: int = 3) -> list:
+def get_active_golden_pot_symbols(top_n: int = DEFAULT_GP_TOP_N) -> list:
     """Descobre até top_n altcoins mais frequentes/recentes na tabela golden_pots de market_cache.db."""
-    if not os.path.exists(CACHE_DB):
+    if top_n <= 0 or not os.path.exists(CACHE_DB):
         return []
+    conn = None
     try:
-        with _db_connect(f"file:{CACHE_DB}?mode=ro", uri=True, timeout=5.0) as conn:
-            rows = conn.execute("""
-                SELECT symbol, count(*) as cnt 
-                FROM golden_pots 
-                WHERE symbol NOT IN ('BTCUSDT', 'ETHUSDT', 'SOLUSDT')
-                GROUP BY symbol 
-                ORDER BY max(timestamp) DESC, cnt DESC 
-                LIMIT 20
-            """).fetchall()
-            out = []
-            for r in rows:
-                if not r[0]:
-                    continue
-                sym = str(r[0]).upper()
-                if _is_excluded_gp(sym):
-                    continue
-                out.append(sym)
-                if len(out) >= top_n:
-                    break
-            return out
+        conn = _db_connect(f"file:{CACHE_DB}?mode=ro", uri=True, timeout=5.0)
+        rows = conn.execute(
+            "SELECT symbol, count(*) as cnt "
+            "FROM golden_pots "
+            "GROUP BY symbol "
+            "ORDER BY max(timestamp) DESC, cnt DESC "
+            "LIMIT 60"
+        ).fetchall()
+        base_set = {s.upper() for s in BASE_SYMBOLS}
+        seen = set()
+        out = []
+        limit_n = int(top_n)
+        for r in rows:
+            if not r or not r[0]:
+                continue
+            sym = str(r[0]).upper().strip()
+            if not sym or sym in base_set or sym in seen:
+                continue
+            if _is_excluded_gp(sym):
+                continue
+            seen.add(sym)
+            out.append(sym)
+            if len(out) >= limit_n:
+                break
+        return out
     except Exception as e:
         log.warning("Falha ao consultar golden_pots no market_cache.db: %s", e)
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def connect():
@@ -483,8 +501,8 @@ def main():
         now = time.time()
         if now >= due["symbols"]:
             due["symbols"] = now + SYMBOLS_REFRESH_EVERY
-            gp_syms = get_active_golden_pot_symbols(top_n=3)
-            current_syms = list(dict.fromkeys(BASE_SYMBOLS + gp_syms))
+            gp_syms = get_active_golden_pot_symbols(top_n=DEFAULT_GP_TOP_N)
+            current_syms = list(dict.fromkeys(BASE_SYMBOLS + gp_syms))[:MAX_ACTIVE_SYMBOLS]
             if set(current_syms) != set(active_symbols):
                 log.info("Expansão dinâmica de cobertura: %s -> %s", active_symbols, current_syms)
                 active_symbols = current_syms

@@ -22,7 +22,7 @@ from db_conn import connect as _db_connect
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ia_trader.tape_reading")
 
@@ -46,6 +46,10 @@ FLOW_SCORE_MIN = 0.12
 ABSORPTION_TAKER_THRESHOLD = 0.30
 ABSORPTION_BOOK_THRESHOLD = 0.15
 
+LIVE_FALLBACK_TIMEOUT_S = 2.5
+LIVE_FALLBACK_CACHE_TTL_MS = 10_000
+LIVE_FALLBACK_ERR_COOLDOWN_MS = 15_000
+
 
 class TapeReadingAgent:
     name = "TapeReadingAgent"
@@ -55,10 +59,15 @@ class TapeReadingAgent:
         db_path: Optional[str] = None,
         use_continuous_flow: bool = True,
         covered_symbols: Optional[set] = None,
+        fallback_cache_ttl_ms: int = LIVE_FALLBACK_CACHE_TTL_MS,
+        fallback_err_cooldown_ms: int = LIVE_FALLBACK_ERR_COOLDOWN_MS,
     ):
         self.db_path = db_path or MICROSTRUCTURE_DB
         self.use_continuous_flow = use_continuous_flow
         self.covered_symbols = set(covered_symbols) if covered_symbols else set(COVERED_SYMBOLS)
+        self._fallback_cache_ttl_ms = int(fallback_cache_ttl_ms)
+        self._fallback_err_cooldown_ms = int(fallback_err_cooldown_ms)
+        self._live_fallback_cache: Dict[str, Tuple[int, Dict[str, Any], bool]] = {}
         self._last_refresh_ms: int = 0
         self.last_result: Optional[Dict[str, Any]] = None
 
@@ -110,20 +119,38 @@ class TapeReadingAgent:
                 con.close()
 
     def _evaluate_live_binance_fallback(self, sym: str, now_ms: int, fallback_reason: str) -> Dict[str, Any]:
-        """Fallback on-demand REST (Binance Futures) para altcoins de Golden Pot sem histórico local no microstructure.db."""
+        """Fallback on-demand REST (Binance Futures) para altcoins de Golden Pot ou majors com DB local degradado."""
+        sym = str(sym).upper()
+        cached = self._live_fallback_cache.get(sym)
+        if cached is not None:
+            c_ts, c_res, c_unavail = cached
+            ttl = self._fallback_err_cooldown_ms if c_unavail else self._fallback_cache_ttl_ms
+            if ttl > 0 and 0 <= (now_ms - c_ts) < ttl:
+                return self._finish({**c_res, "features": dict(c_res.get("features") or {})})
+
+        def _cache_and_return(res: Dict[str, Any]) -> Dict[str, Any]:
+            if len(self._live_fallback_cache) >= 256 and sym not in self._live_fallback_cache:
+                self._live_fallback_cache.clear()
+            self._live_fallback_cache[sym] = (
+                now_ms,
+                {**res, "features": dict(res.get("features") or {})},
+                res.get("status") != "OK",
+            )
+            return res
+
         try:
             q_depth = f"https://fapi.binance.com/fapi/v1/depth?symbol={urllib.parse.quote(sym)}&limit=100"
             req_d = urllib.request.Request(q_depth, headers={"User-Agent": "ia-trader-tape/1.0"})
-            with urllib.request.urlopen(req_d, timeout=3.5) as r_d:
+            with urllib.request.urlopen(req_d, timeout=LIVE_FALLBACK_TIMEOUT_S) as r_d:
                 depth = json.loads(r_d.read().decode())
             asks, bids = depth.get("asks") or [], depth.get("bids") or []
             if not asks or not bids:
-                return self._unavailable(sym, fallback_reason, now_ms)
+                return _cache_and_return(self._unavailable(sym, fallback_reason, now_ms))
             ba, bb = float(asks[0][0]), float(bids[0][0])
             sa, sb = float(asks[0][1]), float(bids[0][1])
             mid = (ba + bb) / 2.0
             if mid <= 0:
-                return self._unavailable(sym, fallback_reason, now_ms)
+                return _cache_and_return(self._unavailable(sym, fallback_reason, now_ms))
             spread = (ba - bb) / mid * 1e4
             micro = (ba * sb + bb * sa) / (sa + sb) if (sa + sb) > 0 else mid
             mdev = (micro - mid) / mid * 1e4
@@ -133,12 +160,12 @@ class TapeReadingAgent:
                 bid_n10 = sum(float(p) * float(q) for p, q in bids[:10])
                 ask_n10 = sum(float(p) * float(q) for p, q in asks[:10])
             if (bid_n10 + ask_n10) <= 0:
-                return self._unavailable(sym, "book_incomplete", now_ms)
+                return _cache_and_return(self._unavailable(sym, "book_incomplete", now_ms))
             book_imb = (bid_n10 - ask_n10) / (bid_n10 + ask_n10)
 
             q_trades = f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={urllib.parse.quote(sym)}&limit=500"
             req_t = urllib.request.Request(q_trades, headers={"User-Agent": "ia-trader-tape/1.0"})
-            with urllib.request.urlopen(req_t, timeout=3.5) as r_t:
+            with urllib.request.urlopen(req_t, timeout=LIVE_FALLBACK_TIMEOUT_S) as r_t:
                 trades = json.loads(r_t.read().decode())
             win_start = now_ms - TAKER_WINDOW_MIN * 60_000
             recent = [t for t in trades if int(t.get("T", 0)) >= win_start]
@@ -146,14 +173,14 @@ class TapeReadingAgent:
                 fallback_subset = trades[-max(TAKER_MIN_TRADES, 50):]
                 # P0: Rejeitar ticks stale no fallback se os trades forem anteriores à janela
                 if not fallback_subset or int(fallback_subset[-1].get("T", 0)) < win_start:
-                    return self._unavailable(sym, "stale_tick_fallback", now_ms)
+                    return _cache_and_return(self._unavailable(sym, "stale_tick_fallback", now_ms))
                 recent = fallback_subset
             if not recent:
-                return self._unavailable(sym, "no_tick_data", now_ms)
+                return _cache_and_return(self._unavailable(sym, "no_tick_data", now_ms))
             buy = sum(float(t["p"]) * float(t["q"]) for t in recent if not t.get("m", False))
             sell = sum(float(t["p"]) * float(t["q"]) for t in recent if t.get("m", False))
             if (buy + sell) <= 0:
-                return self._unavailable(sym, "tick_zero_volume", now_ms)
+                return _cache_and_return(self._unavailable(sym, "tick_zero_volume", now_ms))
             taker = (buy - sell) / (buy + sell)
             # P0: Normalização de microprice por spread (evita saturação em 1 bp)
             mdev_norm = max(-1.0, min(1.0, mdev / max(float(spread), 1.0)))
@@ -192,12 +219,13 @@ class TapeReadingAgent:
                 else:
                     vote, reason = "HOLD", "no_flow_confluence"
             conf = float(min(1.0, abs(flow_score) / (2.0 * FLOW_SCORE_MIN))) if vote != "HOLD" else 0.0
-            return self._finish({
+            return _cache_and_return(self._finish({
                 "agent_name": self.name, "symbol": sym, "vote": vote, "status": "OK", "confidence": conf,
                 "features": feats, "reason": reason, "timestamp": now_ms,
-            })
-        except Exception:
-            return self._unavailable(sym, fallback_reason, now_ms)
+            }))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TapeReading live REST fallback failed for %s (%s): %s", sym, fallback_reason, e)
+            return _cache_and_return(self._unavailable(sym, fallback_reason, now_ms))
 
     def _fetch_binance_series_taker(self, con: sqlite3.Connection, sym: str, now_ms: int) -> Optional[Tuple[float, float]]:
         """Retorna (taker_imb, age_s) para kind='taker' dos últimos 5m, ou None se indisponível/estragado."""
@@ -305,6 +333,7 @@ class TapeReadingAgent:
                     return self._evaluate_live_binance_fallback(sym, now_ms, "symbol_not_covered")
                 return self._unavailable(sym, "symbol_not_covered", now_ms)
 
+        con: Optional[sqlite3.Connection] = None
         try:
             con = self._connect_ro()
         except Exception as e:  # noqa: BLE001
@@ -348,6 +377,8 @@ class TapeReadingAgent:
             # --- Processamento ---
             if not books:
                 if is_live_call:
+                    con.close()
+                    con = None
                     return self._evaluate_live_binance_fallback(sym, now_ms, "no_book_data")
                 return self._unavailable(sym, "no_book_data", now_ms, liq_feats)
 
@@ -355,6 +386,10 @@ class TapeReadingAgent:
             feats: Dict[str, Any] = {"book_age_s": round(book_age, 1)}
             feats.update(liq_feats)
             if book_age > BOOK_MAX_AGE_S:
+                if is_live_call:
+                    con.close()
+                    con = None
+                    return self._evaluate_live_binance_fallback(sym, now_ms, "book_stale")
                 return self._unavailable(sym, "book_stale", now_ms, feats)
 
             sat_ratio = (sum(1 for r in ticks if int(r[4] or 0)) / len(ticks)) if ticks else 0.0
@@ -388,17 +423,21 @@ class TapeReadingAgent:
                     taker = taker_bs
                 else:
                     if not ticks:
-                        if is_live_call:
-                            return self._evaluate_live_binance_fallback(sym, now_ms, "no_tick_data")
-                        return self._unavailable(sym, "no_tick_data", now_ms, feats)
-                    if tick_age is not None and tick_age > TICK_MAX_AGE_S:
-                        return self._unavailable(sym, "tick_stale", now_ms, feats)
-                    if n_min < TAKER_MIN_MINUTES or n_trades < TAKER_MIN_TRADES:
-                        return self._unavailable(sym, "tick_insufficient", now_ms, feats)
-                    if buy_plus_sell <= 0.0:
-                        return self._unavailable(sym, "tick_zero_volume", now_ms, feats)
-                    # sat_ratio > 0.50: trata como insuficiência de qualidade
-                    return self._unavailable(sym, "tick_insufficient", now_ms, feats)
+                        err_reason = "no_tick_data"
+                    elif tick_age is not None and tick_age > TICK_MAX_AGE_S:
+                        err_reason = "tick_stale"
+                    elif n_min < TAKER_MIN_MINUTES or n_trades < TAKER_MIN_TRADES:
+                        err_reason = "tick_insufficient"
+                    elif buy_plus_sell <= 0.0:
+                        err_reason = "tick_zero_volume"
+                    else:
+                        # sat_ratio > 0.50: trata como insuficiência de qualidade
+                        err_reason = "tick_insufficient"
+                    if is_live_call:
+                        con.close()
+                        con = None
+                        return self._evaluate_live_binance_fallback(sym, now_ms, err_reason)
+                    return self._unavailable(sym, err_reason, now_ms, feats)
             else:
                 taker = (buy - sell) / buy_plus_sell
                 feats["taker_source"] = "tick_agg"
@@ -481,4 +520,5 @@ class TapeReadingAgent:
         except Exception as e:  # noqa: BLE001
             return self._unavailable(sym, f"db_error:{type(e).__name__}", now_ms)
         finally:
-            con.close()
+            if con is not None:
+                con.close()

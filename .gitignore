@@ -34,4 +34,8 @@ bin/
 datasets/backups/
 datasets/supervisor.log
 datasets/reports/pilot_report.json
+datasets/reports/*.lock
+data/*.db
+data/*.db-wal
+data/*.db-shm
 logs/
