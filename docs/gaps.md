@@ -4,6 +4,22 @@ Patch S6 Onda 2 (`v1.0.13`, `2026-11-24`) resolve o deadlock matemático pré-S5
 
 ---
 
+## 0-s6-consensus-bias. Correção Estrutural de Viés Somente-Venda no Comitê (`v1.0.16`, `2026-11-27`) **[RESOLVED]**
+
+1. **Causa Raiz do Travamento em `SHORT` (13/13 `DIRECTIONAL`, 0 `BUY` no Piloto desde `2026-11-20`):**
+   - `RiskSentinelAgent` (`w=1.5` fixo em `learning_tracker.py`) emitia `HOLD` sem veto quando liberado, mas somava `+1.5` no denominador (`total_weight = 4.50`), enquanto `MacroAgent` (`w=0.6–0.7`) e `OnChainAgent` (`w=0.5`) travados em `SELL` pelos dados diários `D-1` (`DXY > SMA20`, `S&P500 5d = -1.92%`, `Stablecoins 30d = -5.75%`, `DeFi TVL 7d = -4.97%`) limitavam qualquer `BUY` ao teto matemático `+0.186` em `BULL_TREND` (`+0.266` em `SIDEWAYS_RANGE`), abaixo do limiar `+0.30`.
+   - Simultaneamente, `OrderFlowAgent=SELL` + `Macro=SELL` + `OnChain=SELL` atingiam `-0.325 <= -0.30` e disparavam `SHORT` mesmo com `TechnicalAgent=HOLD` (caso real `SOLUSDT f0c103c6` às `02:00 UTC` de `2026-11-27`, stopado em 7 min com `-$93.89`). O ensemble ML (`lgbm_model_v1` + `rf_model_v1`) não tinha viés direcional (`mean[H,B,S]` ~0.35/0.30/0.33).
+2. **Correção Aplicada ([consensus_judge.py](file:///home/eudespatricio/ia_trader/consensus_judge.py)):**
+   - Exclusão de `HOLD` não-veto de `veto_only_agents={"RiskSentinelAgent"}` do denominador (preservando `is_veto=True` absoluto e `w=1.5` em `learning_tracker.py`).
+   - Teto proporcional `max_contextual_weight_ratio=0.35` sobre os agentes contextuais ativos (`Macro/OnChain/Sentiment`) em relação ao peso primário ativo (`Technical + OrderFlow`), validado como finito `>= 0.0` (ou `None`), com poda de entradas escaladas a `0.0` antes de checar quórum/dissidentes e simetria exata `BUY`/`SELL`.
+   - Guardas simétricas em `_resolve_directional_side()`: `require_technical_confirmation=True` (exige voto do `TechnicalAgent` na direção quando presente) e `block_primary_opposition=True` (bloqueia conflito `TechnicalAgent` vs `OrderFlowAgent` em direções opostas `BUY`/`SELL`).
+   - Bloqueio em `judge_async()` de inversões `BUY <-> SELL` pelo árbitro LLM (além de `HOLD -> BUY/SELL`), preservando calibração em `agent_signals`.
+3. **Validação & Benchmark:**
+   - Benchmark 365 dias (`BTC/ETH/SOL`, 26.280 barras `1h`, ladder do piloto): `WR 39.4% -> 40.4%`, `PF 0.90 -> 0.93` (`LONG 0.81 -> 0.82`, `SHORT 0.99 -> 1.03`), `sumR -108.9R -> -99.7R`; replay no banco ao vivo bloqueia `SOLUSDT f0c103c6 -> HOLD (-0.244)` e destrava `BUY` forte contra-macro (`BULL_TREND conf=0.737`, `SIDEWAYS_RANGE conf=0.735`).
+   - Suíte independente ([test_consensus_bias_fix.py](file:///home/eudespatricio/ia_trader/tests/test_consensus_bias_fix.py), `38 passed`), suíte completa (`951 passed, 1 skipped, 6 xfailed`), e revisão cruzada imparcial (`APPROVE`, `0×P0/P1`).
+
+---
+
 ## 0-s6-3-hotfix. Hotfix P0 Pós-Restart (`v1.0.15`, `2026-11-25`) **[RESOLVED]**
 
 1. **P0 Stop Fantasma em Catch-up Pós-Restart (`9995d8a3 SOLUSDT`, `06:43 BRT`) [RESOLVED]:**

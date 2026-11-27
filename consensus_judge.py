@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agents.base_agent import AgentSignal
 
@@ -52,6 +53,10 @@ class ConsensusJudge:
         contextual_agents: Optional[set] = None,
         min_directional_agents: int = 2,
         agent_calibration: Optional[Dict[str, Dict[str, float]]] = None,
+        veto_only_agents: Optional[set] = None,
+        max_contextual_weight_ratio: Optional[float] = 0.35,
+        require_technical_confirmation: bool = True,
+        block_primary_opposition: bool = True,
     ):
         self.min_consensus_threshold = min_consensus_threshold
         self.default_weights = default_weights or {
@@ -64,9 +69,27 @@ class ConsensusJudge:
         }
         self.llm_timeout_seconds = llm_timeout_seconds
         self.allow_contextual_abstain = allow_contextual_abstain
-        self.contextual_agents = contextual_agents or {"SentimentAgent", "MacroAgent", "OnChainAgent"}
+        self.contextual_agents = (
+            contextual_agents if contextual_agents is not None else {"SentimentAgent", "MacroAgent", "OnChainAgent"}
+        )
         self.min_directional_agents = min_directional_agents
         self.agent_calibration = dict(agent_calibration) if agent_calibration else {}
+        # Veto-only sentinels emit HOLD when clear; counting that HOLD in total_weight dilutes directional consensus.
+        self.veto_only_agents = veto_only_agents if veto_only_agents is not None else {"RiskSentinelAgent"}
+        # Cap active contextual agents (slow D-1 Macro/OnChain/Sentiment) relative to active primary agents so
+        # persistent macro/on-chain regimes cannot mathematically block counter-trend setups.
+        self.max_contextual_weight_ratio = self._validate_contextual_ratio(max_contextual_weight_ratio)
+        self.require_technical_confirmation = bool(require_technical_confirmation)
+        self.block_primary_opposition = bool(block_primary_opposition)
+
+    @staticmethod
+    def _validate_contextual_ratio(ratio: Optional[float]) -> Optional[float]:
+        if ratio is None:
+            return None
+        val = float(ratio)
+        if not math.isfinite(val) or val < 0.0:
+            raise ValueError(f"max_contextual_weight_ratio inválido: {ratio!r} (esperado None ou float finito >= 0.0)")
+        return val
 
     def set_agent_calibration(self, calib: Dict[str, Dict[str, float]]) -> None:
         """Define ou atualiza mapa de calibração empírica dos agentes."""
@@ -184,77 +207,82 @@ class ConsensusJudge:
         # não devem diluir o denominador nem receber peso default do dicionário.
         all_signals = signals
         signals = [s for s in signals if s.weight > 0.0 or s.is_veto]
-        weighted_score = 0.0
-        total_weight = 0.0
 
+        weighted_entries: List[Tuple[AgentSignal, float]] = []
         for sig in signals:
-            # Abstenção não-punitiva: agentes sem sinal ou contextuais neutros não diluem o denominador
+            # Abstenção não-punitiva: agentes sem sinal, contextuais neutros ou sentinelas sem veto não diluem o denominador
             if sig.direction == "ABSTAIN":
                 continue
             if self.allow_contextual_abstain and sig.agent_name in self.contextual_agents and sig.direction == "HOLD":
                 continue
+            if sig.agent_name in self.veto_only_agents and sig.direction == "HOLD":
+                continue
 
             w = float(weights.get(sig.agent_name, sig.weight))
-            total_weight += w
+            if not math.isfinite(w) or w <= 0.0:
+                continue
+            weighted_entries.append((sig, w))
 
+        # Limita proporcionalmente o peso efetivo dos agentes contextuais frente aos primários ativos
+        ratio = self._validate_contextual_ratio(self.max_contextual_weight_ratio)
+        if ratio is not None:
+            primary_weight = sum(
+                w
+                for s, w in weighted_entries
+                if s.agent_name not in self.contextual_agents and s.agent_name not in self.veto_only_agents
+            )
+            contextual_weight = sum(
+                w for s, w in weighted_entries if s.agent_name in self.contextual_agents
+            )
+            max_ctx_weight = ratio * primary_weight
+            if primary_weight > 0.0 and contextual_weight > max_ctx_weight:
+                scale = (max_ctx_weight / contextual_weight) if contextual_weight > 0.0 else 0.0
+                weighted_entries = [
+                    (s, w * scale if s.agent_name in self.contextual_agents else w)
+                    for s, w in weighted_entries
+                ]
+                # Remove entradas cujo peso efetivo caiu para zero para não inflar quórum ou dissidentes
+                weighted_entries = [(s, w) for s, w in weighted_entries if w > 0.0]
+
+        total_weight = sum(w for _, w in weighted_entries)
+        weighted_score = 0.0
+        for sig, w in weighted_entries:
             if sig.direction == "BUY":
-                weighted_score += (w * sig.confidence)
+                weighted_score += w * sig.confidence
             elif sig.direction == "SELL":
-                weighted_score -= (w * sig.confidence)
+                weighted_score -= w * sig.confidence
             elif sig.direction == "HOLD":
                 # HOLD de agente primário ativo contribui para neutralidade (aproxima score de 0)
                 pass
 
-        norm_score = (weighted_score / total_weight) if total_weight > 0 else 0.0
+        norm_score = (weighted_score / total_weight) if total_weight > 0.0 else 0.0
 
-        # 3. Classificação Direcional com Quórum Mínimo Obrigatório
-        buy_signals = [sig for sig in signals if sig.direction == "BUY"]
-        sell_signals = [sig for sig in signals if sig.direction == "SELL"]
+        # 3. Classificação Direcional com Quórum Mínimo e Confirmação Primária
+        buy_entries = [(s, w) for s, w in weighted_entries if s.direction == "BUY"]
+        sell_entries = [(s, w) for s, w in weighted_entries if s.direction == "SELL"]
+        tech_sig = next((s for s, _ in weighted_entries if s.agent_name == "TechnicalAgent"), None)
+        flow_sig = next((s for s, _ in weighted_entries if s.agent_name == "OrderFlowAgent"), None)
 
         if norm_score >= self.min_consensus_threshold:
-            if len(buy_signals) < self.min_directional_agents:
-                direction = "HOLD"
-                confidence = 0.50
-                summary = (
-                    f"Quórum direcional insuficiente: {len(buy_signals)} agente(s) comprador(es) "
-                    f"< mínimo exigido ({self.min_directional_agents}). Operação bloqueada em HOLD."
-                )
-            else:
-                direction = "BUY"
-                buy_weights = [float(weights.get(sig.agent_name, sig.weight)) for sig in buy_signals]
-                buy_conf_w = [float(weights.get(sig.agent_name, sig.weight)) * sig.confidence for sig in buy_signals]
-                avg_maj_conf = sum(buy_conf_w) / sum(buy_weights) if sum(buy_weights) > 0 else abs(norm_score)
-
-                active_weights = sum(float(weights.get(sig.agent_name, sig.weight)) for sig in signals if sig.direction in ("BUY", "SELL"))
-                buy_total_w = sum(buy_weights)
-                agreement_ratio = buy_total_w / active_weights if active_weights > 0 else 1.0
-
-                confidence = min(0.99, max(0.51, avg_maj_conf * (0.80 + 0.20 * agreement_ratio)))
-                dissidents = [sig.agent_name.replace("Agent", "") for sig in signals if sig.direction == "SELL"]
-                dissent_txt = f" | {len(dissidents)} divergente(s): {', '.join(dissidents)}" if dissidents else " | Unânime"
-                summary = f"Consenso COMPRADOR aprovado (Score Líquido: {norm_score:+.2f} >= Limiar +{self.min_consensus_threshold:.2f}{dissent_txt})."
+            direction, confidence, summary = self._resolve_directional_side(
+                target_dir="BUY",
+                opposite_dir="SELL",
+                maj_entries=buy_entries,
+                weighted_entries=weighted_entries,
+                norm_score=norm_score,
+                tech_sig=tech_sig,
+                flow_sig=flow_sig,
+            )
         elif norm_score <= -self.min_consensus_threshold:
-            if len(sell_signals) < self.min_directional_agents:
-                direction = "HOLD"
-                confidence = 0.50
-                summary = (
-                    f"Quórum direcional insuficiente: {len(sell_signals)} agente(s) vendedor(es) "
-                    f"< mínimo exigido ({self.min_directional_agents}). Operação bloqueada em HOLD."
-                )
-            else:
-                direction = "SELL"
-                sell_weights = [float(weights.get(sig.agent_name, sig.weight)) for sig in sell_signals]
-                sell_conf_w = [float(weights.get(sig.agent_name, sig.weight)) * sig.confidence for sig in sell_signals]
-                avg_maj_conf = sum(sell_conf_w) / sum(sell_weights) if sum(sell_weights) > 0 else abs(norm_score)
-
-                active_weights = sum(float(weights.get(sig.agent_name, sig.weight)) for sig in signals if sig.direction in ("BUY", "SELL"))
-                sell_total_w = sum(sell_weights)
-                agreement_ratio = sell_total_w / active_weights if active_weights > 0 else 1.0
-
-                confidence = min(0.99, max(0.51, avg_maj_conf * (0.80 + 0.20 * agreement_ratio)))
-                dissidents = [sig.agent_name.replace("Agent", "") for sig in signals if sig.direction == "BUY"]
-                dissent_txt = f" | {len(dissidents)} divergente(s): {', '.join(dissidents)}" if dissidents else " | Unânime"
-                summary = f"Consenso VENDEDOR aprovado (Score Líquido: {norm_score:+.2f} <= Limiar {-self.min_consensus_threshold:.2f}{dissent_txt})."
+            direction, confidence, summary = self._resolve_directional_side(
+                target_dir="SELL",
+                opposite_dir="BUY",
+                maj_entries=sell_entries,
+                weighted_entries=weighted_entries,
+                norm_score=norm_score,
+                tech_sig=tech_sig,
+                flow_sig=flow_sig,
+            )
         else:
             direction = "HOLD"
             confidence = 0.50
@@ -269,6 +297,65 @@ class ConsensusJudge:
             consensus_summary=summary,
             llm_arbitrated=False,
         )
+
+    def _resolve_directional_side(
+        self,
+        *,
+        target_dir: str,
+        opposite_dir: str,
+        maj_entries: List[Tuple[AgentSignal, float]],
+        weighted_entries: List[Tuple[AgentSignal, float]],
+        norm_score: float,
+        tech_sig: Optional[AgentSignal],
+        flow_sig: Optional[AgentSignal],
+    ) -> Tuple[str, float, str]:
+        """Valida quórum, confirmação técnica, ausência de oposição primária e calcula confiança."""
+        noun = "comprador(es)" if target_dir == "BUY" else "vendedor(es)"
+        if len(maj_entries) < self.min_directional_agents:
+            return (
+                "HOLD",
+                0.50,
+                (
+                    f"Quórum direcional insuficiente: {len(maj_entries)} agente(s) {noun} "
+                    f"< mínimo exigido ({self.min_directional_agents}). Operação bloqueada em HOLD."
+                ),
+            )
+        # Impede que fluxo + contextuais disparem entrada sem o sinal técnico confirmar a direção.
+        if self.require_technical_confirmation and tech_sig is not None and tech_sig.direction != target_dir:
+            return (
+                "HOLD",
+                0.50,
+                f"Confirmação técnica ausente para {target_dir} (TechnicalAgent={tech_sig.direction}). Operação bloqueada em HOLD.",
+            )
+        if (
+            self.block_primary_opposition
+            and tech_sig is not None
+            and flow_sig is not None
+            and tech_sig.direction in ("BUY", "SELL")
+            and flow_sig.direction in ("BUY", "SELL")
+            and tech_sig.direction != flow_sig.direction
+        ):
+            return (
+                "HOLD",
+                0.50,
+                f"Conflito entre agentes primários (TechnicalAgent={tech_sig.direction} vs OrderFlowAgent={flow_sig.direction}). Operação bloqueada em HOLD.",
+            )
+
+        maj_total_w = sum(w for _, w in maj_entries)
+        maj_conf_w = sum(w * s.confidence for s, w in maj_entries)
+        avg_maj_conf = maj_conf_w / maj_total_w if maj_total_w > 0.0 else abs(norm_score)
+
+        active_weights = sum(w for s, w in weighted_entries if s.direction in ("BUY", "SELL"))
+        agreement_ratio = maj_total_w / active_weights if active_weights > 0.0 else 1.0
+
+        confidence = min(0.99, max(0.51, avg_maj_conf * (0.80 + 0.20 * agreement_ratio)))
+        dissidents = [s.agent_name.replace("Agent", "") for s, _ in weighted_entries if s.direction == opposite_dir]
+        dissent_txt = f" | {len(dissidents)} divergente(s): {', '.join(dissidents)}" if dissidents else " | Unânime"
+        if target_dir == "BUY":
+            summary = f"Consenso COMPRADOR aprovado (Score Líquido: {norm_score:+.2f} >= Limiar +{self.min_consensus_threshold:.2f}{dissent_txt})."
+        else:
+            summary = f"Consenso VENDEDOR aprovado (Score Líquido: {norm_score:+.2f} <= Limiar {-self.min_consensus_threshold:.2f}{dissent_txt})."
+        return target_dir, confidence, summary
 
     async def judge_async(
         self,
@@ -327,12 +414,17 @@ class ConsensusJudge:
                     raise ValueError(f"direção inválida do LLM: {direction!r}")
 
                 # P0: O LLM atua estritamente como auditor de risco/sanidade.
-                # Não possui autoridade para criar BUY ou SELL a partir de HOLD determinístico.
-                if base_decision.direction == "HOLD" and direction in ("BUY", "SELL"):
+                # Não possui autoridade para criar direção a partir de HOLD nem inverter BUY <-> SELL.
+                if direction in ("BUY", "SELL") and direction != base_decision.direction:
                     logger.warning(
-                        "Árbitro LLM sugeriu '%s', mas o comitê determinístico não atingiu quórum quantitativo. "
-                        "Mantendo HOLD de segurança.", direction
+                        "Árbitro LLM sugeriu '%s', divergindo da decisão determinística '%s'. "
+                        "Mantendo decisão determinística de segurança.",
+                        direction,
+                        base_decision.direction,
                     )
+                    return base_decision
+
+                if base_decision.direction == "HOLD" and direction == "HOLD":
                     return base_decision
 
                 confidence = float(llm_resp.get("confidence", 0.60))
@@ -343,7 +435,7 @@ class ConsensusJudge:
                     confidence=confidence,
                     is_vetoed=False,
                     aggregated_score=base_decision.aggregated_score,
-                    agent_signals=signals,
+                    agent_signals=base_decision.agent_signals,
                     consensus_summary=f"ÁRBITRO LLM: {rationale}",
                     llm_arbitrated=True,
                 )
